@@ -1,0 +1,9 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "us-central1-docker.pkg.dev/compass-510017/compass/marketplace:latest", "-f", "dockerfile", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "us-central1-docker.pkg.dev/compass-510017/compass/marketplace:latest"]
+images:
+  - us-central1-docker.pkg.dev/compass-510017/compass/marketplace:latest
+options:
+  logging: CLOUD_LOGGING_ONLY

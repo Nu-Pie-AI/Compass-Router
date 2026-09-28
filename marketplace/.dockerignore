@@ -1,0 +1,39 @@
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Development files
+*.md
+!README.md
+.vscode
+.idea
+
+# CI/CD
+.github
+
+# Testing
+coverage
+*.test.*
+*.spec.*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.swp
+*.swo
+*~
+.tmp
+
+scripts/
+scripts/**

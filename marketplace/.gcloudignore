@@ -1,0 +1,28 @@
+# This file specifies files that are *not* uploaded to Google Cloud
+# using gcloud. It follows the same syntax as .gitignore, with the addition of
+# "#!include" directives (which insert the entries of the given .gitignore-style
+# file at that point).
+
+#!include:.gitignore
+
+# Exclude development and documentation files
+*.md
+!README.md
+.vscode/
+.idea/
+
+# Exclude test files
+*.test.*
+*.spec.*
+coverage/
+
+# Exclude CI/CD
+.github/
+
+# Exclude all .env files except example
+.env*
+!.env.example
+
+# Exclude Scripts folder
+scripts/
+scripts/**

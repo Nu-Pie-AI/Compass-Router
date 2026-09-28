@@ -1,0 +1,55 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+
+# Node / Next.js
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+apps/web/next-env.d.ts
+apps/web/tsconfig.tsbuildinfo
+
+# Local databases and generated state
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs, coverage, build output
+*.log
+logs/
+dist/
+build/
+coverage/
+htmlcov/
+.coverage
+
+# Docker/local artifacts
+docker-data/
+tmp/
+*.tar
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

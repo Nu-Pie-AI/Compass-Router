@@ -1,0 +1,150 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-compass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-compass}
+      POSTGRES_DB: ${POSTGRES_DB:-compass}
+    ports:
+      - "${POSTGRES_PORT:-25432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-compass} -d $${POSTGRES_DB:-compass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-26379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  litellm:
+    image: ${COMPASS_LITELLM_IMAGE:-compass-litellm:1.99.0-compass.1}
+    build:
+      context: ../../compass-litellm
+      dockerfile: Dockerfile
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-local-dev-litellm-key}
+      OPENAI_API_KEY: ${COMPASS_LITELLM_OPENAI_API_KEY:-}
+      OLLAMA_API_KEY: ${COMPASS_LITELLM_OLLAMA_API_KEY:-}
+      STORE_MODEL_IN_DB: "False"
+    command: ["--config", "/app/compass/config/local-test-config.yaml", "--port", "4000"]
+    volumes:
+      - ../../compass-litellm/compass/config/local-test-config.yaml:/app/compass/config/local-test-config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-24000}:4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  compass-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      APP_SECRET: ${APP_SECRET:-dev-compose-secret-change-me}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://compass:compass@postgres:5432/compass}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      COMPASS_WEB_ORIGIN: ${COMPASS_WEB_ORIGIN:-http://localhost:23000}
+      COMPASS_SSO_SECRET: ${COMPASS_SSO_SECRET:-dev-compass-sso-secret-change-me}
+      COMPASS_LITELLM_URL: ${COMPASS_LITELLM_URL:-http://litellm:4000}
+      LITELLM_URL: ${LITELLM_URL:-http://litellm:4000}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-local-dev-litellm-key}
+      REQUEST_BODY_LIMIT_BYTES: ${REQUEST_BODY_LIMIT_BYTES:-1000000}
+      LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K: ${LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K:-2}
+      LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K: ${LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K:-6}
+      LOCAL_TEST_WALLET_CREDIT_PAISE: ${LOCAL_TEST_WALLET_CREDIT_PAISE:-50000}
+      LITELLM_TIMEOUT_SECONDS: ${LITELLM_TIMEOUT_SECONDS:-60}
+      LITELLM_CATALOG_CACHE_SECONDS: ${LITELLM_CATALOG_CACHE_SECONDS:-300}
+      USD_TO_INR_PAISE_PER_USD: ${USD_TO_INR_PAISE_PER_USD:-8500}
+      LOCAL_TEST_MODE: ${LOCAL_TEST_MODE:-true}
+      PUBLIC_SIGNUP_ENABLED: ${PUBLIC_SIGNUP_ENABLED:-true}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-CompassAdmin123!}
+      ADMIN_NAME: ${ADMIN_NAME:-Compass Operator}
+      LOCAL_TEST_CUSTOMER_EMAIL: ${LOCAL_TEST_CUSTOMER_EMAIL:-customer@example.com}
+      LOCAL_TEST_CUSTOMER_PASSWORD: ${LOCAL_TEST_CUSTOMER_PASSWORD:-CompassCustomer123!}
+      LOCAL_TEST_CUSTOMER_NAME: ${LOCAL_TEST_CUSTOMER_NAME:-Compass Customer}
+      LOCAL_TEST_CUSTOMER_TEAM_NAME: ${LOCAL_TEST_CUSTOMER_TEAM_NAME:-Customer Demo Team}
+      LOCAL_TEST_CUSTOMER_TEAM_SLUG: ${LOCAL_TEST_CUSTOMER_TEAM_SLUG:-customer-demo}
+      LOCAL_TEST_CUSTOMER_2_EMAIL: ${LOCAL_TEST_CUSTOMER_2_EMAIL:-customer2@example.com}
+      LOCAL_TEST_CUSTOMER_2_PASSWORD: ${LOCAL_TEST_CUSTOMER_2_PASSWORD:-CompassCustomer456!}
+      LOCAL_TEST_CUSTOMER_2_NAME: ${LOCAL_TEST_CUSTOMER_2_NAME:-Compass Customer Two}
+      LOCAL_TEST_CUSTOMER_2_TEAM_NAME: ${LOCAL_TEST_CUSTOMER_2_TEAM_NAME:-Customer Two Demo Team}
+      LOCAL_TEST_CUSTOMER_2_TEAM_SLUG: ${LOCAL_TEST_CUSTOMER_2_TEAM_SLUG:-customer-two-demo}
+      DEFAULT_TEAM_REQUEST_LIMIT_PER_MINUTE: ${DEFAULT_TEAM_REQUEST_LIMIT_PER_MINUTE:-60}
+      DEFAULT_TEAM_TOKEN_LIMIT_PER_MINUTE: ${DEFAULT_TEAM_TOKEN_LIMIT_PER_MINUTE:-250000}
+      DEFAULT_TEAM_DAILY_SPEND_LIMIT_PAISE: ${DEFAULT_TEAM_DAILY_SPEND_LIMIT_PAISE:-100000}
+      DEFAULT_TEAM_MONTHLY_SPEND_LIMIT_PAISE: ${DEFAULT_TEAM_MONTHLY_SPEND_LIMIT_PAISE:-1000000}
+    ports:
+      - "${COMPASS_API_PORT:-28000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  compass-web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_COMPASS_API_URL: ${NEXT_PUBLIC_COMPASS_API_URL:-http://localhost:28000}
+        NEXT_PUBLIC_MARKETPLACE_URL: ${NEXT_PUBLIC_MARKETPLACE_URL:-http://localhost:3100}
+    environment:
+      NEXT_PUBLIC_COMPASS_API_URL: ${NEXT_PUBLIC_COMPASS_API_URL:-http://localhost:28000}
+      NEXT_PUBLIC_MARKETPLACE_URL: ${NEXT_PUBLIC_MARKETPLACE_URL:-http://localhost:3100}
+      COMPASS_API_INTERNAL_URL: ${COMPASS_API_INTERNAL_URL:-http://compass-api:8000}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "${COMPASS_WEB_PORT:-23000}:3000"
+    depends_on:
+      compass-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:

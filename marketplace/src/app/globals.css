@@ -1,0 +1,127 @@
+@import "tailwindcss";
+/* Force cache invalidation 1 */
+
+/* ================================= */
+/*  COMPASS PREMIUM THEME           */
+/* ================================= */
+
+:root {
+  /* Primary Brand Colors (Nu-Pie original) */
+  --primary: #4DBC65;              /* Nu-Pie mint green */
+  --primary-hover: #3da554;        /* Darker green for hovers */
+  --secondary: #3772FF;            /* Nu-Pie SaaS blue */
+  --secondary-dark: #1863DC;       /* Button/CTA blue */
+
+  /* Neutral Palette */
+  --background: #f4f4f4;           /* Light cool gray */
+  --background-alt: #ffffff;       /* Pure white for cards */
+  --surface: #ffffff;              /* Card/surface background */
+  --foreground: #232323;           /* Dark text */
+  --muted-foreground: #66686F;     /* Muted text */
+
+  /* Supporting Colors */
+  --accent: #F2CD5D;               /* Royal gold accent */
+  --accent-green: #A1EF8B;         /* Energy green */
+  --border: #DDDDDD;               /* Slate 200 */
+  --error: #E94F37;                /* Error state */
+  
+  /* Legacy aliases for compatibility */
+  --royal-green: #104547;
+  --smooth-blue: #273158;
+  --desert-blue: #233D4D;
+}
+
+/* Dark Mode Theme */
+:root.dark {
+  /* Primary Brand Colors (keep consistent) */
+  --primary: #4DBC65;              
+  --primary-hover: #3da554;        
+  --secondary: #3772FF;            
+  --secondary-dark: #1863DC;       
+
+  /* Dark Mode Neutral Palette - Deep Space/Celestial */
+  --background: #1a1a1a;           /* Dark background */
+  --background-alt: #2d2d2d;       /* Darker cards/sections */
+  --surface: rgba(45, 45, 45, 0.7);/* Glassmorphism surface */
+  --foreground: #e4e4e7;           /* Light text */
+  --muted-foreground: #a1a1aa;     /* Slate 400 */
+
+  /* Supporting Colors */
+  --accent: #F2CD5D;               
+  --accent-green: #A1EF8B;         
+  --border: rgba(255, 255, 255, 0.1);
+  --error: #E94F37;                
+  
+  /* Legacy aliases for compatibility */
+  --royal-green: #104547;
+  --smooth-blue: #273158;
+  --desert-blue: #233D4D;
+}
+
+/* Base styles */
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--border);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-inter), sans-serif;
+  color: var(--foreground);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+p {
+  color: var(--muted-foreground);
+}
+
+/* Smooth transitions for interactive elements */
+a, button {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Focus visible styles for accessibility */
+*:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Custom Gradients & Shadows */
+.bg-mesh {
+  background-color: var(--background);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.15) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.1) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
+  animation: mesh-move 15s ease-in-out infinite alternate;
+}
+
+@keyframes mesh-move {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 100% 100%; }
+}
+
+.shadow-ambient {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08); /* Soft ambient shadow */
+}
+:root.dark .shadow-ambient {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4); /* Deeper shadow for dark mode */
+}
+
+.glass-panel {
+  background: var(--surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+}
+

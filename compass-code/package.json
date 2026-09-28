@@ -1,0 +1,162 @@
+{
+  "name": "compass-code",
+  "displayName": "Compass Code",
+  "description": "A Compass-powered coding agent for Visual Studio Code.",
+  "version": "0.1.0",
+  "publisher": "toheedsoudagar",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "compass",
+    "coding assistant",
+    "litellm"
+  ],
+  "activationEvents": [
+    "onView:compassCode.chat",
+    "onCommand:compassCode.connect",
+    "onCommand:compassCode.newTask",
+    "onCommand:compassCode.chooseModel",
+    "onCommand:compassCode.restoreCheckpoint"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "compassCode",
+          "title": "Compass Code",
+          "icon": "media/compass.svg"
+        }
+      ]
+    },
+    "views": {
+      "compassCode": [
+        {
+          "type": "webview",
+          "id": "compassCode.chat",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "compassCode.connect",
+        "title": "Connect",
+        "category": "Compass Code",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "compassCode.disconnect",
+        "title": "Disconnect",
+        "category": "Compass Code",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "compassCode.openAgent",
+        "title": "Open Agent",
+        "category": "Compass Code",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "compassCode.newTask",
+        "title": "New Task",
+        "category": "Compass Code",
+        "icon": "$(add)"
+      },
+      {
+        "command": "compassCode.chooseModel",
+        "title": "Choose Model",
+        "category": "Compass Code",
+        "icon": "$(symbol-parameter)"
+      },
+      {
+        "command": "compassCode.restoreCheckpoint",
+        "title": "Restore Last Checkpoint",
+        "category": "Compass Code",
+        "icon": "$(history)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "compassCode.newTask",
+          "when": "view == compassCode.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "compassCode.chooseModel",
+          "when": "view == compassCode.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "compassCode.restoreCheckpoint",
+          "when": "view == compassCode.chat",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Compass Code",
+      "properties": {
+        "compassCode.apiBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:28000",
+          "description": "Compass API base URL. Do not include /v1."
+        },
+        "compassCode.maxAgentSteps": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "Maximum model/tool iterations in one task."
+        },
+        "compassCode.autoApproveReads": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow workspace read, search, and diagnostics tools without prompting."
+        },
+        "compassCode.autoApproveWrites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow file writes without prompting. Checkpoints are still created."
+        },
+        "compassCode.autoApproveTerminal": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow terminal commands without prompting."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "vscode:prepublish": "npm run check && npm run test && npm run build",
+    "package": "npx vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.44",
+    "dompurify": "^3.2.6",
+    "marked": "^15.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/vscode": "^1.100.0",
+    "@vscode/vsce": "^3.4.2",
+    "esbuild": "^0.25.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2"
+  }
+}

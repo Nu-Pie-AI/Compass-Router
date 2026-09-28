@@ -1,0 +1,74 @@
+[
+  {
+    "slug": "crm",
+    "name": "CRM",
+    "description": "Customer Relationship Management software to manage sales, customer data, and relationships",
+    "icon": "users"
+  },
+  {
+    "slug": "project-management",
+    "name": "Project Management",
+    "description": "Tools for planning, organizing, and managing projects and team workflows",
+    "icon": "clipboard-list"
+  },
+  {
+    "slug": "marketing-automation",
+    "name": "Marketing Automation",
+    "description": "Automate marketing campaigns, email marketing, and lead nurturing",
+    "icon": "megaphone"
+  },
+  {
+    "slug": "analytics",
+    "name": "Analytics",
+    "description": "Data analytics and business intelligence platforms for insights and reporting",
+    "icon": "bar-chart"
+  },
+  {
+    "slug": "communication",
+    "name": "Communication",
+    "description": "Team communication, chat, and collaboration tools",
+    "icon": "message-circle"
+  },
+  {
+    "slug": "hr-payroll",
+    "name": "HR & Payroll",
+    "description": "Human resources management, recruiting, and payroll software",
+    "icon": "briefcase"
+  },
+  {
+    "slug": "accounting",
+    "name": "Accounting",
+    "description": "Accounting, invoicing, and financial management software",
+    "icon": "dollar-sign"
+  },
+  {
+    "slug": "customer-support",
+    "name": "Customer Support",
+    "description": "Help desk, ticketing, and customer support platforms",
+    "icon": "headphones"
+  },
+  {
+    "slug": "ecommerce",
+    "name": "E-commerce",
+    "description": "Online store platforms, payment processing, and e-commerce solutions",
+    "icon": "shopping-cart"
+  },
+  {
+    "slug": "productivity",
+    "name": "Productivity",
+    "description": "Productivity tools, note-taking, and workflow automation",
+    "icon": "zap"
+  },
+  {
+    "slug": "security",
+    "name": "Security",
+    "description": "Cybersecurity, data protection, and compliance software",
+    "icon": "shield"
+  },
+  {
+    "slug": "developer-tools",
+    "name": "Developer Tools",
+    "description": "Development platforms, CI/CD, and coding tools",
+    "icon": "code"
+  }
+]

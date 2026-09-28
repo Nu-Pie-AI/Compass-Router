@@ -1,0 +1,126 @@
+# Compatibility Compose file for users who run from infra/docker.
+# The repository-root docker-compose.yml is the canonical local development stack.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-compass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-compass}
+      POSTGRES_DB: ${POSTGRES_DB:-compass}
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-compass} -d $${POSTGRES_DB:-compass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  litellm:
+    image: ${COMPASS_LITELLM_IMAGE:-compass-litellm:1.99.0-compass.1}
+    build:
+      context: ../../../compass-litellm
+      dockerfile: Dockerfile
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-local-dev-litellm-key}
+      OPENAI_API_KEY: ${COMPASS_LITELLM_OPENAI_API_KEY:-}
+      STORE_MODEL_IN_DB: "False"
+    command: ["--config", "/app/compass/config/local-test-config.yaml", "--port", "4000"]
+    volumes:
+      - ../../../compass-litellm/compass/config/local-test-config.yaml:/app/compass/config/local-test-config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  compass-api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      APP_SECRET: ${APP_SECRET:-dev-compose-secret-change-me}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://compass:compass@postgres:5432/compass}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      COMPASS_WEB_ORIGIN: ${COMPASS_WEB_ORIGIN:-http://localhost:3000}
+      COMPASS_LITELLM_URL: ${COMPASS_LITELLM_URL:-http://litellm:4000}
+      LITELLM_URL: ${LITELLM_URL:-http://litellm:4000}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-local-dev-litellm-key}
+      REQUEST_BODY_LIMIT_BYTES: ${REQUEST_BODY_LIMIT_BYTES:-1000000}
+      LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K: ${LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K:-2}
+      LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K: ${LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K:-6}
+      LOCAL_TEST_WALLET_CREDIT_PAISE: ${LOCAL_TEST_WALLET_CREDIT_PAISE:-50000}
+      LITELLM_TIMEOUT_SECONDS: ${LITELLM_TIMEOUT_SECONDS:-10}
+    ports:
+      - "${COMPASS_API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  compass-web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_COMPASS_API_URL: ${NEXT_PUBLIC_COMPASS_API_URL:-http://localhost:8000}
+      COMPASS_API_INTERNAL_URL: ${COMPASS_API_INTERNAL_URL:-http://compass-api:8000}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "${COMPASS_WEB_PORT:-3000}:3000"
+    depends_on:
+      compass-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:

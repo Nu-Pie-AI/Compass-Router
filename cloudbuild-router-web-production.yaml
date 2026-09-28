@@ -1,0 +1,21 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - NEXT_PUBLIC_COMPASS_API_URL=https://compass-router-api-567790052414.us-central1.run.app
+      - --build-arg
+      - NEXT_PUBLIC_MARKETPLACE_URL=https://compass-marketplace-567790052414.us-central1.run.app
+      - -t
+      - us-central1-docker.pkg.dev/compass-510017/compass/router-web:production
+      - -f
+      - apps/web/Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - us-central1-docker.pkg.dev/compass-510017/compass/router-web:production
+images:
+  - us-central1-docker.pkg.dev/compass-510017/compass/router-web:production
+options:
+  logging: CLOUD_LOGGING_ONLY
