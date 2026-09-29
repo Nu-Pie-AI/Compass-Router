@@ -1,6 +1,8 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
+import { useEffect } from "react";
+import { useSession } from "next-auth/react";
 
 export default function LoginClientWrapper({
   children,
@@ -8,7 +10,22 @@ export default function LoginClientWrapper({
   children: (callbackUrl: string) => React.ReactNode;
 }) {
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const { status } = useSession();
   const callbackUrl = searchParams.get("callbackUrl") || "/";
+
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    if (callbackUrl === "/compass") {
+      window.location.assign(process.env.NEXT_PUBLIC_COMPASS_ROUTER_URL || "https://compass-router-web-567790052414.us-central1.run.app");
+      return;
+    }
+    router.replace(callbackUrl);
+  }, [callbackUrl, router, status]);
+
+  if (status === "authenticated") {
+    return <div className="min-h-screen flex items-center justify-center text-[var(--muted-foreground)]">Opening Compass...</div>;
+  }
 
   return <>{children(callbackUrl)}</>;
 }
