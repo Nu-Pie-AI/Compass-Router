@@ -2,7 +2,7 @@
 
 import { Copy, KeyRound, MoreVertical, Plus, Search, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { formatPaise } from "../lib/api";
+import { apiFetch, formatPaise } from "../lib/api";
 
 type Key = {
   id: string;
@@ -20,11 +20,21 @@ type Key = {
   usage?: { requests: number; tokens: number; spend_paise: number };
 };
 
-type ModelOption = { id: string; status: string; provider?: string; display_name?: string };
+type ModelOption = {
+  id: string;
+  status: string;
+  provider?: string;
+  display_name?: string;
+  provider_model_id?: string;
+  compass_model_id?: string | null;
+  credential_available?: boolean;
+  selectable?: boolean;
+};
 type Dashboard = { teams: { id: string; name: string; is_active: boolean }[]; api_keys: Key[]; models: ModelOption[] };
 
 export type KeyManagerProps = {
   dashboard: Dashboard | null;
+  token: string;
   selectedTeamId: string;
   setSelectedTeamId: (id: string) => void;
   keyName: string;
@@ -58,6 +68,9 @@ export function ApiKeyManager(props: KeyManagerProps) {
   const [editError, setEditError] = useState("");
   const [modelProvider, setModelProvider] = useState("all");
   const [modelSearch, setModelSearch] = useState("");
+  const [catalogModels, setCatalogModels] = useState<ModelOption[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
 
   const keys = (props.dashboard?.api_keys ?? []).filter((key) =>
     (!props.selectedTeamId || key.team_id === props.selectedTeamId) &&
@@ -65,7 +78,37 @@ export function ApiKeyManager(props: KeyManagerProps) {
   );
   const active = keys.filter((key) => key.status === "active");
   const selectedVisible = selected.filter((id) => active.some((key) => key.id === id));
-  const availableModels = props.dashboard?.models ?? [];
+  useEffect(() => {
+    if (!editKey || !props.token) return;
+    let active = true;
+    const teamQuery = props.selectedTeamId ? `?team_id=${encodeURIComponent(props.selectedTeamId)}` : "";
+    void Promise.resolve().then(() => {
+      if (!active) return;
+      setCatalogLoading(true);
+      setCatalogError("");
+      return apiFetch<{ models?: ModelOption[] }>(`/catalog/models${teamQuery}`, {}, props.token)
+        .then((result) => {
+          if (!active) return;
+          const models = (result.models ?? []).map((model) => ({
+            ...model,
+            id: model.compass_model_id ?? model.provider_model_id ?? model.id,
+            selectable: Boolean(model.compass_model_id),
+          }));
+          setCatalogModels(models);
+        })
+        .catch(() => {
+          if (!active) return;
+          setCatalogModels([]);
+          setCatalogError("The full catalog is unavailable. Showing configured models.");
+        })
+        .finally(() => {
+          if (active) setCatalogLoading(false);
+        });
+    });
+    return () => { active = false; };
+  }, [editKey, props.selectedTeamId, props.token]);
+
+  const availableModels = catalogModels.length ? catalogModels : (props.dashboard?.models ?? []).map((model) => ({ ...model, selectable: true }));
   const providers = Array.from(new Set(availableModels.map((model) => model.provider ?? model.id.split("/", 1)[0]))).sort();
   const visibleModels = availableModels.filter((model) => {
     const provider = model.provider ?? model.id.split("/", 1)[0];
@@ -117,7 +160,7 @@ export function ApiKeyManager(props: KeyManagerProps) {
   }
 
   function selectVisibleModels() {
-    setEditModels((current) => Array.from(new Set([...current, ...visibleModels.map((model) => model.id)])));
+    setEditModels((current) => Array.from(new Set([...current, ...visibleModels.filter((model) => model.selectable !== false).map((model) => model.id)])));
   }
 
   function clearVisibleModels() {
@@ -143,7 +186,7 @@ export function ApiKeyManager(props: KeyManagerProps) {
 
     <dialog ref={dialog} className="console-dialog" aria-labelledby="create-key-title"><form onSubmit={(event) => void submit(event)}><div className="dialog-heading"><h2 id="create-key-title">Create API key</h2><button className="console-icon" type="button" aria-label="Close new key dialog" disabled={props.busy} onClick={() => dialog.current?.close()}><X size={20} /></button></div><label>Key name<input autoFocus required maxLength={80} value={props.keyName} onChange={(event) => props.setKeyName(event.target.value)} /></label><label>Attach to team<select required value={props.selectedTeamId} onChange={(event) => props.setSelectedTeamId(event.target.value)}>{(props.dashboard?.teams ?? []).filter((team) => team.is_active).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><p className="field-help">This key starts with access to all available models. You can restrict it later from the key actions menu.</p>{formError ? <p className="dialog-error" role="alert">{formError}</p> : null}<div className="dialog-footer"><button className="console-secondary" disabled={props.busy} type="button" onClick={() => dialog.current?.close()}>Cancel</button><button className="console-primary" disabled={props.busy} type="submit"><Plus size={17} />{props.busy ? "Creating..." : "Create key"}</button></div></form></dialog>
 
-    <dialog ref={editDialog} className="console-dialog model-access-dialog" aria-labelledby="edit-key-title" onClose={() => { setEditKey(null); setModelProvider("all"); setModelSearch(""); }}><form onSubmit={async (event) => { event.preventDefault(); if (!editKey) return; setEditError(""); if (await props.updateKeyModels(editKey.id, editModels)) editDialog.current?.close(); else setEditError("Could not update model access. See the status message on this page."); }}><div className="dialog-heading"><h2 id="edit-key-title">Edit model access</h2><button className="console-icon" type="button" aria-label="Close model access dialog" disabled={props.busy} onClick={() => editDialog.current?.close()}><X size={20} /></button></div><p className="field-help">Leave all models unchecked for unrestricted access. Selecting models restricts this key to those models.</p><fieldset><legend>Allowed models</legend><div className="model-filter-grid"><div className="model-provider-filter" role="group" aria-label="Filter models by provider"><span>Provider</span><div className="model-provider-chips"><button type="button" className={modelProvider === "all" ? "selected" : ""} aria-pressed={modelProvider === "all"} onClick={() => setModelProvider("all")}>All providers</button>{providers.map((provider) => <button type="button" className={modelProvider === provider ? "selected" : ""} aria-pressed={modelProvider === provider} key={provider} onClick={() => setModelProvider(provider)}>{provider}</button>)}</div></div><label className="model-search-field"><Search size={16} /><input aria-label="Search models" placeholder="Search models or providers..." value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} /></label></div><div className="model-selection-toolbar"><span>{visibleModels.length} model{visibleModels.length === 1 ? "" : "s"} shown - {editModels.length} selected</span><div><button type="button" className="console-link" disabled={!visibleModels.length} onClick={selectVisibleModels}>Select shown</button><button type="button" className="console-link" disabled={!visibleModels.some((model) => editModels.includes(model.id))} onClick={clearVisibleModels}>Clear shown</button></div></div><div className="model-options">{visibleModels.map((model) => { const provider = model.provider ?? model.id.split("/", 1)[0]; return <label key={model.id}><input type="checkbox" checked={editModels.includes(model.id)} onChange={() => toggleModel(model.id)} /><span><strong>{model.display_name ?? model.id}</strong><code>{model.id}</code><small>{provider} - {model.status}</small></span></label>; })}{!visibleModels.length ? <p className="field-help">No models match this provider and search.</p> : null}</div></fieldset>{editError ? <p className="dialog-error" role="alert">{editError}</p> : null}<div className="dialog-footer"><button className="console-secondary" disabled={props.busy} type="button" onClick={() => editDialog.current?.close()}>Cancel</button><button className="console-primary" disabled={props.busy} type="submit"><ShieldCheck size={17} />{props.busy ? "Saving..." : "Save access"}</button></div></form></dialog>
+    <dialog ref={editDialog} className="console-dialog model-access-dialog" aria-labelledby="edit-key-title" onClose={() => { setEditKey(null); setModelProvider("all"); setModelSearch(""); setCatalogModels([]); }}><form onSubmit={async (event) => { event.preventDefault(); if (!editKey) return; setEditError(""); if (await props.updateKeyModels(editKey.id, editModels)) editDialog.current?.close(); else setEditError("Could not update model access. See the status message on this page."); }}><div className="dialog-heading"><h2 id="edit-key-title">Edit model access</h2><button className="console-icon" type="button" aria-label="Close model access dialog" disabled={props.busy} onClick={() => editDialog.current?.close()}><X size={20} /></button></div><p className="field-help">Leave all models unchecked for unrestricted access. Selecting models restricts this key to those models.</p><fieldset><legend>Allowed models</legend><div className="model-access-filter-grid"><div className="model-access-provider-filter" role="group" aria-label="Filter models by provider"><span>Provider</span><div className="model-access-provider-chips"><button type="button" className={modelProvider === "all" ? "selected" : ""} aria-pressed={modelProvider === "all"} onClick={() => setModelProvider("all")}>All providers</button>{providers.map((provider) => <button type="button" className={modelProvider === provider ? "selected" : ""} aria-pressed={modelProvider === provider} key={provider} onClick={() => setModelProvider(provider)}>{provider}</button>)}</div></div><label className="model-access-search"><Search size={16} /><input aria-label="Search models" placeholder="Search models or providers..." value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} /></label></div><div className="model-selection-toolbar"><span>{catalogLoading ? "Loading full catalog..." : `${visibleModels.length} model${visibleModels.length === 1 ? "" : "s"} shown - ${editModels.length} selected`}</span><div><button type="button" className="console-link" disabled={!visibleModels.some((model) => model.selectable !== false)} onClick={selectVisibleModels}>Select shown</button><button type="button" className="console-link" disabled={!visibleModels.some((model) => editModels.includes(model.id))} onClick={clearVisibleModels}>Clear shown</button></div></div>{catalogError ? <p className="field-help">{catalogError}</p> : null}<div className="model-options">{visibleModels.map((model) => { const provider = model.provider ?? model.id.split("/", 1)[0]; const selectable = model.selectable !== false; return <label key={model.id} className={!selectable ? "model-catalog-only" : undefined}><input type="checkbox" disabled={!selectable} checked={editModels.includes(model.id)} onChange={() => toggleModel(model.id)} /><span><strong>{model.display_name ?? model.id}</strong><code>{model.id}</code><small>{provider} - {selectable ? "available" : "catalog only; activate it in Models first"}</small></span></label>; })}{!visibleModels.length ? <p className="field-help">No models match this provider and search.</p> : null}</div></fieldset>{editError ? <p className="dialog-error" role="alert">{editError}</p> : null}<div className="dialog-footer"><button className="console-secondary" disabled={props.busy} type="button" onClick={() => editDialog.current?.close()}>Cancel</button><button className="console-primary" disabled={props.busy} type="submit"><ShieldCheck size={17} />{props.busy ? "Saving..." : "Save access"}</button></div></form></dialog>
 
     <dialog ref={revokeDialog} className="console-dialog" aria-labelledby="revoke-key-title" onClose={() => setRevokeIds([])}><h2 id="revoke-key-title">Revoke {revokeIds.length === 1 ? "API key" : `${revokeIds.length} API keys`}?</h2><p>Applications using these keys will lose access immediately. This cannot be undone.</p><div className="dialog-footer"><button className="console-secondary" disabled={props.busy} onClick={() => revokeDialog.current?.close()}>Cancel</button><button className="console-primary danger-button" disabled={props.busy} onClick={() => void revoke()}><Trash2 size={17} />{props.busy ? "Revoking..." : "Revoke"}</button></div></dialog>
   </>;
