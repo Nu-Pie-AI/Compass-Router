@@ -115,7 +115,7 @@
 /* Desktop navigation occupies the full left rail; the header paints above it. */
 @media(min-width:761px){
   .console-shell{display:block;overflow-x:hidden}
-  .console-sidebar{position:fixed;top:0;right:auto;bottom:0;left:0;width:248px;height:auto;box-sizing:border-box;padding-top:100px!important;z-index:35;visibility:hidden;transform:translateX(-105%);box-shadow:12px 0 30px rgba(30,34,44,.12)}
+  .console-sidebar{position:fixed;top:var(--console-topbar-height,76px);right:auto;bottom:0;left:0;width:248px;height:calc(100dvh - var(--console-topbar-height,76px));box-sizing:border-box;overflow-y:auto;padding-top:16px!important;padding-bottom:28px!important;z-index:35;visibility:hidden;transform:translateX(-105%);box-shadow:12px 0 30px rgba(30,34,44,.12)}
   .console-sidebar.is-open{visibility:visible;transform:translateX(0)}
   .console-content{margin-left:0!important}
   .console-shell.is-menu-open .console-content{margin-left:248px!important}
