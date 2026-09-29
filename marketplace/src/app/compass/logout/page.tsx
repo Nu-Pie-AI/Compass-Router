@@ -2,11 +2,12 @@
 
 import { useEffect } from "react";
 import { signOut } from "next-auth/react";
+import { compassRouterUrl } from "@/lib/product-urls";
 
 export default function CompassLogoutPage() {
   useEffect(() => {
     void signOut({ redirect: false }).finally(() => {
-      const routerUrl = new URL(process.env.NEXT_PUBLIC_COMPASS_ROUTER_URL || "https://compass-router-web-567790052414.us-central1.run.app");
+      const routerUrl = new URL(compassRouterUrl);
       routerUrl.searchParams.set("signedOut", "1");
       window.location.assign(routerUrl.toString());
     });

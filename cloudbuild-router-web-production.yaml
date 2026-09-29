@@ -5,7 +5,7 @@ steps:
       - --build-arg
       - NEXT_PUBLIC_COMPASS_API_URL=https://compass-router-api-567790052414.us-central1.run.app
       - --build-arg
-      - NEXT_PUBLIC_MARKETPLACE_URL=https://compass-marketplace-567790052414.us-central1.run.app
+      - NEXT_PUBLIC_MARKETPLACE_URL=https://compass-marketplace-c4psf2dvua-uc.a.run.app
       - -t
       - us-central1-docker.pkg.dev/compass-510017/compass/router-web:production
       - -f

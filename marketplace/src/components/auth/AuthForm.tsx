@@ -56,7 +56,7 @@ function SignupForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: data.name,
-          email: data.email,
+          email: data.email.trim().toLowerCase(),
           password: data.password,
         }),
       });
@@ -71,7 +71,7 @@ function SignupForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
       }
 
       const signInResult = await signIn("credentials", {
-        email: data.email,
+        email: data.email.trim().toLowerCase(),
         password: data.password,
         callbackUrl,
         redirect: false,
@@ -90,7 +90,7 @@ function SignupForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
       const role = session?.user?.role || "user";
 
       toastSuccess("Account created successfully");
-      if (role === "admin") {
+      if (role === "admin" || role === "super_admin") {
         router.push("/admin");
       } else if (role === "vendor") {
         router.push("/vendors/dashboard");
@@ -194,7 +194,7 @@ function SignupForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
   );
 }
 
-function LoginForm() {
+function LoginForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
   const [isLoading, setIsLoading] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const router = useRouter();
@@ -213,8 +213,9 @@ function LoginForm() {
 
     try {
       const result = await signIn("credentials", {
-        email: data.email,
+        email: data.email.trim().toLowerCase(),
         password: data.password,
+        callbackUrl,
         redirect: false,
       });
 
@@ -237,12 +238,12 @@ function LoginForm() {
       const role = session?.user?.role || "user";
 
       toastSuccess("Logged in successfully");
-      if (role === "admin") {
+      if (role === "admin" || role === "super_admin") {
         router.push("/admin");
       } else if (role === "vendor") {
         router.push("/vendors/dashboard");
       } else {
-        router.push("/");
+        router.push(callbackUrl);
       }
     } catch (error) {
       setServerError("An unexpected error occurred");
@@ -299,7 +300,7 @@ function LoginForm() {
         {isLoading ? "Loading..." : "Log In"}
       </button>
 
-      <OAuthButtons callbackUrl="/" />
+      <OAuthButtons callbackUrl={callbackUrl} />
     </form>
   );
 }
@@ -331,5 +332,5 @@ function OAuthButtons({ callbackUrl }: { callbackUrl: string }) {
 }
 
 export default function AuthForm({ mode, callbackUrl = "/" }: AuthFormProps) {
-  return mode === "signup" ? <SignupForm callbackUrl={callbackUrl} /> : <LoginForm />;
+  return mode === "signup" ? <SignupForm callbackUrl={callbackUrl} /> : <LoginForm callbackUrl={callbackUrl} />;
 }

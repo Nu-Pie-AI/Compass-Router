@@ -5,23 +5,28 @@ export async function proxy(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
 
   const { pathname } = req.nextUrl;
+  const callbackUrl = `${pathname}${req.nextUrl.search}`;
+  const loginRedirect = () => {
+    const loginUrl = new URL("/login", req.url);
+    loginUrl.searchParams.set("callbackUrl", callbackUrl);
+    return NextResponse.redirect(loginUrl);
+  };
+  const isAdmin = token?.role === "admin" || token?.role === "super_admin";
 
   if (pathname.startsWith("/admin")) {
-    if (!token || token.role !== "admin") {
-      return NextResponse.redirect(new URL("/login", req.url));
+    if (!token || !isAdmin) {
+      return loginRedirect();
     }
   }
 
   if (pathname.startsWith("/account")) {
     if (!token) {
-      return NextResponse.redirect(new URL("/login", req.url));
+      return loginRedirect();
     }
   }
 
   if (pathname.startsWith("/compass") && !token) {
-    const loginUrl = new URL("/login", req.url);
-    loginUrl.searchParams.set("callbackUrl", pathname);
-    return NextResponse.redirect(loginUrl);
+    return loginRedirect();
   }
 
   if (pathname.startsWith("/partners")) {
@@ -29,7 +34,7 @@ export async function proxy(req: NextRequest) {
       pathname === "/partners" || pathname.startsWith("/partners/register");
 
     if (!isPublicPartnerRoute && (!token || token.role !== "partner")) {
-      return NextResponse.redirect(new URL("/login", req.url));
+      return loginRedirect();
     }
   }
 
@@ -42,7 +47,7 @@ export async function proxy(req: NextRequest) {
     if (!isPublicVendorRoute) {
       // Protected vendor routes require vendor role
       if (!token || token.role !== "vendor") {
-        return NextResponse.redirect(new URL("/login", req.url));
+        return loginRedirect();
       }
     }
   }

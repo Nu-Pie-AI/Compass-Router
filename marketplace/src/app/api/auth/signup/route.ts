@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { notifyAdmin, sendSignupConfirmation } from "@/lib/email";
+import prisma from "@/lib/prisma";
 
 export const runtime = "nodejs";
-
-const prisma = new PrismaClient();
 
 const signupSchema = z.object({
   email: z.string().email(),
@@ -17,7 +15,10 @@ const signupSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { email, password, name } = signupSchema.parse(body);
+    const parsed = signupSchema.parse(body);
+    const email = parsed.email.trim().toLowerCase();
+    const { password } = parsed;
+    const name = parsed.name?.trim() || undefined;
 
     const existingUser = await prisma.user.findUnique({
       where: { email },
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    await Promise.all([
+    const notifications = await Promise.allSettled([
       sendSignupConfirmation(user.email, user.name),
       notifyAdmin(
         "New user signup",
@@ -49,6 +50,11 @@ export async function POST(req: NextRequest) {
         `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "http://localhost:3000"}/admin`
       ),
     ]);
+    for (const notification of notifications) {
+      if (notification.status === "rejected") {
+        console.error("Signup notification failed:", notification.reason);
+      }
+    }
 
     return NextResponse.json(
       {

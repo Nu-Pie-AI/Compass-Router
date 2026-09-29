@@ -48,7 +48,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
 
     try {
       const result = await signIn('credentials', {
-        email: data.email,
+        email: data.email.trim().toLowerCase(),
         password: data.password,
         callbackUrl,
         redirect: false,
@@ -103,7 +103,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
         return;
       }
 
-      if (role === 'admin') {
+      if (role === 'admin' || role === 'super_admin') {
         router.push('/admin');
         return;
       }
