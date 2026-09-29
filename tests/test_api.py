@@ -18,9 +18,9 @@ os.environ["PUBLIC_SIGNUP_ENABLED"] = "true"
 from app.db import Base, get_db  # noqa: E402
 from app.errors import compass_error  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import ApiKey, ApiKeyModel, ByokCredential, LlmRequest, Organization, OrganizationMember, Provider, ProviderAttempt, ProviderCredential, Team, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
+from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
 from app.security import hash_api_key  # noqa: E402
-from app.services import LiteLLMClient, debit_wallet, seed_defaults  # noqa: E402
+from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks  # noqa: E402
 import app.services as services  # noqa: E402
 
 engine = create_engine(os.environ["DATABASE_URL"], connect_args={"check_same_thread": False})
@@ -344,6 +344,79 @@ def test_idempotent_debit_does_not_double_charge():
     assert second.balance_after == 900
 
 
+def test_development_billing_completion_is_idempotent_and_creates_invoice():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    order_response = client.post("/billing/orders", json={"team_id": team["id"], "amount_paise": 2500}, headers=headers)
+    assert order_response.status_code == 200, order_response.text
+    order = order_response.json()
+    completed = client.post(f"/billing/orders/{order['id']}/complete", json={"confirmation": "test"}, headers=headers)
+    assert completed.status_code == 200, completed.text
+    repeated = client.post(f"/billing/orders/{order['id']}/complete", json={"confirmation": "test"}, headers=headers)
+    assert repeated.status_code == 200, repeated.text
+    wallet = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()
+    ledger = client.get("/wallet/ledger", params={"team_id": team["id"]}, headers=headers).json()
+    invoices = client.get("/billing/invoices", params={"team_id": team["id"]}, headers=headers)
+    assert wallet["balance_paise"] == 2500
+    assert len([row for row in ledger if row["reference_type"] == "payment_order"]) == 1
+    assert invoices.status_code == 200
+    assert len(invoices.json()) == 1
+    assert invoices.json()[0]["total_paise"] == 2500
+    db = TestingSessionLocal()
+    assert db.query(BillingInvoice).filter(BillingInvoice.order_id == order["id"]).count() == 1
+    db.close()
+
+
+def test_razorpay_webhook_is_signature_checked_and_idempotent(monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module.settings, "razorpay_webhook_secret", "webhook-test-secret")
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    db = TestingSessionLocal()
+    order = PaymentOrder(team_id=team["id"], provider="razorpay", provider_order_id="order_test_123", amount_paise=3000, currency="INR", status="created")
+    db.add(order)
+    db.commit()
+    order_id = order.id
+    db.close()
+    import hashlib
+    import hmac
+    import json
+
+    payload = {"id": "evt_test_123", "event": "payment.captured", "payload": {"payment": {"entity": {"id": "pay_test_123", "order_id": "order_test_123", "amount": 3000, "currency": "INR", "status": "captured"}}}}
+    raw = json.dumps(payload).encode()
+    signature = hmac.new(b"webhook-test-secret", raw, hashlib.sha256).hexdigest()
+    webhook_headers = {"X-Razorpay-Signature": signature, "X-Razorpay-Event-Id": "evt_test_123"}
+    first = client.post("/webhooks/razorpay", content=raw, headers=webhook_headers)
+    second = client.post("/webhooks/razorpay", content=raw, headers=webhook_headers)
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["duplicate"] is True
+    wallet = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()
+    assert wallet["balance_paise"] == 3000
+    db = TestingSessionLocal()
+    assert db.query(PaymentEvent).filter(PaymentEvent.event_id == "evt_test_123").count() == 1
+    assert db.query(PaymentOrder).filter(PaymentOrder.id == order_id, PaymentOrder.status == "completed").count() == 1
+    db.close()
+
+
+def test_development_refund_reverses_wallet_and_reconciliation_matches():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    created = client.post("/billing/orders", json={"team_id": team["id"], "amount_paise": 4000}, headers=headers).json()
+    assert client.post(f"/billing/orders/{created['id']}/complete", json={"confirmation": "test"}, headers=headers).status_code == 200
+    refund = client.post(f"/billing/orders/{created['id']}/refund", json={"reason": "test refund"}, headers=headers)
+    assert refund.status_code == 200, refund.text
+    assert refund.json()["status"] == "processed"
+    wallet = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()
+    assert wallet["balance_paise"] == 0
+    refunds = client.get("/billing/refunds", params={"team_id": team["id"]}, headers=headers).json()
+    assert len(refunds) == 1
+    reconciliation = client.get("/admin/billing/reconciliation", headers=headers)
+    assert reconciliation.status_code == 200, reconciliation.text
+    assert reconciliation.json()["missing_credit_order_ids"] == []
+
+
 def test_unknown_and_not_allowed_models(monkeypatch):
     monkeypatch.setattr(LiteLLMClient, "chat_completion", fake_provider)
     _, _, _, key = provision_beta_key()
@@ -378,6 +451,11 @@ def test_provider_failure_timeout_and_malformed_response(monkeypatch):
         response = chat(key)
         assert response.status_code in {502, 503, 504}
         assert response.json()["detail"]["error"]["code"] == code
+        db = TestingSessionLocal()
+        db.query(ProviderHealthCheck).delete()
+        db.query(Provider).update({Provider.status: "healthy"})
+        db.commit()
+        db.close()
     db = TestingSessionLocal()
     errors = db.query(LlmRequest).filter(LlmRequest.team_id == team["id"], LlmRequest.status == "error").all()
     db.close()
@@ -415,6 +493,109 @@ def test_streaming_response_format(monkeypatch):
     assert "text/event-stream" in response.headers["content-type"]
     assert "chat.completion.chunk" in response.text
     assert "data: [DONE]" in response.text
+
+
+def test_responses_api_uses_chat_capability_and_records_usage(monkeypatch):
+    async def fake_json(self, endpoint, payload):  # noqa: ARG001
+        assert endpoint == "/v1/responses"
+        assert payload["model"] == "local-test-chat"
+        return {
+            "id": "resp_test",
+            "object": "response",
+            "model": payload["model"],
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Compass response"}]}],
+            "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+        }
+
+    monkeypatch.setattr(LiteLLMClient, "request_json", fake_json)
+    _, team, _, key = provision_beta_key()
+    response = client.post(
+        "/v1/responses",
+        json={"model": "openai/gpt-5", "input": "Hello Compass", "max_output_tokens": 32},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["object"] == "response"
+    assert response.json()["compass"]["team_id"] == team["id"]
+    assert response.json()["usage"]["total_tokens"] == 7
+
+
+def test_model_capability_mismatch_is_rejected_before_provider_call(monkeypatch):
+    async def unexpected_provider_call(self, endpoint, payload):  # noqa: ARG001
+        raise AssertionError("provider should not be called for an incompatible model")
+
+    monkeypatch.setattr(LiteLLMClient, "request_json", unexpected_provider_call)
+    _, _, _, key = provision_beta_key()
+    response = client.post(
+        "/v1/embeddings",
+        json={"model": "openai/gpt-5", "input": "Hello Compass"},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "model_capability_mismatch"
+
+
+def test_embeddings_api_routes_an_enabled_embedding_model(monkeypatch):
+    db = TestingSessionLocal()
+    provider = db.query(Provider).filter(Provider.name == "openai").one()
+    model_id = "openai/test-embedding"
+    if db.get(ModelCatalog, model_id) is None:
+        db.add(ModelCatalog(id=model_id, provider_id=provider.id, provider_model_id="local-test-embedding", display_name="Test Embedding", capabilities="embeddings", context_window=8192, input_price_paise_per_1k=2, output_price_paise_per_1k=0))
+        db.commit()
+    db.close()
+
+    async def fake_json(self, endpoint, payload):  # noqa: ARG001
+        assert endpoint == "/v1/embeddings"
+        return {"object": "list", "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}], "model": payload["model"], "usage": {"prompt_tokens": 2, "total_tokens": 2}}
+
+    monkeypatch.setattr(LiteLLMClient, "request_json", fake_json)
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    member = create_member_fixture(headers, team["id"])
+    key = create_key_fixture(headers, team["id"], member["id"], models=["openai/test-embedding"])["key"]
+    credit(headers, team["id"], 1000)
+    response = client.post(
+        "/v1/embeddings",
+        json={"model": "openai/test-embedding", "input": "Compass models"},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["object"] == "embedding"
+    assert response.json()["compass"]["provider"] == "openai"
+
+
+def test_provider_circuit_breaker_opens_after_three_failures():
+    db = TestingSessionLocal()
+    provider = db.query(Provider).filter(Provider.name == "openai").one()
+    for _ in range(3):
+        record_provider_health(db, provider, success=False, latency_ms=25, error_code="provider_unavailable")
+        db.flush()
+    assert _circuit_is_open(db, provider.id) is True
+    db.rollback()
+    db.close()
+
+
+def test_streaming_response_preserves_tool_calls_and_reasoning_text():
+    response = {
+        "id": "chatcmpl-tool-test",
+        "model": "demo",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "Inspecting the workspace.",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"README.md"}'}}],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+    }
+    chunks = "".join(stream_openai_chunks(response))
+    assert "Inspecting the workspace." in chunks
+    assert '"name": "read_file"' in chunks
+    assert '"arguments": "{\\"path\\":\\"README.md\\"}"' in chunks
 
 
 def test_admin_overview_and_dashboard_local_mode():
@@ -546,3 +727,85 @@ def db_count(model) -> int:
     count = db.query(model).count()
     db.close()
     return count
+
+
+def test_logout_revokes_existing_session_token():
+    headers = admin_headers()
+    token = headers["Authorization"].removeprefix("Bearer ")
+    signed_out = client.post("/auth/logout", headers=headers)
+    assert signed_out.status_code == 200
+    rejected = client.get("/me", headers={"Authorization": f"Bearer {token}"})
+    assert rejected.status_code == 401
+
+
+def test_team_limits_are_visible_and_admin_editable():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    initial = client.get(f"/teams/{team['id']}/limits", headers=headers)
+    assert initial.status_code == 200
+    update = client.patch(
+        f"/admin/teams/{team['id']}/limits",
+        json={"requests_per_minute": 12, "tokens_per_minute": 1200, "daily_spend_limit_paise": 900, "monthly_spend_limit_paise": 9000},
+        headers=headers,
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["daily_spend_limit_paise"] == 900
+    assert client.get(f"/teams/{team['id']}/limits", headers=headers).json()["requests_per_minute"] == 12
+    db = TestingSessionLocal()
+    assert db.query(TeamLimit).filter(TeamLimit.team_id == team["id"], TeamLimit.tokens_per_minute == 1200).count() == 1
+    db.close()
+
+
+def test_responses_streaming_and_batch_lifecycle(monkeypatch):
+    async def fake_json(self, endpoint, payload):  # noqa: ARG001
+        return {"id": "resp_test_1" if endpoint == "/v1/responses" else "batch_test_1", "object": "response", "status": "submitted", "model": payload["model"], "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}
+
+    monkeypatch.setattr(LiteLLMClient, "request_json", fake_json)
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    key = create_key_fixture(headers, team["id"], models=["openai/gpt-5"])["key"]
+    credit(headers, team["id"], 5000)
+    key_headers = {"Authorization": f"Bearer {key}"}
+    streamed = client.post("/v1/responses", json={"model": "openai/gpt-5", "input": "Hello", "stream": True}, headers=key_headers)
+    assert streamed.status_code == 200, streamed.text
+    assert "event: response.completed" in streamed.text
+    created = client.post("/v1/batches", json={"model": "openai/gpt-5", "input_file_id": "file_test", "endpoint": "/v1/responses"}, headers=key_headers)
+    assert created.status_code == 200, created.text
+    batch_id = created.json()["compass"]["batch_id"]
+    status = client.get(f"/v1/batches/{batch_id}", headers=key_headers)
+    assert status.status_code == 200
+    assert status.json()["id"] == "batch_test_1"
+    cancelled = client.post(f"/v1/batches/{batch_id}/cancel", headers=key_headers)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    db = TestingSessionLocal()
+    assert db.query(BatchJob).filter(BatchJob.id == batch_id, BatchJob.status == "cancelled").count() == 1
+    db.close()
+
+
+def test_model_governance_policies_and_routing_alias(monkeypatch):
+    async def fake_json(self, endpoint, payload):  # noqa: ARG001
+        return {"id": "governance_test", "object": "chat.completion", "model": payload["model"], "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    monkeypatch.setattr(LiteLLMClient, "request_json", fake_json)
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    key = create_key_fixture(headers, team["id"], models=["openai/gpt-5"])["key"]
+    credit(headers, team["id"], 5000)
+    updated = client.put(f"/teams/{team['id']}/model-policies/openai/gpt-5", json={"enabled": False, "requests_per_minute": 1, "daily_spend_limit_paise": 100, "monthly_spend_limit_paise": 1000}, headers=headers)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["enabled"] is False
+    blocked = client.post("/v1/chat/completions", json={"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}, headers={"Authorization": f"Bearer {key}"})
+    assert blocked.status_code == 403
+    enabled = client.put(f"/teams/{team['id']}/model-policies/openai/gpt-5", json={"enabled": True, "requests_per_minute": 5, "daily_spend_limit_paise": 1000, "monthly_spend_limit_paise": 10000}, headers=headers)
+    assert enabled.status_code == 200, enabled.text
+    policy = client.put("/admin/router/policies/fast", json={"candidate_models": ["openai/gpt-5"], "enabled": True}, headers=headers)
+    assert policy.status_code == 200, policy.text
+    assert client.get("/admin/router/policies", headers=headers).json()[0]["alias"] == "fast"
+    routed = client.post("/v1/chat/completions", json={"model": "fast", "messages": [{"role": "user", "content": "hi"}]}, headers={"Authorization": f"Bearer {key}"})
+    assert routed.status_code == 200, routed.text
+    assert routed.json()["model"] == "fast"
+    db = TestingSessionLocal()
+    assert db.query(ModelPolicy).filter(ModelPolicy.team_id == team["id"], ModelPolicy.model_id == "openai/gpt-5").count() == 1
+    assert db.query(RoutingPolicy).filter(RoutingPolicy.alias == "fast").count() == 1
+    db.close()

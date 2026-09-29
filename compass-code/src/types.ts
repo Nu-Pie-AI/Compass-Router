@@ -1,6 +1,11 @@
-export type AgentMode = "ask" | "plan" | "code" | "debug";
+export type AgentMode = "ask" | "edit" | "agent" | "plan" | "debug" | "code";
+export type ProviderKind = "compass" | "openai-compatible" | "ollama";
 export type WorkStyle = "review" | "autonomous";
-export type ToolKind = "read" | "write" | "execute";
+export type ToolKind = "read" | "write" | "execute" | "network";
+export type PermissionDecision = "once" | "session" | "always" | "session-deny" | "deny";
+export type GoalStatus = "planning" | "working" | "waiting" | "testing" | "paused" | "completed" | "failed" | "cancelled";
+export type GoalStepStatus = "pending" | "active" | "completed" | "failed";
+export type GoalActivityStatus = "running" | "completed" | "failed" | "waiting";
 
 export type CompassModel = {
   id: string;
@@ -59,11 +64,34 @@ export type ChatCompletion = {
   };
 };
 
+export type ChatCompletionStreamDelta = {
+  id?: string;
+  model?: string;
+  choices?: Array<{
+    index: number;
+    delta?: {
+      role?: "assistant";
+      content?: string | null;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: "function";
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+    finish_reason?: string | null;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  compass?: ChatCompletion["compass"];
+};
+
 export type TranscriptItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "status" | "error";
   content: string;
   toolName?: string;
+  path?: string;
+  streaming?: boolean;
   meta?: {
     model?: string;
     requestId?: string;
@@ -73,10 +101,58 @@ export type TranscriptItem = {
   };
 };
 
+export type GoalPlanStep = {
+  id: string;
+  title: string;
+  status: GoalStepStatus;
+  detail?: string;
+  updatedAt: number;
+};
+
+export type GoalActivity = {
+  id: string;
+  kind: "tool" | "status" | "error" | "plan";
+  title: string;
+  detail?: string;
+  status: GoalActivityStatus;
+  toolName?: string;
+  path?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type GoalFileChange = {
+  path: string;
+  addedLines: number;
+  removedLines: number;
+};
+
+export type AgentGoal = {
+  id: string;
+  title: string;
+  status: GoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number;
+  finishedAt?: number;
+  elapsedMs: number;
+  model?: string;
+  mode?: AgentMode;
+  contextReferences?: string[];
+  plan: GoalPlanStep[];
+  activity: GoalActivity[];
+  changedFiles: GoalFileChange[];
+  followUpCount: number;
+};
+
 export type ConversationSummary = {
   id: string;
   title: string;
   updatedAt: number;
+  model?: string;
+  mode?: AgentMode;
+  contextReferences?: string[];
+  goal?: AgentGoal;
 };
 
 export type PermissionRequest = {
@@ -85,9 +161,17 @@ export type PermissionRequest = {
   kind: ToolKind;
   summary: string;
   arguments: Record<string, unknown>;
+  decisions?: PermissionDecision[];
+  preview?: string;
+  changeId?: string;
+  files?: string[];
+  addedLines?: number;
+  removedLines?: number;
 };
 
 export type ToolDefinition = {
+  permission?: ToolKind;
+  output?: Record<string, unknown>;
   type: "function";
   function: {
     name: string;

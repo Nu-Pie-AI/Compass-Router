@@ -1,11 +1,29 @@
 import * as vscode from "vscode";
 
-import type { AccountSummary, ChatCompletion, ChatMessage, CompassModel, ToolDefinition } from "./types.js";
+import type { AccountSummary, ChatCompletion, ChatCompletionStreamDelta, ChatMessage, CompassModel, ProviderKind, ToolDefinition } from "./types.js";
+import { OllamaProvider, OpenAICompatibleProvider, providerTools, type ModelProvider } from "./providers.js";
 import { normalizeBaseUrl } from "./utils.js";
 
 const secretKey = "compassCode.apiKey";
+const ollamaEnabledKey = "compassCode.ollamaEnabled";
 
-export class CompassClient {
+function contentText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const text = value.map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object") {
+        const item = part as { text?: unknown; content?: unknown };
+        return typeof item.text === "string" ? item.text : typeof item.content === "string" ? item.content : "";
+      }
+      return "";
+    }).join("");
+    return text || null;
+  }
+  return null;
+}
+
+export class CompassClient implements ModelProvider {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   get baseUrl(): string {
@@ -13,17 +31,30 @@ export class CompassClient {
   }
 
   async hasCredential(): Promise<boolean> {
+    const provider = vscode.workspace.getConfiguration("compassCode").get<string>("provider", "compass");
+    if (provider === "ollama") return this.context.globalState.get<boolean>(ollamaEnabledKey, false);
     return Boolean(await this.context.secrets.get(secretKey));
   }
 
-  async saveConnection(baseUrl: string, apiKey: string): Promise<void> {
+  async saveConnection(baseUrl: string, apiKey: string, provider?: ProviderKind): Promise<void> {
     const normalized = normalizeBaseUrl(baseUrl);
     await vscode.workspace.getConfiguration("compassCode").update("apiBaseUrl", normalized, vscode.ConfigurationTarget.Global);
-    await this.context.secrets.store(secretKey, apiKey.trim());
+    if (apiKey.trim()) await this.context.secrets.store(secretKey, apiKey.trim());
+    else await this.context.secrets.delete(secretKey);
+    const selectedProvider = provider ?? vscode.workspace.getConfiguration("compassCode").get<ProviderKind>("provider", "compass");
+    await this.context.globalState.update(ollamaEnabledKey, selectedProvider === "ollama");
   }
 
   async disconnect(): Promise<void> {
     await this.context.secrets.delete(secretKey);
+    await this.context.globalState.update(ollamaEnabledKey, false);
+  }
+
+  async provider(kind: ProviderKind): Promise<ModelProvider> {
+    if (kind === "compass") return this;
+    const apiKey = await this.context.secrets.get(secretKey);
+    if (kind === "ollama") return new OllamaProvider(this.baseUrl);
+    return new OpenAICompatibleProvider({ baseUrl: this.baseUrl, apiKey });
   }
 
   async models(signal?: AbortSignal): Promise<CompassModel[]> {
@@ -48,7 +79,7 @@ export class CompassClient {
       max_tokens: options.maxTokens ?? 4096
     };
     if (options.tools?.length) {
-      body.tools = options.tools;
+      body.tools = providerTools(options.tools);
       body.tool_choice = "auto";
     }
     return this.request<ChatCompletion>("/v1/chat/completions", {
@@ -58,34 +89,113 @@ export class CompassClient {
     });
   }
 
+  async *stream(
+    model: string,
+    messages: ChatMessage[],
+    options: { tools?: ToolDefinition[]; signal?: AbortSignal; maxTokens?: number } = {}
+  ): AsyncGenerator<ChatCompletionStreamDelta> {
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      // The Compass API currently returns a completed OpenAI response and may
+      // synthesize SSE without preserving provider tool calls. One-shot mode
+      // keeps the full assistant message and tool loop intact.
+      stream: false,
+      temperature: 0.2,
+      max_tokens: options.maxTokens ?? 4096
+    };
+    if (options.tools?.length) {
+      body.tools = options.tools;
+      body.tool_choice = "auto";
+    }
+    const response = await this.rawRequest("/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: options.signal
+    });
+    if (!response.body) throw new Error("Compass returned a response without a stream.");
+
+    if (!(response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+      const completion = await response.json() as ChatCompletion;
+      const message = completion.choices[0]?.message;
+      const extendedMessage = message as (ChatCompletion["choices"][number]["message"] & { reasoning_content?: unknown }) | undefined;
+      yield {
+        id: completion.id,
+        model: completion.model,
+          choices: [{ index: 0, delta: { role: "assistant", content: contentText(message?.content) ?? contentText(extendedMessage?.reasoning_content), tool_calls: message?.tool_calls?.map((call, index) => ({ index, id: call.id, type: "function" as const, function: call.function })) }, finish_reason: completion.choices[0]?.finish_reason }],
+        usage: completion.usage,
+        compass: completion.compass
+      };
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const next = await reader.read();
+        buffer += decoder.decode(next.value ?? new Uint8Array(), { stream: !next.done });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") return;
+          try {
+            yield JSON.parse(payload) as ChatCompletionStreamDelta;
+          } catch {
+            throw new Error("Compass returned an invalid streaming response.");
+          }
+        }
+        if (next.done) break;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   private async request<T>(pathname: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.rawRequest(pathname, init);
+    return response.json() as Promise<T>;
+  }
+
+  private async rawRequest(pathname: string, init: RequestInit = {}): Promise<Response> {
     const apiKey = await this.context.secrets.get(secretKey);
-    if (!apiKey) throw new Error("Connect a Compass API key first.");
+    const provider = vscode.workspace.getConfiguration("compassCode").get<string>("provider", "compass");
+    if (!apiKey && provider !== "ollama") throw new Error("Connect an API key first.");
     let response: Response;
     try {
+      const timeout = AbortSignal.timeout(60_000);
+      const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
       response = await fetch(`${this.baseUrl}${pathname}`, {
         ...init,
+        signal,
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           ...(init.headers ?? {})
         }
       });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
+      if (error instanceof Error && error.name === "TimeoutError") throw new Error("Compass request timed out after 60 seconds.");
       throw new Error(`Could not reach Compass at ${this.baseUrl}.`);
     }
     if (!response.ok) {
       const raw = await response.text();
       let message = `Compass returned HTTP ${response.status}.`;
       try {
-        const parsed = JSON.parse(raw) as { detail?: { error?: { message?: string } } };
-        message = parsed.detail?.error?.message ?? message;
+        const parsed = JSON.parse(raw) as { error?: { message?: string }; detail?: { error?: { message?: string } } };
+        message = parsed.error?.message ?? parsed.detail?.error?.message ?? message;
       } catch {
         // Do not expose arbitrary provider response bodies in the extension UI.
       }
+      if (response.status === 401 || response.status === 403) message = provider === "compass" ? "Compass rejected this API key. Reconnect with an active Compass key." : "Provider authentication failed. Check the configured credential.";
+      if (response.status === 429) message = "Provider rate limit reached. Wait briefly and retry.";
+      if (response.status === 404) message = "The configured provider endpoint or model was not found.";
       throw new Error(message);
     }
-    return response.json() as Promise<T>;
+    return response;
   }
 }

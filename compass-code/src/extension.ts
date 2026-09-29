@@ -3,13 +3,18 @@ import * as vscode from "vscode";
 import { CompassAgent } from "./agent.js";
 import { CompassClient } from "./client.js";
 import { CheckpointManager } from "./checkpoints.js";
+import { ContextManager } from "./context.js";
+import { DiffReviewManager } from "./diffs.js";
+import type { ModelProvider } from "./providers.js";
 import { ToolExecutor } from "./tools.js";
-import type { AccountSummary, AgentMode, CompassModel, ConversationSummary, PermissionRequest, TranscriptItem, WorkStyle } from "./types.js";
+import { randomId } from "./utils.js";
+import type { AccountSummary, AgentGoal, AgentMode, CompassModel, ConversationSummary, GoalActivity, GoalFileChange, GoalStatus, GoalStepStatus, PermissionDecision, PermissionRequest, ProviderKind, TranscriptItem, WorkStyle } from "./types.js";
 
 type SavedConversation = ConversationSummary & { transcript: TranscriptItem[] };
 
 type ViewState = {
   baseUrl: string;
+  provider: ProviderKind;
   connected: boolean;
   connecting: boolean;
   busy: boolean;
@@ -22,34 +27,51 @@ type ViewState = {
   activeConversationId: string | null;
   permission: PermissionRequest | null;
   error: string | null;
+  goal: AgentGoal | null;
 };
 
 type ViewMessage =
   | { type: "ready" }
-  | { type: "connect"; baseUrl: string; apiKey: string; workStyle: WorkStyle }
+  | { type: "connect"; baseUrl: string; apiKey: string; provider: ProviderKind; workStyle: WorkStyle }
   | { type: "disconnect" }
   | { type: "send"; prompt: string; model: string; mode: AgentMode; includeSelection: boolean }
   | { type: "stop" }
+  | { type: "pauseGoal" }
+  | { type: "resumeGoal" }
+  | { type: "cancelGoal" }
+  | { type: "reviewGoal" }
+  | { type: "retryLast" }
   | { type: "newTask" }
   | { type: "openConversation"; id: string }
+  | { type: "renameConversation"; id: string; title: string }
+  | { type: "deleteConversation"; id: string }
   | { type: "refresh" }
   | { type: "openSettings" }
   | { type: "setMode"; mode: AgentMode }
   | { type: "setModel"; model: string }
-  | { type: "permission"; id: string; approved: boolean }
+  | { type: "permission"; id: string; decision: PermissionDecision }
+  | { type: "openDiff"; id: string }
+  | { type: "openFile"; path: string }
+  | { type: "applyCode"; path: string; content: string }
   | { type: "restoreCheckpoint" };
 
 class CompassViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private readonly client: CompassClient;
   private readonly checkpoints: CheckpointManager;
+  private readonly reviews: DiffReviewManager;
   private readonly tools: ToolExecutor;
+  private readonly contextManager: ContextManager;
+  private modelProvider: ModelProvider;
   private agent: CompassAgent | undefined;
-  private permissionResolver: ((approved: boolean) => void) | undefined;
+  private permissionResolver: ((decision: PermissionDecision) => void) | undefined;
   private conversations: SavedConversation[];
   private activeConversationId: string | null = null;
+  private sessionWriteAllowed = false;
+  private sessionWriteDenied = false;
   private state: ViewState = {
     baseUrl: "https://compass-router-api-567790052414.us-central1.run.app",
+    provider: "compass",
     connected: false,
     connecting: false,
     busy: false,
@@ -61,16 +83,22 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     conversations: [],
     activeConversationId: null,
     permission: null,
-    error: null
+    error: null,
+    goal: null
   };
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.client = new CompassClient(context);
     this.state.baseUrl = this.client.baseUrl;
+    this.state.provider = vscode.workspace.getConfiguration("compassCode").get<ProviderKind>("provider", "compass");
     this.conversations = context.workspaceState.get<SavedConversation[]>("compassCode.conversations", []) ?? [];
     this.state.conversations = this.summaries();
     this.checkpoints = new CheckpointManager(context);
-    this.tools = new ToolExecutor(this.checkpoints);
+    this.reviews = new DiffReviewManager(context);
+    this.tools = new ToolExecutor(this.checkpoints, this.reviews);
+    this.contextManager = new ContextManager(() => this.tools.recentTerminalContext(), () => this.tools.gitContext());
+    this.modelProvider = this.client;
+    this.sessionWriteDenied = false;
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -120,16 +148,24 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
 
   async newTask(): Promise<void> {
     this.archiveCurrentConversation();
+    this.cancelPermission();
     this.agent?.newTask();
     this.activeConversationId = null;
     this.state.transcript = [];
     this.state.activeConversationId = null;
     this.state.permission = null;
     this.state.error = null;
+    this.state.goal = null;
     this.postState();
   }
 
   async disconnect(): Promise<void> {
+    this.agent?.stop();
+    this.agent = undefined;
+    this.modelProvider = this.client;
+    this.sessionWriteAllowed = false;
+    this.sessionWriteDenied = false;
+    this.cancelPermission();
     await this.client.disconnect();
     this.state = {
       ...this.state,
@@ -142,7 +178,8 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
       conversations: this.summaries(),
       activeConversationId: null,
       permission: null,
-      error: null
+      error: null,
+      goal: null
     };
     this.postState();
   }
@@ -156,6 +193,126 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  async stopAgent(): Promise<void> {
+    this.agent?.stop();
+    this.cancelPermission();
+    if (this.state.goal && ["planning", "working", "waiting", "testing"].includes(this.state.goal.status)) {
+      this.setGoalStatus("paused", "Paused by the user.");
+    }
+    this.postState();
+  }
+
+  async openDashboard(): Promise<void> {
+    const url = vscode.workspace.getConfiguration("compassCode").get<string>("marketplaceUrl", "https://compass-marketplace-567790052414.us-central1.run.app");
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+
+  async resumeGoal(): Promise<void> {
+    const goal = this.state.goal;
+    const prompt = [...this.state.transcript].reverse().find((item) => item.role === "user")?.content;
+    if (!goal || !prompt || !this.state.selectedModel || !this.state.connected) return;
+    if (goal.status !== "paused" && goal.status !== "failed") return;
+    goal.followUpCount += 1;
+    goal.finishedAt = undefined;
+    goal.startedAt = Date.now();
+    goal.status = "planning";
+    goal.updatedAt = Date.now();
+    this.postState();
+    if (!this.agent) this.ensureAgent();
+    await this.agent?.send(`Continue the previous task from its current state. Re-check incomplete or failed steps, then finish the request. Original request: ${prompt}`, this.state.selectedModel, this.state.mode, false);
+  }
+
+  async cancelGoal(): Promise<void> {
+    this.agent?.stop();
+    this.cancelPermission();
+    if (this.state.goal) this.setGoalStatus("cancelled", "Cancelled by the user.");
+    this.postState();
+  }
+
+  private cancelPermission(): void {
+    const resolve = this.permissionResolver;
+    this.permissionResolver = undefined;
+    this.state.permission = null;
+    resolve?.("deny");
+  }
+
+  private async applyCode(path: string, content: string): Promise<void> {
+    if (this.state.permission) throw new Error("Finish the current permission request before applying another change.");
+    const args = { path, content };
+    if (this.sessionWriteDenied) return;
+    const prepared = this.sessionWriteAllowed ? undefined : await this.tools.preview("write_file", args);
+    const id = randomId("apply-code");
+    const decision = this.sessionWriteAllowed ? "once" : await this.requestPermission({
+      id,
+      toolName: "write_file",
+      kind: "write",
+      summary: `Apply generated code to ${path}`,
+      arguments: args,
+      preview: prepared?.diff,
+      changeId: prepared?.changeId,
+      files: prepared?.files,
+      addedLines: prepared?.addedLines,
+      removedLines: prepared?.removedLines,
+      decisions: ["once", "session", "always", "session-deny", "deny"]
+    });
+    if (decision === "deny") {
+      await this.tools.discardPreview(prepared?.changeId);
+      return;
+    }
+    if (decision === "session") this.sessionWriteAllowed = true;
+    if (decision === "session-deny") {
+      this.sessionWriteDenied = true;
+      await this.tools.discardPreview(prepared?.changeId);
+      return;
+    }
+    if (decision === "always") await vscode.workspace.getConfiguration("compassCode").update("autoApproveWrites", true, vscode.ConfigurationTarget.Global);
+    try {
+      const result = await this.tools.execute("write_file", args);
+      await this.tools.discardPreview(prepared?.changeId);
+      this.append({ id: randomId("tool"), role: "tool", toolName: "write_file", path, content: result });
+    } catch (error) {
+      await this.tools.discardPreview(prepared?.changeId);
+      throw error;
+    }
+  }
+
+  async retryLast(): Promise<void> {
+    const prompt = [...this.state.transcript].reverse().find((item) => item.role === "user")?.content;
+    if (!prompt || !this.state.selectedModel) {
+      vscode.window.showInformationMessage("Compass Code has no previous request to retry.");
+      return;
+    }
+    if (!this.agent) this.ensureAgent();
+    if (!this.activeConversationId) {
+      this.activeConversationId = `chat-${Date.now()}`;
+      this.state.activeConversationId = this.activeConversationId;
+    }
+    this.startOrContinueGoal(prompt, this.state.selectedModel, this.state.mode);
+    await this.agent?.send(prompt, this.state.selectedModel, this.state.mode, false);
+  }
+
+  async runCommandPrompt(prompt: string, mode: AgentMode = "ask"): Promise<void> {
+    if (!this.view) await vscode.commands.executeCommand("workbench.view.extension.compassCode");
+    if (!this.state.connected) {
+      vscode.window.showWarningMessage("Connect Compass Code before running an AI command.");
+      return;
+    }
+    if (!this.agent) this.ensureAgent();
+    if (!this.state.selectedModel) {
+      vscode.window.showWarningMessage("Compass Code has no available model for this workspace.");
+      return;
+    }
+    if (!this.activeConversationId) {
+      this.activeConversationId = `chat-${Date.now()}`;
+      this.state.activeConversationId = this.activeConversationId;
+    }
+    this.startOrContinueGoal(prompt, this.state.selectedModel, mode);
+    this.state.mode = mode;
+    this.state.error = null;
+    this.postState();
+    await this.agent?.send(prompt, this.state.selectedModel, mode, true);
+  }
+
   private async openConversation(id: string): Promise<void> {
     const conversation = this.conversations.find((item) => item.id === id);
     if (!conversation) return;
@@ -163,8 +320,31 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     this.activeConversationId = conversation.id;
     this.state.activeConversationId = conversation.id;
     this.state.transcript = [...conversation.transcript];
+    this.state.goal = conversation.goal ? structuredClone(conversation.goal) : null;
+    if (conversation.mode) this.state.mode = conversation.mode;
+    if (conversation.model && this.state.models.some((model) => model.id === conversation.model)) this.state.selectedModel = conversation.model;
+    if (this.agent) this.agent.restoreTranscript(this.state.transcript, this.state.mode);
     this.state.permission = null;
     this.state.error = null;
+    this.postState();
+  }
+
+  private async renameConversation(id: string, title: string): Promise<void> {
+    const nextTitle = title.trim().slice(0, 120);
+    if (!nextTitle) return;
+    const conversation = this.conversations.find((item) => item.id === id);
+    if (!conversation) return;
+    conversation.title = nextTitle;
+    this.state.conversations = this.summaries();
+    await this.context.workspaceState.update("compassCode.conversations", this.conversations);
+    this.postState();
+  }
+
+  private async deleteConversation(id: string): Promise<void> {
+    this.conversations = this.conversations.filter((item) => item.id !== id);
+    if (this.activeConversationId === id) await this.newTask();
+    this.state.conversations = this.summaries();
+    await this.context.workspaceState.update("compassCode.conversations", this.conversations);
     this.postState();
   }
 
@@ -175,7 +355,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           await this.refresh();
           break;
         case "connect":
-          await this.finishConnect(message.baseUrl, message.apiKey, message.workStyle);
+          await this.finishConnect(message.baseUrl, message.apiKey, message.workStyle, message.provider);
           break;
         case "disconnect":
           await this.disconnect();
@@ -186,6 +366,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
             this.activeConversationId = `chat-${Date.now()}`;
             this.state.activeConversationId = this.activeConversationId;
           }
+          this.startOrContinueGoal(message.prompt, message.model, message.mode);
           this.state.mode = message.mode;
           this.state.selectedModel = message.model;
           this.state.error = null;
@@ -193,13 +374,34 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           await this.agent.send(message.prompt, message.model, message.mode, message.includeSelection);
           break;
         case "stop":
-          this.agent?.stop();
+          await this.stopAgent();
+          break;
+        case "pauseGoal":
+          await this.stopAgent();
+          break;
+        case "resumeGoal":
+          await this.resumeGoal();
+          break;
+        case "cancelGoal":
+          await this.cancelGoal();
+          break;
+        case "reviewGoal":
+          await vscode.commands.executeCommand("compassCode.reviewChanges");
+          break;
+        case "retryLast":
+          await this.retryLast();
           break;
         case "newTask":
           await this.newTask();
           break;
         case "openConversation":
           await this.openConversation(message.id);
+          break;
+        case "renameConversation":
+          await this.renameConversation(message.id, message.title);
+          break;
+        case "deleteConversation":
+          await this.deleteConversation(message.id);
           break;
         case "refresh":
           await this.refresh();
@@ -213,6 +415,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           break;
         case "setModel":
           this.state.selectedModel = message.model;
+          await vscode.workspace.getConfiguration("compassCode").update("defaultModel", message.model, vscode.ConfigurationTarget.Global);
           this.postState();
           break;
         case "permission":
@@ -220,9 +423,20 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
             const resolve = this.permissionResolver;
             this.permissionResolver = undefined;
             this.state.permission = null;
-            resolve(message.approved);
+            if (message.decision !== "deny" && message.decision !== "session-deny") this.setGoalStatus("working", "Approval received; continuing.");
+            else if (this.state.goal?.status === "waiting") this.setGoalStatus("working", "Approval declined; choosing the next step.");
+            resolve(message.decision);
             this.postState();
           }
+          break;
+        case "openDiff":
+          if (this.state.permission?.id === message.id && this.state.permission.changeId) await this.reviews.open(this.state.permission.changeId);
+          break;
+        case "openFile":
+          await this.tools.openFile(message.path);
+          break;
+        case "applyCode":
+          await this.applyCode(message.path, message.content);
           break;
         case "restoreCheckpoint":
           await this.restoreCheckpoint();
@@ -235,24 +449,30 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async finishConnect(baseUrl: string, apiKey: string, workStyle: WorkStyle = "review"): Promise<void> {
+  private async finishConnect(baseUrl: string, apiKey: string, workStyle: WorkStyle = "review", provider: ProviderKind = "compass"): Promise<void> {
     this.state.connecting = true;
     this.state.error = null;
     this.postState();
     try {
-      await this.client.saveConnection(baseUrl, apiKey);
+      await vscode.workspace.getConfiguration("compassCode").update("provider", provider, vscode.ConfigurationTarget.Global);
+      await this.client.saveConnection(baseUrl, apiKey, provider);
       this.state.baseUrl = this.client.baseUrl;
+      this.state.provider = provider;
+      this.modelProvider = await this.client.provider(provider);
+      this.agent?.stop();
+      this.agent = undefined;
       const config = vscode.workspace.getConfiguration("compassCode");
       await config.update("autoApproveWrites", workStyle === "autonomous", vscode.ConfigurationTarget.Global);
       await config.update("autoApproveTerminal", workStyle === "autonomous", vscode.ConfigurationTarget.Global);
-      const models = await this.client.models();
+        const models = await this.modelProvider.models();
       if (!models.length) throw new Error("This Compass key has no allowed models.");
       this.state.models = models;
-      this.state.selectedModel = this.state.selectedModel && models.some((model) => model.id === this.state.selectedModel)
-        ? this.state.selectedModel
+      const preferredModel = config.get<string>("defaultModel", "") || this.state.selectedModel;
+      this.state.selectedModel = preferredModel && models.some((model) => model.id === preferredModel)
+        ? preferredModel
         : models[0].id;
       this.state.connected = true;
-      this.state.account = await this.client.account();
+      this.state.account = provider === "compass" ? await this.client.account() : null;
       this.ensureAgent();
       this.append({ id: `status-${Date.now()}`, role: "status", content: `Connected to Compass. ${models.length} allowed model${models.length === 1 ? "" : "s"}.` });
     } catch (error) {
@@ -275,12 +495,15 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     this.postState();
     try {
       this.state.baseUrl = this.client.baseUrl;
-      const models = await this.client.models();
+      this.state.provider = vscode.workspace.getConfiguration("compassCode").get<ProviderKind>("provider", "compass");
+      this.modelProvider = await this.client.provider(this.state.provider);
+      const models = await this.modelProvider.models();
       this.state.models = models;
-      this.state.selectedModel = this.state.selectedModel && models.some((model) => model.id === this.state.selectedModel)
-        ? this.state.selectedModel
+      const preferredModel = vscode.workspace.getConfiguration("compassCode").get<string>("defaultModel", "") || this.state.selectedModel;
+      this.state.selectedModel = preferredModel && models.some((model) => model.id === preferredModel)
+        ? preferredModel
         : models[0]?.id ?? "";
-      this.state.account = await this.client.account();
+      this.state.account = this.state.provider === "compass" ? await this.client.account() : null;
       this.state.connected = true;
       this.ensureAgent();
     } catch (error) {
@@ -294,14 +517,22 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
 
   private ensureAgent(): void {
     if (this.agent) return;
-    this.agent = new CompassAgent(this.client, this.tools, {
+    this.agent = new CompassAgent(this.modelProvider, this.tools, {
       append: (item) => this.append(item),
+      has: (id) => this.has(id),
+      update: (id, patch) => this.update(id, patch),
       setBusy: (busy) => {
         this.state.busy = busy;
         this.postState();
       },
       requestPermission: (request) => this.requestPermission(request),
+      setGoalStatus: (status, detail) => this.setGoalStatus(status, detail),
+      setPlanStep: (stepId, status, detail) => this.setPlanStep(stepId, status, detail),
+      addGoalActivity: (activity) => this.addGoalActivity(activity),
+      updateGoalActivity: (id, patch) => this.updateGoalActivity(id, patch),
+      recordGoalFileChange: (change) => this.recordGoalFileChange(change),
       refreshAccount: async () => {
+        if (this.state.provider !== "compass") return;
         try {
           this.state.account = await this.client.account();
           this.postState();
@@ -309,13 +540,14 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           // Preserve the completed response even if the account refresh is unavailable.
         }
       }
-    });
+    }, this.contextManager);
   }
 
-  private requestPermission(request: PermissionRequest): Promise<boolean> {
+  private requestPermission(request: PermissionRequest): Promise<PermissionDecision> {
     this.state.permission = request;
+    this.setGoalStatus("waiting", `Waiting for approval: ${request.summary}`);
     this.postState();
-    return new Promise<boolean>((resolve) => {
+    return new Promise<PermissionDecision>((resolve) => {
       this.permissionResolver = resolve;
     });
   }
@@ -326,8 +558,22 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     this.postState();
   }
 
+  private has(id: string): boolean {
+    return this.state.transcript.some((item) => item.id === id);
+  }
+
+  private update(id: string, patch: Partial<TranscriptItem>): void {
+    const index = this.state.transcript.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    const transcript = [...this.state.transcript];
+    transcript[index] = { ...transcript[index], ...patch };
+    this.state.transcript = transcript;
+    this.persistCurrentConversation();
+    this.postState();
+  }
+
   private summaries(): ConversationSummary[] {
-    return this.conversations.map(({ id, title, updatedAt }) => ({ id, title, updatedAt }));
+    return this.conversations.map(({ id, title, updatedAt, model, mode, contextReferences, goal }) => ({ id, title, updatedAt, model, mode, contextReferences, goal }));
   }
 
   private archiveCurrentConversation(): void {
@@ -337,15 +583,123 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   private persistCurrentConversation(): void {
     if (!this.activeConversationId || !this.state.transcript.some((item) => item.role === "user")) return;
     const title = this.state.transcript.find((item) => item.role === "user")?.content.split("\n")[0].trim().slice(0, 72) || "Compass chat";
+    const firstPrompt = this.state.transcript.find((item) => item.role === "user")?.content ?? "";
+    const contextReferences = [...firstPrompt.matchAll(/@(file|folder|workspace|selection|terminal|git|problems)\b/gi)].map((match) => match[1].toLocaleLowerCase());
     const saved: SavedConversation = {
       id: this.activeConversationId,
       title,
       updatedAt: Date.now(),
+      model: this.state.selectedModel || undefined,
+      mode: this.state.mode,
+      contextReferences: [...new Set(contextReferences)],
+      goal: this.state.goal ? structuredClone(this.state.goal) : undefined,
       transcript: [...this.state.transcript]
     };
     this.conversations = [saved, ...this.conversations.filter((item) => item.id !== saved.id)].slice(0, 20);
     this.state.conversations = this.summaries();
     void this.context.workspaceState.update("compassCode.conversations", this.conversations);
+  }
+
+  private initialPlan(): AgentGoal["plan"] {
+    const now = Date.now();
+    return [
+      { id: "inspect", title: "Inspect repository", status: "active", updatedAt: now },
+      { id: "plan", title: "Plan changes", status: "pending", updatedAt: now },
+      { id: "implement", title: "Implement changes", status: "pending", updatedAt: now },
+      { id: "validate", title: "Run validation", status: "pending", updatedAt: now },
+      { id: "fix", title: "Fix failures", status: "pending", updatedAt: now },
+      { id: "complete", title: "Complete goal", status: "pending", updatedAt: now }
+    ];
+  }
+
+  private startOrContinueGoal(prompt: string, model: string, mode: AgentMode): void {
+    const now = Date.now();
+    const current = this.state.goal;
+    if (!current || current.status === "completed" || current.status === "cancelled" || current.status === "failed") {
+      this.state.goal = {
+        id: randomId("goal"),
+        title: prompt.split("\n")[0].trim().slice(0, 120) || "Compass task",
+        status: "planning",
+        createdAt: now,
+        updatedAt: now,
+        startedAt: now,
+        elapsedMs: 0,
+        model,
+        mode,
+        contextReferences: [...prompt.matchAll(/@(file|folder|workspace|selection|terminal|git|problems)\b/gi)].map((match) => match[1].toLocaleLowerCase()),
+        plan: this.initialPlan(),
+        activity: [],
+        changedFiles: [],
+        followUpCount: current?.followUpCount ?? 0
+      };
+    } else {
+      current.model = model;
+      current.mode = mode;
+      current.followUpCount += 1;
+      current.status = "planning";
+      current.startedAt = now;
+      current.finishedAt = undefined;
+      current.updatedAt = now;
+    }
+    this.postState();
+  }
+
+  private setGoalStatus(status: GoalStatus, detail?: string): void {
+    const goal = this.state.goal;
+    if (!goal) return;
+    const now = Date.now();
+    const running = ["planning", "working", "waiting", "testing"].includes(goal.status);
+    if (running) goal.elapsedMs += Math.max(0, now - goal.updatedAt);
+    goal.status = status;
+    goal.updatedAt = now;
+    if (status === "completed" || status === "failed" || status === "cancelled") goal.finishedAt = now;
+    if (detail) this.addGoalActivity({ kind: "status", title: detail, status: "completed" });
+    this.persistCurrentConversation();
+    this.postState();
+  }
+
+  private setPlanStep(stepId: string, status: GoalStepStatus, detail?: string): void {
+    const goal = this.state.goal;
+    const step = goal?.plan.find((item) => item.id === stepId);
+    if (!step) return;
+    step.status = status;
+    step.updatedAt = Date.now();
+    if (detail) step.detail = detail;
+    this.persistCurrentConversation();
+    this.postState();
+  }
+
+  private addGoalActivity(activity: Omit<GoalActivity, "id" | "createdAt" | "updatedAt">): string {
+    const id = randomId("activity");
+    const goal = this.state.goal;
+    if (!goal) return id;
+    const now = Date.now();
+    goal.activity = [...goal.activity, { ...activity, id, createdAt: now, updatedAt: now }].slice(-100);
+    goal.updatedAt = now;
+    this.persistCurrentConversation();
+    this.postState();
+    return id;
+  }
+
+  private updateGoalActivity(id: string, patch: Partial<GoalActivity>): void {
+    const goal = this.state.goal;
+    const activity = goal?.activity.find((item) => item.id === id);
+    if (!goal || !activity) return;
+    Object.assign(activity, patch, { updatedAt: Date.now() });
+    goal.updatedAt = Date.now();
+    this.persistCurrentConversation();
+    this.postState();
+  }
+
+  private recordGoalFileChange(change: GoalFileChange): void {
+    const goal = this.state.goal;
+    if (!goal) return;
+    const existing = goal.changedFiles.find((item) => item.path === change.path);
+    if (existing) Object.assign(existing, change);
+    else goal.changedFiles.push(change);
+    goal.updatedAt = Date.now();
+    this.persistCurrentConversation();
+    this.postState();
   }
 
   private postState(): void {
@@ -382,7 +736,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("compassCode.disconnect", () => provider.disconnect()),
     vscode.commands.registerCommand("compassCode.newTask", () => provider.newTask()),
     vscode.commands.registerCommand("compassCode.chooseModel", () => provider.chooseModel()),
-    vscode.commands.registerCommand("compassCode.restoreCheckpoint", () => provider.restoreCheckpoint())
+    vscode.commands.registerCommand("compassCode.restoreCheckpoint", () => provider.restoreCheckpoint()),
+    vscode.commands.registerCommand("compassCode.openSettings", () => vscode.commands.executeCommand("workbench.action.openSettings", "@ext:toheedsoudagar.compass-code")),
+    vscode.commands.registerCommand("compassCode.openDashboard", () => provider.openDashboard()),
+    vscode.commands.registerCommand("compassCode.explainSelection", () => provider.runCommandPrompt("Explain the selected code, its responsibilities, assumptions, and any risks.", "ask")),
+    vscode.commands.registerCommand("compassCode.fixSelection", () => provider.runCommandPrompt("Inspect the selected code, identify the defect, and fix it with the smallest safe edit.", "edit")),
+    vscode.commands.registerCommand("compassCode.refactorSelection", () => provider.runCommandPrompt("Refactor the selected code for clarity and maintainability while preserving behavior.", "edit")),
+    vscode.commands.registerCommand("compassCode.optimizeSelection", () => provider.runCommandPrompt("Optimize the selected code for its stated performance or resource behavior while preserving correctness and public behavior.", "edit")),
+    vscode.commands.registerCommand("compassCode.generateTests", () => provider.runCommandPrompt("Generate focused tests for the selected code and add them to the appropriate test file.", "edit")),
+    vscode.commands.registerCommand("compassCode.generateDocumentation", () => provider.runCommandPrompt("Document the selected code with concise, idiomatic documentation appropriate for this repository.", "edit")),
+    vscode.commands.registerCommand("compassCode.fixProblems", () => provider.runCommandPrompt("Inspect the current VS Code diagnostics, fix the relevant problems, and rerun focused validation.", "debug")),
+    vscode.commands.registerCommand("compassCode.reviewChanges", () => provider.runCommandPrompt("Review the current working tree changes. Identify correctness, security, and regression risks, and report findings with file references.", "plan")),
+    vscode.commands.registerCommand("compassCode.generateCommitMessage", () => provider.runCommandPrompt("Inspect the current Git diff and propose a concise commit message. Do not commit anything.", "ask")),
+    vscode.commands.registerCommand("compassCode.stopAgent", () => provider.stopAgent())
   );
 }
 

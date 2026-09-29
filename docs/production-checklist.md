@@ -11,4 +11,5 @@
 - Wallet duplicate-credit and duplicate-debit tests passing.
 - CI lint, typecheck, unit, integration, and Docker builds passing.
 - Alerts configured for downtime, high error rate, payment failures, and reconciliation mismatch.
+- Cloud Monitoring consumes `/admin/operations/metrics` and `/admin/operations/events` through an authenticated operator integration.
 - Rollback procedure tested.

@@ -22,16 +22,22 @@ def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
-def create_session_token(user_id: str) -> str:
+def create_session_token(user_id: str, session_version: int = 0) -> str:
     settings = get_settings()
-    payload = {"sub": user_id, "exp": datetime.now(UTC) + timedelta(hours=12)}
+    payload = {"sub": user_id, "sv": session_version, "jti": secrets.token_urlsafe(16), "exp": datetime.now(UTC) + timedelta(hours=12)}
     return jwt.encode(payload, settings.app_secret, algorithm="HS256")
 
 
 def decode_session_token(token: str) -> str:
+    return str(decode_session_claims(token)["sub"])
+
+
+def decode_session_claims(token: str) -> dict:
     settings = get_settings()
     payload = jwt.decode(token, settings.app_secret, algorithms=["HS256"])
-    return str(payload["sub"])
+    if not payload.get("sub"):
+        raise ValueError("session subject is missing")
+    return payload
 
 
 def decode_marketplace_sso_token(token: str) -> dict:

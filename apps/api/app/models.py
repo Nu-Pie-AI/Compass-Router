@@ -29,7 +29,18 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String)
     role: Mapped[str] = mapped_column(String, default=Role.customer.value)
+    session_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Organization(Base):
@@ -176,6 +187,23 @@ class ModelCatalog(Base):
     provider: Mapped[Provider] = relationship()
 
 
+class ModelPolicy(Base):
+    __tablename__ = "model_policies"
+    __table_args__ = (UniqueConstraint("team_id", "model_id"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    model_id: Mapped[str] = mapped_column(ForeignKey("models.id"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    requests_per_minute: Mapped[int] = mapped_column(Integer, default=0)
+    daily_spend_limit_paise: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_spend_limit_paise: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    team: Mapped[Team] = relationship()
+    model: Mapped[ModelCatalog] = relationship()
+
+
 class TeamLimit(Base):
     __tablename__ = "team_limits"
 
@@ -231,8 +259,60 @@ class PaymentOrder(Base):
     amount_paise: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String, default="INR")
     status: Mapped[str] = mapped_column(String, default="created")
+    receipt: Mapped[str | None] = mapped_column(String, nullable=True)
+    payment_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    payment_method: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refunded_paise: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (UniqueConstraint("provider", "event_id"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    provider: Mapped[str] = mapped_column(String, default="razorpay")
+    event_id: Mapped[str] = mapped_column(String)
+    event_type: Mapped[str] = mapped_column(String)
+    payload_hash: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="received")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class PaymentRefund(Base):
+    __tablename__ = "payment_refunds"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    order_id: Mapped[str] = mapped_column(ForeignKey("payment_orders.id"), index=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    provider_refund_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    amount_paise: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, default="requested")
+    reason: Mapped[str] = mapped_column(String, default="Customer requested refund")
+    failure_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BillingInvoice(Base):
+    __tablename__ = "billing_invoices"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    invoice_number: Mapped[str] = mapped_column(String, unique=True, index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("payment_orders.id"), unique=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    currency: Mapped[str] = mapped_column(String, default="INR")
+    subtotal_paise: Mapped[int] = mapped_column(Integer)
+    tax_paise: Mapped[int] = mapped_column(Integer, default=0)
+    total_paise: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, default="paid")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class LlmRequest(Base):
@@ -258,6 +338,35 @@ class LlmRequest(Base):
     compass_cost_paise: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class BatchJob(Base):
+    __tablename__ = "batch_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    provider_batch_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String)
+    endpoint: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="submitted")
+    request_json: Mapped[str] = mapped_column(Text, default="{}")
+    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class OperationalEvent(Base):
+    __tablename__ = "operational_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    event_type: Mapped[str] = mapped_column(String, index=True)
+    severity: Mapped[str] = mapped_column(String, default="info")
+    service: Mapped[str] = mapped_column(String, default="compass-api")
+    message: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
 
 
 class ProviderAttempt(Base):

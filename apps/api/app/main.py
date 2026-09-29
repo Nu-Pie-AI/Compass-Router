@@ -1,22 +1,25 @@
 import hashlib
 import hmac
+import json
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 import httpx
 from jose import JWTError
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db, init_db
 from .errors import compass_error
-from .models import ApiKey, LlmRequest, ModelCatalog, Organization, OrganizationMember, PaymentOrder, Provider, ProviderCredential, ProviderHealthCheck, Team, TeamMember, User, WalletAccount, WalletLedger, new_id, now
-from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, ByokCredentialUpdate, ChatCompletionRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelStatusUpdate, ProviderCredentialUpdate, ProviderStatusUpdate, SessionResponse, SignupRequest, TeamCreate, TeamMemberCreate, WalletTopupRequest, WorkspaceCreate
-from .security import create_session_token, decode_marketplace_sso_token, decode_session_token, verify_password
+from .models import ApiKey, BatchJob, BillingInvoice, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger, new_id, now
+from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, ProviderCredentialUpdate, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, WalletTopupRequest, WorkspaceCreate
+from .security import create_session_token, decode_marketplace_sso_token, decode_session_claims, verify_password
 from .services import (
     LiteLLMClient,
     allowed_model_ids,
@@ -26,6 +29,9 @@ from .services import (
     byok_credentials_summary,
     check_redis,
     complete_chat,
+    complete_binary_api,
+    complete_json_api,
+    complete_multipart_api,
     create_api_key,
     create_team,
     create_team_member,
@@ -35,6 +41,7 @@ from .services import (
     litellm_model_catalog,
     list_api_keys,
     model_catalog_rows,
+    model_policy_rows,
     organization_id_for_user,
     provider_credentials_summary,
     request_rows,
@@ -90,11 +97,12 @@ def current_user(authorization: str | None = Header(default=None), db: Session =
     if not authorization or not authorization.startswith("Bearer "):
         raise compass_error(401, "unauthorized", "Missing session token.")
     try:
-        user_id = decode_session_token(authorization.removeprefix("Bearer ").strip())
-    except JWTError:
+        claims = decode_session_claims(authorization.removeprefix("Bearer ").strip())
+        user_id = str(claims["sub"])
+    except (JWTError, ValueError, KeyError):
         raise compass_error(401, "unauthorized", "Invalid session token.") from None
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or int(claims.get("sv", 0)) != user.session_version:
         raise compass_error(401, "unauthorized", "Invalid session token.")
     return user
 
@@ -107,6 +115,30 @@ def admin_user(user: User = Depends(current_user)) -> User:
 
 def is_admin(user: User) -> bool:
     return user.role in {"admin", "super_admin"}
+
+
+def _login_guard(db: Session, email: str) -> LoginAttempt:
+    normalized = email.strip().lower()
+    attempt = db.scalar(select(LoginAttempt).where(LoginAttempt.email == normalized).with_for_update())
+    current = now()
+    if attempt is None:
+        attempt = LoginAttempt(email=normalized, window_started_at=current)
+        db.add(attempt)
+        db.flush()
+    elif attempt.locked_until and attempt.locked_until > current:
+        raise compass_error(429, "login_rate_limited", "Too many login attempts. Try again later.")
+    elif attempt.window_started_at < current - timedelta(minutes=15):
+        attempt.window_started_at = current
+        attempt.attempts = 0
+        attempt.locked_until = None
+    return attempt
+
+
+def _record_login_failure(db: Session, attempt: LoginAttempt) -> None:
+    attempt.attempts += 1
+    if attempt.attempts >= 5:
+        attempt.locked_until = now() + timedelta(minutes=15)
+    db.commit()
 
 
 def team_ids_for_user(db: Session, user: User) -> list[str]:
@@ -192,7 +224,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> SessionRespons
         raise compass_error(403, "signup_disabled", "Account signup is disabled for this Compass environment.")
     user, organization, _ = register_customer(db, body.email, body.password, body.organization_name)
     return SessionResponse(
-        token=create_session_token(user.id),
+        token=create_session_token(user.id, user.session_version),
         user_id=user.id,
         email=user.email,
         organization_id=organization.id,
@@ -202,16 +234,27 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> SessionRespons
 
 @app.post("/auth/login", response_model=SessionResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> SessionResponse:
+    attempt = _login_guard(db, body.email)
     user = db.scalar(select_user_by_email(body.email.lower()))
     if user is None or not verify_password(body.password, user.password_hash):
+        _record_login_failure(db, attempt)
         raise compass_error(401, "invalid_login", "Invalid email or password.")
+    db.delete(attempt)
+    db.commit()
     return SessionResponse(
-        token=create_session_token(user.id),
+        token=create_session_token(user.id, user.session_version),
         user_id=user.id,
         email=user.email,
         organization_id=organization_id_for_user(db, user.id),
         role=user.role,
     )
+
+
+@app.post("/auth/logout")
+def logout(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    user.session_version += 1
+    db.commit()
+    return {"signed_out": True}
 
 
 @app.post("/auth/marketplace", response_model=SessionResponse)
@@ -222,7 +265,7 @@ def marketplace_login(body: MarketplaceSsoRequest, db: Session = Depends(get_db)
         raise compass_error(401, "invalid_marketplace_session", "Marketplace sign-in could not be verified.") from exc
     user = upsert_marketplace_user(db, claims["email"], str(claims.get("role", "user")), claims.get("name"))
     return SessionResponse(
-        token=create_session_token(user.id),
+        token=create_session_token(user.id, user.session_version),
         user_id=user.id,
         email=user.email,
         organization_id=organization_id_for_user(db, user.id),
@@ -267,6 +310,36 @@ def team_members(team_id: str, user: User = Depends(current_user), db: Session =
     require_team_access(db, user, team_id)
     rows = db.scalars(select(TeamMember).where(TeamMember.team_id == team_id).order_by(TeamMember.created_at.desc())).all()
     return [{"id": row.id, "team_id": row.team_id, "name": row.name, "email": row.email, "role": row.role, "is_active": row.is_active} for row in rows]
+
+
+def team_limits_row(limits: TeamLimit) -> dict:
+    return {
+        "team_id": limits.team_id,
+        "requests_per_minute": limits.requests_per_minute,
+        "tokens_per_minute": limits.tokens_per_minute,
+        "daily_spend_limit_paise": limits.daily_spend_limit_paise,
+        "monthly_spend_limit_paise": limits.monthly_spend_limit_paise,
+    }
+
+
+@app.get("/teams/{team_id}/limits")
+def team_limits(team_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    require_team_access(db, user, team_id)
+    limits = db.scalar(select(TeamLimit).where(TeamLimit.team_id == team_id))
+    if limits is None:
+        raise compass_error(404, "team_limits_not_found", "Team limits were not configured.")
+    return team_limits_row(limits)
+
+
+@app.patch("/admin/teams/{team_id}/limits")
+def update_team_limits(team_id: str, body: TeamLimitsUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    limits = db.scalar(select(TeamLimit).where(TeamLimit.team_id == team_id))
+    if limits is None:
+        raise compass_error(404, "team_limits_not_found", "Team limits were not configured.")
+    for field, value in body.model_dump().items():
+        setattr(limits, field, value)
+    db.commit()
+    return team_limits_row(limits)
 
 
 @app.post("/teams")
@@ -385,7 +458,152 @@ def wallet_ledger(team_id: str, user: User = Depends(current_user), db: Session 
 
 
 def billing_order_row(order: PaymentOrder) -> dict:
-    return {"id": order.id, "team_id": order.team_id, "provider": order.provider, "provider_order_id": order.provider_order_id, "amount_paise": order.amount_paise, "currency": order.currency, "status": order.status, "created_at": order.created_at.isoformat(), "completed_at": order.completed_at.isoformat() if order.completed_at else None, "can_complete": order.provider == "development" and order.status == "created"}
+    return {
+        "id": order.id,
+        "team_id": order.team_id,
+        "provider": order.provider,
+        "provider_order_id": order.provider_order_id,
+        "payment_id": order.payment_id,
+        "amount_paise": order.amount_paise,
+        "refunded_paise": order.refunded_paise,
+        "currency": order.currency,
+        "status": order.status,
+        "failure_code": order.failure_code,
+        "failure_description": order.failure_description,
+        "created_at": order.created_at.isoformat(),
+        "completed_at": order.completed_at.isoformat() if order.completed_at else None,
+        "can_complete": order.provider == "development" and order.status == "created",
+        "can_refund": order.status in {"completed", "partially_refunded"} and order.refunded_paise < order.amount_paise,
+    }
+
+
+def invoice_row(invoice: BillingInvoice) -> dict:
+    return {
+        "id": invoice.id,
+        "invoice_number": invoice.invoice_number,
+        "order_id": invoice.order_id,
+        "team_id": invoice.team_id,
+        "currency": invoice.currency,
+        "subtotal_paise": invoice.subtotal_paise,
+        "tax_paise": invoice.tax_paise,
+        "total_paise": invoice.total_paise,
+        "status": invoice.status,
+        "created_at": invoice.created_at.isoformat(),
+        "paid_at": invoice.paid_at.isoformat() if invoice.paid_at else None,
+    }
+
+
+def refund_row(refund: PaymentRefund) -> dict:
+    return {
+        "id": refund.id,
+        "order_id": refund.order_id,
+        "team_id": refund.team_id,
+        "provider_refund_id": refund.provider_refund_id,
+        "amount_paise": refund.amount_paise,
+        "status": refund.status,
+        "reason": refund.reason,
+        "failure_description": refund.failure_description,
+        "created_at": refund.created_at.isoformat(),
+        "processed_at": refund.processed_at.isoformat() if refund.processed_at else None,
+    }
+
+
+def _ensure_invoice(db: Session, order: PaymentOrder) -> BillingInvoice:
+    invoice = db.scalar(select(BillingInvoice).where(BillingInvoice.order_id == order.id))
+    if invoice is not None:
+        return invoice
+    invoice = BillingInvoice(
+        invoice_number=f"CMP-{order.created_at.strftime('%Y%m%d')}-{order.id[:8].upper()}",
+        order_id=order.id,
+        team_id=order.team_id,
+        currency=order.currency,
+        subtotal_paise=order.amount_paise,
+        tax_paise=0,
+        total_paise=order.amount_paise,
+        status="paid",
+        paid_at=order.completed_at or now(),
+    )
+    db.add(invoice)
+    return invoice
+
+
+def _settle_payment_order(db: Session, order: PaymentOrder, payment_id: str, payment_method: str | None = None) -> tuple[PaymentOrder, WalletLedger, BillingInvoice]:
+    locked_order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order.id).with_for_update())
+    if locked_order is None or not locked_order.team_id:
+        raise compass_error(404, "payment_order_not_found", "Payment order not found.")
+    if locked_order.status == "completed" or locked_order.status == "partially_refunded":
+        ledger = db.scalar(select(WalletLedger).where(WalletLedger.idempotency_key == f"payment:{locked_order.id}"))
+        invoice = _ensure_invoice(db, locked_order)
+        db.commit()
+        if ledger is None:
+            raise compass_error(409, "payment_ledger_missing", "The payment is marked complete but its wallet ledger entry is missing.")
+        return locked_order, ledger, invoice
+    if locked_order.status in {"refunded", "failed"}:
+        raise compass_error(409, "payment_order_not_settleable", "This payment order cannot be credited in its current state.")
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == locked_order.team_id).with_for_update())
+    if wallet is None:
+        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+    idempotency_key = f"payment:{locked_order.id}"
+    ledger = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
+    if ledger is None:
+        before = wallet.balance_paise
+        wallet.balance_paise += locked_order.amount_paise
+        wallet.updated_at = now()
+        ledger = WalletLedger(
+            wallet_id=wallet.id,
+            type="credit",
+            amount_paise=locked_order.amount_paise,
+            balance_before=before,
+            balance_after=wallet.balance_paise,
+            reference_type="payment_order",
+            reference_id=payment_id,
+            description="Wallet recharge completed through payment provider",
+            idempotency_key=idempotency_key,
+        )
+        db.add(ledger)
+    locked_order.payment_id = payment_id
+    locked_order.payment_method = payment_method
+    locked_order.status = "completed"
+    locked_order.completed_at = now()
+    invoice = _ensure_invoice(db, locked_order)
+    db.commit()
+    return locked_order, ledger, invoice
+
+
+def _apply_refund(db: Session, refund: PaymentRefund, provider_refund_id: str | None = None) -> PaymentRefund:
+    locked_refund = db.scalar(select(PaymentRefund).where(PaymentRefund.id == refund.id).with_for_update())
+    if locked_refund is None:
+        raise compass_error(404, "refund_not_found", "Refund not found.")
+    if locked_refund.status == "processed":
+        return locked_refund
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == locked_refund.order_id).with_for_update())
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == locked_refund.team_id).with_for_update())
+    if order is None or wallet is None:
+        raise compass_error(404, "wallet_not_found", "Wallet or payment order not found.")
+    idempotency_key = f"refund:{locked_refund.id}"
+    ledger = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
+    if ledger is None:
+        before = wallet.balance_paise
+        wallet.balance_paise -= locked_refund.amount_paise
+        wallet.updated_at = now()
+        db.add(WalletLedger(
+            wallet_id=wallet.id,
+            type="refund",
+            amount_paise=-locked_refund.amount_paise,
+            balance_before=before,
+            balance_after=wallet.balance_paise,
+            reference_type="payment_refund",
+            reference_id=locked_refund.id,
+            description="Wallet recharge refund processed",
+            idempotency_key=idempotency_key,
+        ))
+    locked_refund.provider_refund_id = provider_refund_id or locked_refund.provider_refund_id
+    locked_refund.status = "processed"
+    locked_refund.processed_at = now()
+    order.refunded_paise += locked_refund.amount_paise
+    order.status = "refunded" if order.refunded_paise >= order.amount_paise else "partially_refunded"
+    db.commit()
+    return locked_refund
 
 
 @app.get("/billing/orders")
@@ -408,15 +626,16 @@ def create_billing_order(body: BillingOrderCreate, user: User = Depends(current_
         raise compass_error(503, "billing_unavailable", "Razorpay credentials are not configured.")
     provider = "development"
     provider_order_id = f"development_{new_id()}"
+    receipt = f"compass_{new_id()}"
     if mode == "razorpay":
         provider = "razorpay"
         try:
-            response = httpx.post("https://api.razorpay.com/v1/orders", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), json={"amount": body.amount_paise, "currency": "INR", "receipt": f"compass_{new_id()}"}, timeout=15)
+            response = httpx.post("https://api.razorpay.com/v1/orders", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), json={"amount": body.amount_paise, "currency": "INR", "receipt": receipt}, timeout=15)
             response.raise_for_status()
             provider_order_id = str(response.json()["id"])
         except (httpx.HTTPError, KeyError, ValueError) as exc:
             raise compass_error(502, "payment_provider_error", "Razorpay could not create the recharge order.") from exc
-    order = PaymentOrder(organization_id=team.organization_id, team_id=team.id, provider=provider, provider_order_id=provider_order_id, amount_paise=body.amount_paise, currency="INR", status="created")
+    order = PaymentOrder(organization_id=team.organization_id, team_id=team.id, provider=provider, provider_order_id=provider_order_id, receipt=receipt, amount_paise=body.amount_paise, currency="INR", status="created")
     db.add(order)
     db.commit()
     return billing_order_row(order) | {"checkout_key_id": settings.razorpay_key_id if provider == "razorpay" else None}
@@ -437,13 +656,18 @@ def verify_billing_order(order_id: str, body: BillingOrderVerify, user: User = D
     expected = hmac.new(settings.razorpay_key_secret.encode(), f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, body.razorpay_signature):
         raise compass_error(400, "payment_signature_invalid", "Razorpay payment verification failed.")
-    if order.status == "completed":
-        return billing_order_row(order)
-    ledger = credit_wallet(db, order.team_id, order.amount_paise, f"payment:{order.id}", body.razorpay_payment_id, "payment_order", "Wallet recharge completed through Razorpay")
-    order.status = "completed"
-    order.completed_at = now()
-    db.commit()
-    return billing_order_row(order) | {"ledger_id": ledger.id, "balance_paise": ledger.balance_after}
+    try:
+        response = httpx.get(f"https://api.razorpay.com/v1/payments/{body.razorpay_payment_id}", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), timeout=15)
+        response.raise_for_status()
+        payment = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise compass_error(502, "payment_provider_error", "Razorpay payment status could not be confirmed.") from exc
+    if str(payment.get("order_id")) != order.provider_order_id or int(payment.get("amount", -1)) != order.amount_paise or str(payment.get("currency", "INR")) != order.currency:
+        raise compass_error(400, "payment_amount_mismatch", "The verified payment does not match this recharge order.")
+    if payment.get("status") != "captured":
+        raise compass_error(409, "payment_not_captured", "The Razorpay payment has not been captured yet.")
+    settled, ledger, _ = _settle_payment_order(db, order, body.razorpay_payment_id, str(payment.get("method")) if payment.get("method") else None)
+    return billing_order_row(settled) | {"ledger_id": ledger.id, "balance_paise": ledger.balance_after}
 
 
 @app.post("/billing/orders/{order_id}/complete")
@@ -458,11 +682,157 @@ def complete_billing_order(order_id: str, body: BillingOrderComplete, user: User
         return billing_order_row(order)
     if order.provider != "development" or settings.billing_payment_mode.strip().lower() != "development":
         raise compass_error(409, "payment_verification_required", "This order must be completed by the configured payment provider.")
-    ledger = credit_wallet(db, order.team_id, order.amount_paise, f"payment:{order.id}", order.provider_order_id, "payment_order", "Wallet recharge completed in development checkout")
-    order.status = "completed"
-    order.completed_at = now()
+    settled, ledger, _ = _settle_payment_order(db, order, order.provider_order_id, "development")
+    return billing_order_row(settled) | {"ledger_id": ledger.id, "balance_paise": ledger.balance_after}
+
+
+@app.post("/webhooks/razorpay")
+async def razorpay_webhook(request: Request, x_razorpay_signature: str | None = Header(default=None)) -> dict:
+    if not settings.razorpay_webhook_secret:
+        raise compass_error(503, "webhook_unavailable", "Razorpay webhook secret is not configured.")
+    raw_body = await request.body()
+    expected = hmac.new(settings.razorpay_webhook_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    if not x_razorpay_signature or not hmac.compare_digest(expected, x_razorpay_signature):
+        raise compass_error(401, "webhook_signature_invalid", "Razorpay webhook signature is invalid.")
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise compass_error(400, "webhook_payload_invalid", "Razorpay webhook payload is invalid.") from exc
+    event_type = str(payload.get("event", "unknown"))
+    event_id = request.headers.get("x-razorpay-event-id") or str(payload.get("id") or hashlib.sha256(raw_body).hexdigest())
+    payload_hash = hashlib.sha256(raw_body).hexdigest()
+    db = next(get_db())
+    try:
+        existing = db.scalar(select(PaymentEvent).where(PaymentEvent.provider == "razorpay", PaymentEvent.event_id == event_id))
+        if existing is not None:
+            return {"accepted": True, "duplicate": True, "event_id": event_id, "status": existing.status}
+        event = PaymentEvent(provider="razorpay", event_id=event_id, event_type=event_type, payload_hash=payload_hash)
+        db.add(event)
+        db.flush()
+        webhook_payload = payload.get("payload") or {}
+        payment_entity = (webhook_payload.get("payment") or {}).get("entity") or {}
+        order_entity = (webhook_payload.get("order") or {}).get("entity") or {}
+        entity = order_entity if event_type == "order.paid" else payment_entity
+        if event_type in {"payment.captured", "order.paid"}:
+            provider_order_id = str(entity.get("order_id") or entity.get("id") or "")
+            order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == provider_order_id))
+            if order is None:
+                event.status = "ignored"
+            else:
+                payment_amount = payment_entity.get("amount") or entity.get("amount_paid") or entity.get("amount")
+                payment_currency = payment_entity.get("currency") or entity.get("currency") or order.currency
+                payment_id = str(payment_entity.get("id") or entity.get("payment_id") or entity.get("id") or "")
+            if order is not None and (int(payment_amount or -1) != order.amount_paise or str(payment_currency) != order.currency):
+                event.status = "failed"
+                event.error_message = "Payment amount or currency does not match the order."
+                db.commit()
+                raise compass_error(400, "payment_amount_mismatch", event.error_message)
+            elif order is not None:
+                _settle_payment_order(db, order, payment_id, str(payment_entity.get("method")) if payment_entity.get("method") else None)
+                event.status = "processed"
+        elif event_type == "payment.failed":
+            order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == str(entity.get("order_id") or "")))
+            if order is not None:
+                order.status = "failed"
+                order.failure_code = str(entity.get("error_code") or "payment_failed")
+                order.failure_description = str(entity.get("error_description") or "Razorpay payment failed.")
+                event.status = "processed"
+            else:
+                event.status = "ignored"
+        elif event_type in {"refund.processed", "refund.failed"}:
+            refund_entity = ((payload.get("payload") or {}).get("refund") or {}).get("entity") or {}
+            provider_refund_id = str(refund_entity.get("id") or "")
+            refund = db.scalar(select(PaymentRefund).where(PaymentRefund.provider_refund_id == provider_refund_id))
+            if refund is None:
+                order = db.scalar(select(PaymentOrder).where(PaymentOrder.payment_id == str(refund_entity.get("payment_id") or "")))
+                if order is not None and order.team_id:
+                    refund = PaymentRefund(order_id=order.id, team_id=order.team_id, provider_refund_id=provider_refund_id, amount_paise=int(refund_entity.get("amount", 0)), status="requested", reason="Razorpay refund")
+                    db.add(refund)
+                    db.flush()
+            if refund is None:
+                event.status = "ignored"
+            elif event_type == "refund.processed":
+                _apply_refund(db, refund, provider_refund_id)
+                event.status = "processed"
+            else:
+                refund.status = "failed"
+                refund.failure_description = str(refund_entity.get("error_description") or "Razorpay refund failed.")
+                event.status = "processed"
+        else:
+            event.status = "ignored"
+        event.processed_at = now()
+        db.commit()
+        return {"accepted": True, "duplicate": False, "event_id": event_id, "status": event.status}
+    except IntegrityError:
+        db.rollback()
+        return {"accepted": True, "duplicate": True, "event_id": event_id, "status": "processed"}
+    finally:
+        db.close()
+
+
+@app.post("/billing/orders/{order_id}/refund")
+def refund_billing_order(order_id: str, body: BillingRefundCreate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    order = db.get(PaymentOrder, order_id)
+    if order is None or not order.team_id:
+        raise compass_error(404, "payment_order_not_found", "Payment order not found.")
+    require_team_owner(db, user, order.team_id)
+    remaining = order.amount_paise - order.refunded_paise
+    amount_paise = body.amount_paise or remaining
+    if order.status not in {"completed", "partially_refunded"} or amount_paise > remaining:
+        raise compass_error(409, "refund_not_allowed", "This payment order is not eligible for that refund amount.")
+    if order.provider == "development":
+        refund = PaymentRefund(order_id=order.id, team_id=order.team_id, amount_paise=amount_paise, status="requested", reason=body.reason)
+        db.add(refund)
+        db.flush()
+        processed = _apply_refund(db, refund)
+        return refund_row(processed)
+    if not order.payment_id or not settings.razorpay_key_id or not settings.razorpay_key_secret:
+        raise compass_error(409, "refund_unavailable", "The payment provider has not supplied a refundable payment reference.")
+    try:
+        response = httpx.post(f"https://api.razorpay.com/v1/payments/{order.payment_id}/refund", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), json={"amount": amount_paise, "notes": {"reason": body.reason}}, timeout=15)
+        response.raise_for_status()
+        provider_refund_id = str(response.json()["id"])
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        raise compass_error(502, "payment_provider_error", "Razorpay could not create the refund.") from exc
+    refund = PaymentRefund(order_id=order.id, team_id=order.team_id, provider_refund_id=provider_refund_id, amount_paise=amount_paise, status="requested", reason=body.reason)
+    db.add(refund)
     db.commit()
-    return billing_order_row(order) | {"ledger_id": ledger.id, "balance_paise": ledger.balance_after}
+    return refund_row(refund)
+
+
+@app.get("/billing/refunds")
+def billing_refunds(team_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_team_access(db, user, team_id)
+    rows = db.scalars(select(PaymentRefund).where(PaymentRefund.team_id == team_id).order_by(PaymentRefund.created_at.desc()).limit(50)).all()
+    return [refund_row(row) for row in rows]
+
+
+@app.get("/billing/invoices")
+def billing_invoices(team_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_team_access(db, user, team_id)
+    rows = db.scalars(select(BillingInvoice).where(BillingInvoice.team_id == team_id).order_by(BillingInvoice.created_at.desc()).limit(50)).all()
+    return [invoice_row(row) for row in rows]
+
+
+@app.get("/admin/billing/reconciliation")
+def billing_reconciliation(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    orders = db.scalars(select(PaymentOrder).order_by(PaymentOrder.created_at.asc())).all()
+    ledgers = db.scalars(select(WalletLedger).where(WalletLedger.reference_type == "payment_order")).all()
+    ledger_refs = {row.reference_id for row in ledgers}
+    completed = [row for row in orders if row.status in {"completed", "partially_refunded", "refunded"}]
+    missing_credit = [row.id for row in completed if (row.payment_id or row.provider_order_id) not in ledger_refs]
+    order_refs = {row.payment_id or row.provider_order_id for row in completed}
+    orphan_credits = [row.reference_id for row in ledgers if row.reference_id not in order_refs]
+    return {
+        "orders": len(orders),
+        "completed_orders": len(completed),
+        "matched_credits": len(completed) - len(missing_credit),
+        "missing_credit_order_ids": missing_credit,
+        "orphan_credit_references": orphan_credits,
+        "total_completed_paise": sum(row.amount_paise for row in completed),
+        "total_credited_paise": sum(row.amount_paise for row in ledgers if row.reference_id in order_refs),
+        "generated_at": now().isoformat(),
+    }
 
 
 @app.get("/models")
@@ -489,6 +859,73 @@ async def catalog_models(team_id: str | None = None, user: User = Depends(curren
 async def activate_model(body: ModelActivationRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     require_team_owner(db, user, body.team_id)
     return await activate_catalog_model(db, body.team_id, body.model_id)
+
+
+@app.get("/teams/{team_id}/model-policies")
+def team_model_policies(team_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_team_access(db, user, team_id)
+    return model_policy_rows(db, team_id)
+
+
+@app.put("/teams/{team_id}/model-policies/{model_id:path}")
+def update_team_model_policy(team_id: str, model_id: str, body: ModelPolicyUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    require_team_owner(db, user, team_id)
+    if db.get(ModelCatalog, model_id) is None:
+        raise compass_error(404, "model_not_found", "Model was not found.")
+    policy = db.scalar(select(ModelPolicy).where(ModelPolicy.team_id == team_id, ModelPolicy.model_id == model_id))
+    if policy is None:
+        policy = ModelPolicy(team_id=team_id, model_id=model_id)
+        db.add(policy)
+    policy.enabled = body.enabled
+    policy.requests_per_minute = body.requests_per_minute
+    policy.daily_spend_limit_paise = body.daily_spend_limit_paise
+    policy.monthly_spend_limit_paise = body.monthly_spend_limit_paise
+    policy.updated_at = now()
+    db.commit()
+    return next(row for row in model_policy_rows(db, team_id) if row["model_id"] == model_id)
+
+
+@app.get("/admin/router/models")
+def admin_router_models(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    return model_catalog_rows(db, include_unpublished=True)
+
+
+@app.get("/admin/router/policies")
+def admin_router_policies(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(select(RoutingPolicy).order_by(RoutingPolicy.alias)).all()
+    return [{"id": row.id, "alias": row.alias, "candidate_models": [item for item in row.candidate_models.split(",") if item], "enabled": row.enabled} for row in rows]
+
+
+@app.put("/admin/router/policies/{alias}")
+def admin_upsert_router_policy(alias: str, body: RoutingPolicyUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    if not alias or len(alias) > 200 or "/" in alias or alias.startswith(("openai/", "gemini/", "ollama_cloud/")):
+        raise compass_error(400, "invalid_routing_alias", "Routing aliases must be short names distinct from provider model IDs.")
+    if len(set(body.candidate_models)) != len(body.candidate_models):
+        raise compass_error(400, "duplicate_routing_model", "Routing policy candidates must be unique.")
+    missing = [model_id for model_id in body.candidate_models if db.get(ModelCatalog, model_id) is None]
+    if missing:
+        raise compass_error(404, "routing_model_not_found", f"Routing policy model was not found: {missing[0]}.")
+    if alias in body.candidate_models:
+        raise compass_error(400, "routing_policy_loop", "A routing policy cannot reference itself.")
+    policy = db.scalar(select(RoutingPolicy).where(RoutingPolicy.alias == alias))
+    if policy is None:
+        policy = RoutingPolicy(alias=alias, candidate_models=",".join(body.candidate_models))
+        db.add(policy)
+    else:
+        policy.candidate_models = ",".join(body.candidate_models)
+    policy.enabled = body.enabled
+    db.commit()
+    return {"id": policy.id, "alias": policy.alias, "candidate_models": body.candidate_models, "enabled": policy.enabled}
+
+
+@app.delete("/admin/router/policies/{alias}")
+def admin_delete_router_policy(alias: str, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    policy = db.scalar(select(RoutingPolicy).where(RoutingPolicy.alias == alias))
+    if policy is None:
+        raise compass_error(404, "routing_policy_not_found", "Routing policy was not found.")
+    db.delete(policy)
+    db.commit()
+    return {"alias": alias, "deleted": True}
 
 
 @app.get("/byok/credentials")
@@ -583,6 +1020,116 @@ async def chat_completions(body: ChatCompletionRequest, authorization: str | Non
     return await complete_chat(db, api_key, payload)
 
 
+@app.post("/v1/responses", dependencies=[Depends(enforce_body_limit)])
+async def responses(body: ResponsesRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    api_key = authenticate_api_key(db, authorization)
+    response = await complete_json_api(db, api_key, body.model_dump(exclude_none=True), "/v1/responses", "responses")
+    if not body.stream:
+        return response
+
+    def response_events():
+        yield f"event: response.completed\ndata: {json.dumps(response)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(response_events(), media_type="text/event-stream")
+
+
+@app.post("/v1/embeddings", dependencies=[Depends(enforce_body_limit)])
+async def embeddings(body: EmbeddingsRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    api_key = authenticate_api_key(db, authorization)
+    return await complete_json_api(db, api_key, body.model_dump(exclude_none=True), "/v1/embeddings", "embeddings")
+
+
+@app.post("/v1/images/generations", dependencies=[Depends(enforce_body_limit)])
+async def image_generations(body: ImageGenerationRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    api_key = authenticate_api_key(db, authorization)
+    return await complete_json_api(db, api_key, body.model_dump(exclude_none=True), "/v1/images/generations", "images")
+
+
+@app.post("/v1/audio/speech", dependencies=[Depends(enforce_body_limit)])
+async def audio_speech(body: AudioSpeechRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    api_key = authenticate_api_key(db, authorization)
+    audio, content_type = await complete_binary_api(db, api_key, body.model_dump(exclude_none=True), "/v1/audio/speech", "audio")
+    return Response(content=audio, media_type=content_type)
+
+
+@app.post("/v1/audio/transcriptions", dependencies=[Depends(enforce_body_limit)])
+async def audio_transcriptions(
+    model: str = Form(...),
+    file: UploadFile = File(...),
+    language: str | None = Form(default=None),
+    prompt: str | None = Form(default=None),
+    response_format: str | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    api_key = authenticate_api_key(db, authorization)
+    content = await file.read()
+    if not content:
+        raise compass_error(400, "empty_audio_file", "The audio file is empty.")
+    form_data = {key: value for key, value in {"language": language, "prompt": prompt, "response_format": response_format, "temperature": temperature}.items() if value is not None}
+    payload = await complete_multipart_api(
+        db,
+        api_key,
+        model,
+        form_data,
+        (file.filename or "audio.bin", content, file.content_type or "application/octet-stream"),
+        "/v1/audio/transcriptions",
+        "audio",
+    )
+    return payload
+
+
+@app.post("/v1/batches", dependencies=[Depends(enforce_body_limit)])
+async def batches(body: BatchRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    if body.model is None:
+        raise compass_error(400, "batch_model_required", "Compass requires a model for batch routing.")
+    api_key = authenticate_api_key(db, authorization)
+    request_payload = body.model_dump(exclude_none=True)
+    response = await complete_json_api(db, api_key, request_payload, "/v1/batches", "batch")
+    provider_batch_id = str(response.get("id")) if response.get("id") else None
+    job = BatchJob(
+        team_id=api_key.team_id,
+        api_key_id=api_key.id,
+        provider_batch_id=provider_batch_id,
+        model=body.model,
+        endpoint=body.endpoint,
+        status=str(response.get("status") or "submitted"),
+        request_json=json.dumps(request_payload),
+        response_json=json.dumps(response),
+    )
+    db.add(job)
+    db.commit()
+    return response | {"compass": {**(response.get("compass") or {}), "batch_id": job.id, "batch_status": job.status}}
+
+
+@app.get("/v1/batches/{batch_id}", dependencies=[Depends(enforce_body_limit)])
+def batch_status(batch_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
+    api_key = authenticate_api_key(db, authorization)
+    job = db.get(BatchJob, batch_id)
+    if job is None or job.api_key_id != api_key.id:
+        raise compass_error(404, "batch_not_found", "Batch job not found.")
+    response = json.loads(job.response_json or "{}")
+    response["id"] = job.provider_batch_id or job.id
+    response["status"] = job.status
+    response["compass"] = {**(response.get("compass") or {}), "batch_id": job.id, "batch_status": job.status}
+    return response
+
+
+@app.post("/v1/batches/{batch_id}/cancel", dependencies=[Depends(enforce_body_limit)])
+def cancel_batch(batch_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
+    api_key = authenticate_api_key(db, authorization)
+    job = db.get(BatchJob, batch_id)
+    if job is None or job.api_key_id != api_key.id:
+        raise compass_error(404, "batch_not_found", "Batch job not found.")
+    if job.status not in {"completed", "failed", "cancelled"}:
+        job.status = "cancelled"
+        job.completed_at = now()
+        db.commit()
+    return {"id": job.provider_batch_id or job.id, "status": job.status, "compass": {"batch_id": job.id, "batch_status": job.status}}
+
+
 @app.get("/usage/requests")
 def usage_requests(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
     stmt = select(LlmRequest).order_by(LlmRequest.created_at.desc())
@@ -627,7 +1174,7 @@ def admin_update_provider_status(provider_name: str, body: ProviderStatusUpdate,
 
 
 @app.patch("/admin/router/models/{model_id:path}")
-def admin_update_model_status(model_id: str, body: ModelStatusUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     model = db.get(ModelCatalog, model_id)
     if model is None:
         raise compass_error(404, "model_not_found", "Model was not found.")
@@ -636,8 +1183,14 @@ def admin_update_model_status(model_id: str, body: ModelStatusUpdate, _: User = 
         model.enabled = body.enabled
     if body.published is not None:
         model.published = body.published
+    if "fallback_model_id" in body.model_fields_set:
+        if body.fallback_model_id == model_id:
+            raise compass_error(400, "routing_policy_loop", "A model cannot fall back to itself.")
+        if body.fallback_model_id is not None and db.get(ModelCatalog, body.fallback_model_id) is None:
+            raise compass_error(404, "fallback_model_not_found", "Fallback model was not found.")
+        model.fallback_model_id = body.fallback_model_id
     db.commit()
-    return {"id": model.id, "status": model.status, "enabled": model.enabled, "published": model.published}
+    return {"id": model.id, "status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "provider_status": model.provider.status, "provider_enabled": model.provider.enabled}
 
 
 @app.post("/admin/provider-credentials")
@@ -655,3 +1208,29 @@ def admin_save_provider_credential(body: ProviderCredentialUpdate, _: User = Dep
 @app.get("/admin/overview")
 def admin_overview(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     return {"users": db.query(User).count(), "teams": db.query(Team).count(), "requests": db.query(LlmRequest).count(), "status": "operational"}
+
+
+@app.get("/admin/operations/metrics")
+def admin_operations_metrics(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    requests = db.scalars(select(LlmRequest)).all()
+    attempts = db.scalars(select(ProviderHealthCheck)).all()
+    failed_orders = db.scalar(select(func.count(PaymentOrder.id)).where(PaymentOrder.status == "failed")) or 0
+    pending_refunds = db.scalar(select(func.count(PaymentRefund.id)).where(PaymentRefund.status.in_(["requested", "pending"]))) or 0
+    return {
+        "status": "operational",
+        "requests": {"total": len(requests), "successful": sum(1 for row in requests if row.status == "success"), "failed": sum(1 for row in requests if row.status == "error")},
+        "provider_health": {"checks": len(attempts), "open_circuits": sum(1 for row in attempts if row.status == "circuit_open")},
+        "billing": {"failed_orders": int(failed_orders), "pending_refunds": int(pending_refunds)},
+        "alerts": [
+            "provider_circuit_open" if any(row.status == "circuit_open" for row in attempts) else None,
+            "payment_failures" if failed_orders else None,
+            "refunds_pending" if pending_refunds else None,
+        ],
+        "generated_at": now().isoformat(),
+    }
+
+
+@app.get("/admin/operations/events")
+def admin_operations_events(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    events = db.scalars(select(OperationalEvent).order_by(OperationalEvent.created_at.desc()).limit(100)).all()
+    return [{"id": event.id, "event_type": event.event_type, "severity": event.severity, "service": event.service, "message": event.message, "metadata": json.loads(event.metadata_json or "{}"), "created_at": event.created_at.isoformat()} for event in events]

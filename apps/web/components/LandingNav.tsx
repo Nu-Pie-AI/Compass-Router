@@ -52,7 +52,14 @@ export function LandingNav() {
     };
   }, []);
 
-  function signOut() {
+  async function signOut() {
+    const saved = window.localStorage.getItem(sessionKey);
+    if (saved) {
+      try {
+        const session = JSON.parse(saved) as { token?: string };
+        if (session.token) await apiFetch("/auth/logout", { method: "POST" }, session.token);
+      } catch { /* local cleanup still signs the browser out */ }
+    }
     window.localStorage.removeItem(sessionKey);
     window.location.assign(marketplaceUrl("/compass/logout"));
   }

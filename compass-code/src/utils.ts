@@ -10,6 +10,23 @@ export function isPathInside(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+export function isSensitivePath(relativePath: string): boolean {
+  const normalized = relativePath.replaceAll("\\", "/").toLocaleLowerCase();
+  const name = normalized.split("/").at(-1) ?? normalized;
+  return name === ".env" || name.startsWith(".env.") || name === ".npmrc" || name === ".pypirc" ||
+    name.includes("credentials") || name.includes("secret") || name.endsWith(".pem") || name.endsWith(".key") ||
+    name === "id_rsa" || normalized.includes("/.ssh/") || normalized.includes("/.git/");
+}
+
+export function looksBinary(value: Uint8Array): boolean {
+  const sample = value.subarray(0, Math.min(value.length, 4096));
+  return sample.includes(0);
+}
+
+export function shellCommandIsBlocked(command: string): boolean {
+  return /(^|\s)(rm\s+-rf|del\s+\/s|format\s+|shutdown\b|poweroff\b|git\s+reset\s+--hard|git\s+clean\s+-fd|remove-item\b)/i.test(command);
+}
+
 export function formatPaise(value: number | undefined | null): string {
   return `Rs ${((value ?? 0) / 100).toFixed(2)}`;
 }

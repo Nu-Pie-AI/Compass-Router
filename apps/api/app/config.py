@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     compass_web_origin: str = "http://localhost:23000"
     compass_sso_secret: str = "dev-compass-sso-secret-change-me"
+    gcp_project_id: str | None = None
+    gcp_secret_manager_prefix: str = "compass"
+    secret_manager_enabled: bool = False
     compass_litellm_url: str | None = None
     litellm_url: str = "http://localhost:4000"
     litellm_master_key: str = "dev-litellm-key"
@@ -18,6 +21,7 @@ class Settings(BaseSettings):
     local_test_output_price_paise_per_1k: int = 6
     local_test_wallet_credit_paise: int = 50_000
     litellm_timeout_seconds: float = 60.0
+    provider_execution_mode: str = "auto"
     provider_max_attempts: int = 2
     provider_retry_backoff_seconds: float = 0.25
     redis_rate_limit_enabled: bool = True

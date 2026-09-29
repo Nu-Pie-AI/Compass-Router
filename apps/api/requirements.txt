@@ -8,5 +8,7 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-jose[cryptography]==3.5.0
 httpx==0.28.1
+python-multipart==0.0.20
+google-cloud-secret-manager==2.24.0
 pytest==8.4.1
 pytest-asyncio==1.1.0

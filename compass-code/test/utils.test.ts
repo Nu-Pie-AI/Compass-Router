@@ -1,7 +1,8 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { formatPaise, isPathInside, normalizeBaseUrl, parseJsonObject, truncate } from "../src/utils.js";
+import { formatPaise, isPathInside, isSensitivePath, normalizeBaseUrl, parseJsonObject, shellCommandIsBlocked, truncate } from "../src/utils.js";
+import { providerTools } from "../src/providers.js";
 
 describe("Compass Code utilities", () => {
   it("normalizes API URLs without losing the host", () => {
@@ -24,5 +25,17 @@ describe("Compass Code utilities", () => {
   it("truncates oversized tool output", () => {
     expect(truncate("abc", 5)).toBe("abc");
     expect(truncate("abcdefgh", 5)).toContain("abcde");
+  });
+
+  it("protects secret paths and dangerous shell commands", () => {
+    expect(isSensitivePath(".env.production")).toBe(true);
+    expect(isSensitivePath("src/config.ts")).toBe(false);
+    expect(shellCommandIsBlocked("git reset --hard HEAD")).toBe(true);
+    expect(shellCommandIsBlocked("npm test")).toBe(false);
+  });
+
+  it("removes internal permission metadata from provider tool payloads", () => {
+    const payload = providerTools([{ permission: "write", output: { type: "string" }, type: "function", function: { name: "write_file", description: "write", parameters: {} } }]);
+    expect(payload).toEqual([{ type: "function", function: { name: "write_file", description: "write", parameters: {} } }]);
   });
 });

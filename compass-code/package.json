@@ -2,7 +2,7 @@
   "name": "compass-code",
   "displayName": "Compass Code",
   "description": "A Compass-powered coding agent for Visual Studio Code.",
-  "version": "0.1.1",
+  "version": "0.2.19",
   "publisher": "toheedsoudagar",
   "license": "MIT",
   "repository": {
@@ -32,9 +32,34 @@
   "activationEvents": [
     "onView:compassCode.chat",
     "onCommand:compassCode.connect",
+    "onCommand:compassCode.disconnect",
+    "onCommand:compassCode.openAgent",
     "onCommand:compassCode.newTask",
     "onCommand:compassCode.chooseModel",
-    "onCommand:compassCode.restoreCheckpoint"
+    "onCommand:compassCode.restoreCheckpoint",
+    "onCommand:compassCode.openSettings",
+    "onCommand:compassCode.openDashboard",
+    "onCommand:compassCode.explainSelection",
+    "onCommand:compassCode.fixSelection",
+    "onCommand:compassCode.refactorSelection",
+    "onCommand:compassCode.optimizeSelection",
+    "onCommand:compassCode.generateTests",
+    "onCommand:compassCode.generateDocumentation",
+    "onCommand:compassCode.fixProblems",
+    "onCommand:compassCode.reviewChanges",
+    "onCommand:compassCode.generateCommitMessage",
+    "onCommand:compassCode.stopAgent"
+  ],
+  "keybindings": [
+    {
+      "command": "compassCode.openAgent",
+      "key": "ctrl+alt+shift+c"
+    },
+    {
+      "command": "compassCode.newTask",
+      "key": "ctrl+alt+shift+n",
+      "when": "view == compassCode.chat"
+    }
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -71,13 +96,13 @@
       },
       {
         "command": "compassCode.openAgent",
-        "title": "Open Agent",
+        "title": "AI: Open Assistant",
         "category": "Compass Code",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "compassCode.newTask",
-        "title": "New Task",
+        "title": "AI: New Chat",
         "category": "Compass Code",
         "icon": "$(add)"
       },
@@ -92,6 +117,78 @@
         "title": "Restore Last Checkpoint",
         "category": "Compass Code",
         "icon": "$(history)"
+      },
+      {
+        "command": "compassCode.openSettings",
+        "title": "Compass Code Settings",
+        "category": "Compass Code",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "compassCode.openDashboard",
+        "title": "Open Compass Dashboard",
+        "category": "Compass Code",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "compassCode.explainSelection",
+        "title": "AI: Explain Selection",
+        "category": "Compass Code",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "compassCode.fixSelection",
+        "title": "AI: Fix Selection",
+        "category": "Compass Code",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "compassCode.refactorSelection",
+        "title": "AI: Refactor Selection",
+        "category": "Compass Code",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "compassCode.optimizeSelection",
+        "title": "AI: Optimize Selection",
+        "category": "Compass Code",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "compassCode.generateTests",
+        "title": "AI: Generate Tests",
+        "category": "Compass Code",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "compassCode.generateDocumentation",
+        "title": "AI: Generate Documentation",
+        "category": "Compass Code",
+        "icon": "$(book)"
+      },
+      {
+        "command": "compassCode.fixProblems",
+        "title": "AI: Fix Problems",
+        "category": "Compass Code",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "compassCode.reviewChanges",
+        "title": "AI: Review Changes",
+        "category": "Compass Code",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "compassCode.generateCommitMessage",
+        "title": "AI: Generate Commit Message",
+        "category": "Compass Code",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "compassCode.stopAgent",
+        "title": "AI: Stop Agent",
+        "category": "Compass Code",
+        "icon": "$(debug-stop)"
       }
     ],
     "menus": {
@@ -110,16 +207,88 @@
           "command": "compassCode.restoreCheckpoint",
           "when": "view == compassCode.chat",
           "group": "navigation@3"
+        },
+        {
+          "command": "compassCode.openSettings",
+          "when": "view == compassCode.chat",
+          "group": "navigation@4"
+        },
+        {
+          "command": "compassCode.openDashboard",
+          "when": "view == compassCode.chat",
+          "group": "navigation@5"
+        },
+        {
+          "command": "compassCode.disconnect",
+          "when": "view == compassCode.chat",
+          "group": "navigation@6"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "compassCode.explainSelection",
+          "when": "editorHasSelection",
+          "group": "inline@1"
+        },
+        {
+          "command": "compassCode.fixSelection",
+          "when": "editorHasSelection",
+          "group": "inline@2"
+        },
+        {
+          "command": "compassCode.refactorSelection",
+          "when": "editorHasSelection",
+          "group": "inline@3"
+        },
+        {
+          "command": "compassCode.optimizeSelection",
+          "when": "editorHasSelection",
+          "group": "inline@4"
+        },
+        {
+          "command": "compassCode.generateTests",
+          "when": "editorHasSelection",
+          "group": "inline@5"
+        },
+        {
+          "command": "compassCode.generateDocumentation",
+          "when": "editorHasSelection",
+          "group": "inline@6"
         }
       ]
     },
     "configuration": {
       "title": "Compass Code",
       "properties": {
+        "compassCode.provider": {
+          "type": "string",
+          "enum": [
+            "compass",
+            "openai-compatible",
+            "ollama"
+          ],
+          "enumDescriptions": [
+            "Compass Router API",
+            "Any OpenAI-compatible API",
+            "Local Ollama OpenAI-compatible API"
+          ],
+          "default": "compass",
+          "description": "Model provider used by Compass Code."
+        },
         "compassCode.apiBaseUrl": {
           "type": "string",
           "default": "https://compass-router-api-567790052414.us-central1.run.app",
           "description": "Compass API base URL. Do not include /v1."
+        },
+        "compassCode.marketplaceUrl": {
+          "type": "string",
+          "default": "https://compass-marketplace-567790052414.us-central1.run.app",
+          "description": "Compass web console URL used by the dashboard command."
+        },
+        "compassCode.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Preferred model ID selected from the configured provider."
         },
         "compassCode.maxAgentSteps": {
           "type": "number",
@@ -142,6 +311,11 @@
           "type": "boolean",
           "default": false,
           "description": "Allow terminal commands without prompting."
+        },
+        "compassCode.autoApproveNetwork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow network-enabled tools without prompting."
         }
       }
     }
@@ -158,6 +332,7 @@
   "dependencies": {
     "@vscode/codicons": "^0.0.44",
     "dompurify": "^3.2.6",
+    "highlight.js": "^11.11.1",
     "marked": "^15.0.12"
   },
   "devDependencies": {

@@ -40,7 +40,7 @@ The public homepage remains at `http://localhost:23000/`. The console uses a lig
 - `/byok`: encrypted, team-scoped provider API keys for supported single-key providers. Raw provider keys are never returned after submission.
 - Existing `/dashboard`, `/chat`, `/playground`, `/usage`, `/wallet`, and `/admin` workflows remain available.
 
-Workspace selection persists in browser storage. Personal-to-team credit allocation, member budgets, per-key spending totals/limits, guardrails, files, classifiers, presets, and management keys are not implemented. Unsupported navigation is disabled; no sample balances or limits are substituted for real data. Platform Keys remain operator-managed; BYOK keys belong to a team and are preferred for that team's requests.
+Workspace selection persists in browser storage. Per-key request totals and daily/monthly spending limits are enforced before provider execution and are visible in the API-key console. Model lifecycle, provider health, routing aliases, and team model budgets are documented in `docs/model-governance.md`. Personal-to-team credit allocation, member budgets, guardrails, files, classifiers, presets, and management keys remain outside the current beta scope. Unsupported navigation is disabled; no sample balances or limits are substituted for real data. Platform Keys remain operator-managed; BYOK keys belong to a team and are preferred for that team's requests.
 
 The directory reads the same LiteLLM-maintained registry exposed by the controlled proxy. It is broad provider metadata, not a claim that every model on the internet is callable. Catalog discovery alone does not grant access. A team owner saves a supported BYOK key, enables a chat model, and then attaches that provider-native model ID to a Compass API key.
 
@@ -151,4 +151,4 @@ Open the Compass Code activity-bar view and connect it to `http://localhost:2800
 
 ## Current Status
 
-This repository contains the Compass Router application only. Live Razorpay, GCP deployment, production secret-manager integration, and multi-field cloud BYOK credentials are intentionally not implemented yet. Local mode uses deterministic test pricing and wallet ledger entries in PostgreSQL.
+The Router includes session revocation and login throttling, Secret Manager/BYOK references, Responses and batch lifecycle endpoints, billing webhooks/refunds/invoices/reconciliation, model governance, provider-health events, and operational metrics. Native provider adapters remain outside this codebase; production OAuth/email delivery, live Razorpay verification, GCP IAM/alert policy configuration, and Cloud Run secret values remain deployment prerequisites.
