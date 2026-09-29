@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, LogIn, LogOut, Route, UserPlus } from "lucide-react";
+import { ArrowRight, LogIn, LogOut, Route, Store, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -41,6 +41,7 @@ export function LandingNav() {
         <Link href="/pricing">Pricing</Link>
       </div>
       <div className="marketing-actions">
+        <a className="button button-secondary marketplace-return-button" href={marketplaceUrl("/")}><Store aria-hidden="true" />Marketplace</a>
         {signedIn ? (
           <>
             <Link className="button button-quiet" href="/dashboard">Overview <ArrowRight aria-hidden="true" /></Link>
