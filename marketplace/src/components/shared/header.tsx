@@ -19,6 +19,9 @@ export function Header() {
   const userRole = (session?.user as { role?: string } | undefined)?.role;
   const normalizedUserRole: UserRole =
     userRole === "admin" || userRole === "partner" ? userRole : null;
+  const compassRouterLink = session?.user
+    ? compassRouterUrl
+    : `${compassRouterUrl}${compassRouterUrl.includes("?") ? "&" : "?"}signedOut=1`;
 
   // Lock body scroll when mobile menu is open
   useEffect(() => {
@@ -135,7 +138,7 @@ export function Header() {
                 )}
               </Link>
               <a
-                href={compassRouterUrl}
+                href={compassRouterLink}
                 className={cn(
                   "text-sm font-medium transition-colors relative inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5",
                   isActive("/compass")
@@ -287,7 +290,7 @@ export function Header() {
               </Link>
 
               <a
-                href={compassRouterUrl}
+                href={compassRouterLink}
                 onClick={() => setMobileMenuOpen(false)}
                 className={cn(
                   "block px-4 py-3 text-base font-medium transition-colors inline-flex items-center gap-2",

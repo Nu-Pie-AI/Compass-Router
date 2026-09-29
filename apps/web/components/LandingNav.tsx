@@ -3,6 +3,7 @@
 import { ArrowRight, LogIn, LogOut, Route, Store, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { apiFetch } from "../lib/api";
 
 const sessionKey = "compass.local.session";
 
@@ -15,10 +16,40 @@ export function LandingNav() {
   const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
-    setSignedIn(Boolean(window.localStorage.getItem(sessionKey)));
+    let active = true;
+    const syncSession = async () => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("signedOut") === "1") {
+        window.localStorage.removeItem(sessionKey);
+        params.delete("signedOut");
+        const query = params.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+      }
+
+      const saved = window.localStorage.getItem(sessionKey);
+      if (!saved) {
+        if (active) setSignedIn(false);
+        return;
+      }
+
+      try {
+        const session = JSON.parse(saved) as { token?: string };
+        if (!session.token) throw new Error("Missing Compass session token.");
+        await apiFetch("/me", {}, session.token);
+        if (active) setSignedIn(true);
+      } catch {
+        window.localStorage.removeItem(sessionKey);
+        if (active) setSignedIn(false);
+      }
+    };
+
+    void syncSession();
     const onStorage = () => setSignedIn(Boolean(window.localStorage.getItem(sessionKey)));
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    return () => {
+      active = false;
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   function signOut() {
