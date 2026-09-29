@@ -103,6 +103,7 @@ app = FastAPI(title="Compass AI Router", version="0.2.0-beta", lifespan=lifespan
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.compass_web_origin.split(",") if origin.strip()],
+    allow_origin_regex=r"https://compass-router-web-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
