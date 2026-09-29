@@ -71,7 +71,9 @@ textarea { resize: vertical; min-height: 82px; line-height: 1.45; }
 .chat-history-empty { padding: 4px 8px; }
 .transcript { flex: 1 1 auto; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 18px 16px; overflow: auto; }
 .empty { min-height: 260px; display: grid; align-content: center; justify-items: center; gap: 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 12px; }
-.empty::before { content: "\\2311"; display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 5px; border: 2px solid var(--vscode-descriptionForeground); border-radius: 50%; color: var(--vscode-descriptionForeground); font-size: 25px; line-height: 1; opacity: .38; }
+.empty-logo { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 5px; color: var(--vscode-textLink-foreground); opacity: .75; }
+.empty-logo svg { width: 42px; height: 42px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.empty-logo circle { fill: currentColor; stroke: none; }
 .empty strong { color: var(--vscode-foreground); font-size: 14px; font-weight: 500; }
 .message { overflow: hidden; }
 .message pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 12px; line-height: 1.55; }
@@ -89,23 +91,17 @@ textarea { resize: vertical; min-height: 82px; line-height: 1.45; }
 .composer { flex: 0 0 auto; display: grid; gap: 8px; margin: 0 12px 12px; padding: 10px 10px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 14px; background: var(--vscode-input-background); box-shadow: 0 8px 24px rgba(0, 0, 0, .12); }
 .composer textarea { min-height: 64px; padding: 1px 2px 0; border: 0; border-radius: 0; background: transparent; resize: none; }
 .composer textarea:focus { border: 0; }
-.composer-toolbar { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.composer-toolbar { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .composer-icon { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--vscode-descriptionForeground); font-size: 19px; }
 .composer-icon:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
-.checkbox { display: flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-.checkbox.compact { margin-right: auto; }
-.checkbox.compact input { position: absolute; opacity: 0; pointer-events: none; }
-.checkbox.compact span { display: none; }
-.checkbox.compact .selection-symbol { display: inline; color: var(--vscode-descriptionForeground); font-size: 18px; line-height: 1; }
-.checkbox input { accent-color: var(--vscode-focusBorder); }
 .select-control { display: block; min-width: 0; }
-.select-control select { max-width: 155px; padding: 5px 19px 5px 7px; border: 0; border-radius: 5px; background: transparent; color: var(--vscode-foreground); font-size: 11px; }
+.select-control:first-child { min-width: 0; margin-left: auto; }
+.select-control select { max-width: 155px; padding: 5px 19px 5px 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--vscode-foreground); font-size: 11px; }
 .select-control select:hover { background: var(--vscode-toolbar-hoverBackground); }
 .mode-select select { max-width: 75px; color: var(--vscode-descriptionForeground); }
 .send { display: grid; place-items: center; width: 30px; height: 30px; margin-left: 2px; padding: 0; border: 0; border-radius: 50%; background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-size: 17px; line-height: 1; }
 .send:hover { background: var(--vscode-button-hoverBackground); }
 .composer-status { display: flex; align-items: center; gap: 3px; padding: 0 2px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-.chevron { font-size: 14px; line-height: 10px; }
 .approval-note { margin-left: auto; text-align: right; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .permission { margin: 0 12px 4px; padding: 10px; display: grid; gap: 9px; border: 1px solid var(--vscode-charts-orange); background: var(--vscode-editorWarning-background); }
@@ -113,4 +109,4 @@ textarea { resize: vertical; min-height: 82px; line-height: 1.45; }
 .permission code { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); }
 .permission-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .alert { margin: 8px 12px; padding: 8px; border: 1px solid var(--vscode-inputValidation-errorBorder); background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-inputValidation-errorForeground); font-size: 12px; line-height: 1.4; }
-@media (max-width: 360px) { .select-control select { max-width: 104px; } .mode-select { display: none; } .approval-note { display: none; } }
+@media (max-width: 360px) { .select-control select { max-width: 104px; } .mode-select select { max-width: 68px; } .approval-note { display: none; } }

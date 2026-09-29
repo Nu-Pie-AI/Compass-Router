@@ -96,7 +96,7 @@ function connectMarkup(): string {
 function connectedMarkup(): string {
   const hasTranscript = state.transcript.length > 0;
   const modelOptions = state.models.map((model) => `<option value="${esc(model.id)}" ${model.id === state.selectedModel ? "selected" : ""}>${esc(model.id)}</option>`).join("");
-  const messages = hasTranscript ? state.transcript.map(transcriptMarkup).join("") : `<div class="empty"><strong>Ready when you are.</strong><span>Ask Compass to explain, plan, debug, or change the code in this workspace.</span></div>`;
+  const messages = hasTranscript ? state.transcript.map(transcriptMarkup).join("") : `<div class="empty"><span class="empty-logo" aria-hidden="true"><svg viewBox="0 0 32 32" role="presentation"><path d="M6 9h13a4 4 0 1 0-4-4" /><path d="M26 23H13a4 4 0 1 0 4 4" /><circle cx="6" cy="9" r="3" /><circle cx="26" cy="23" r="3" /></svg></span><strong>Ready when you are.</strong><span>Ask Compass to inspect, explain, plan, debug, or change this workspace.</span></div>`;
   const firstPrompt = state.transcript.find((item) => item.role === "user")?.content.split("\n")[0].trim() || "New chat";
   const lastAssistant = [...state.transcript].reverse().find((item) => item.role === "assistant");
   const workedFor = lastAssistant?.meta?.latencyMs ? `Worked for ${Math.max(1, Math.round(lastAssistant.meta.latencyMs / 1000))}s` : "";
@@ -119,17 +119,13 @@ function connectedMarkup(): string {
     <section class="transcript" aria-live="polite">${messages}</section>
     ${workedFor ? `<div class="worked-row"><span>${workedFor}</span><span aria-hidden="true">&#x203a;</span></div>` : ""}
     <section class="composer" aria-label="Compass Code composer">
-      <textarea id="prompt" placeholder="${hasTranscript ? "Ask for follow-up changes" : "Do anything"}" rows="3" ${state.busy ? "disabled" : ""}></textarea>
+      <textarea id="prompt" placeholder="${hasTranscript ? "Ask a follow-up about this workspace..." : "Ask Compass to inspect or change this workspace..."}" rows="3" ${state.busy ? "disabled" : ""}></textarea>
       <div class="composer-toolbar">
-        <button class="composer-icon" id="attach" type="button" title="Add context" aria-label="Add context">&#x2b;</button>
-        <label class="checkbox compact" title="Include current selection"><input id="include-selection" type="checkbox" checked ${state.busy ? "disabled" : ""} /><span class="selection-symbol" aria-hidden="true">&#x261d;</span><span>Selection</span></label>
         <label class="select-control" title="Choose a model"><span class="sr-only">Model</span><select id="model" ${state.busy ? "disabled" : ""}>${modelOptions || "<option>No models available</option>"}</select></label>
         <label class="select-control mode-select" title="Choose a mode"><span class="sr-only">Mode</span><select id="mode" ${state.busy ? "disabled" : ""}>${modeOptions}</select></label>
-        <button class="composer-icon sparkle" type="button" title="Compass actions" aria-label="Compass actions">&#x2726;</button>
-        <button class="composer-icon" id="voice" type="button" title="Voice input is not connected" aria-label="Voice input" disabled>&#x1f399;</button>
         <button class="send" id="send" type="button" title="${state.busy ? "Stop task" : "Send message"}" aria-label="${state.busy ? "Stop task" : "Send message"}">${state.busy ? "&#x25a0;" : "&#x2191;"}</button>
       </div>
-      <div class="composer-status"><span>Work locally</span><span class="chevron">&#x2304;</span><span class="approval-note">Writes and terminal commands require approval</span></div>
+      <div class="composer-status"><span class="approval-note">Changes and terminal commands require approval</span></div>
     </section>
   </main>`;
 }
@@ -172,10 +168,6 @@ function bindEvents(): void {
   });
   document.querySelector<HTMLButtonElement>("#restore-checkpoint")?.addEventListener("click", () => post({ type: "restoreCheckpoint" }));
   document.querySelector<HTMLButtonElement>("#settings")?.addEventListener("click", () => post({ type: "openSettings" }));
-  document.querySelector<HTMLButtonElement>("#attach")?.addEventListener("click", () => {
-    const checkbox = document.querySelector<HTMLInputElement>("#include-selection");
-    if (checkbox) checkbox.checked = true;
-  });
   document.querySelector<HTMLSelectElement>("#model")?.addEventListener("change", (event) => post({ type: "setModel", model: (event.target as HTMLSelectElement).value }));
   document.querySelector<HTMLSelectElement>("#mode")?.addEventListener("change", (event) => post({ type: "setMode", mode: (event.target as HTMLSelectElement).value as AgentMode }));
   document.querySelectorAll<HTMLButtonElement>("[data-permission]").forEach((button) => button.addEventListener("click", () => post({ type: "permission", id: button.dataset.permissionId, approved: button.dataset.permission === "approve" })));
@@ -186,10 +178,13 @@ function bindEvents(): void {
     }
     const prompt = document.querySelector<HTMLTextAreaElement>("#prompt")?.value.trim() ?? "";
     if (!prompt) return;
-    post({ type: "send", prompt, model: state.selectedModel, mode: state.mode, includeSelection: document.querySelector<HTMLInputElement>("#include-selection")?.checked ?? false });
+    post({ type: "send", prompt, model: state.selectedModel, mode: state.mode, includeSelection: false });
   });
   document.querySelector<HTMLTextAreaElement>("#prompt")?.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") document.querySelector<HTMLButtonElement>("#send")?.click();
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      document.querySelector<HTMLButtonElement>("#send")?.click();
+    }
   });
 }
 
