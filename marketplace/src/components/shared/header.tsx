@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 
 type UserRole = "admin" | "partner" | null;
+const compassRouterUrl = process.env.NEXT_PUBLIC_COMPASS_ROUTER_URL || "https://compass-router-web-567790052414.us-central1.run.app";
 
 export function Header() {
   const pathname = usePathname();
@@ -133,8 +134,8 @@ export function Header() {
                   <span className="absolute -bottom-[21px] left-0 right-0 h-0.5 bg-[var(--primary)]" />
                 )}
               </Link>
-              <Link
-                href="/compass"
+              <a
+                href={compassRouterUrl}
                 className={cn(
                   "text-sm font-medium transition-colors relative inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5",
                   isActive("/compass")
@@ -147,7 +148,7 @@ export function Header() {
                 {isActive("/compass") && (
                   <span className="absolute -bottom-[21px] left-0 right-0 h-0.5 bg-[var(--primary)]" />
                 )}
-              </Link>
+              </a>
               <Link
                 href={getPartnersLink()}
                 className={cn(
@@ -285,8 +286,8 @@ export function Header() {
                 AI Advisor
               </Link>
 
-              <Link
-                href="/compass"
+              <a
+                href={compassRouterUrl}
                 onClick={() => setMobileMenuOpen(false)}
                 className={cn(
                   "block px-4 py-3 text-base font-medium transition-colors inline-flex items-center gap-2",
@@ -298,7 +299,7 @@ export function Header() {
               >
                 <CompassIcon className="h-5 w-5" aria-hidden="true" />
                 Compass Router
-              </Link>
+              </a>
 
               <Link
                 href={getPartnersLink()}
