@@ -34,7 +34,7 @@ const allDestinations = [
   { label: "Teams", href: "/teams" },
 ];
 const topLinks = [
-  { label: "Home", href: "/" },
+  { label: "Home", href: "/dashboard" },
   { label: "Models", href: "/models" },
   { label: "Pricing", href: "/pricing" },
   { label: "Chat", href: "/chat" },

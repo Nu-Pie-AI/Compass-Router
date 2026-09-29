@@ -41,7 +41,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   private agent: CompassAgent | undefined;
   private permissionResolver: ((approved: boolean) => void) | undefined;
   private state: ViewState = {
-    baseUrl: "http://127.0.0.1:28000",
+    baseUrl: "https://compass-router-api-567790052414.us-central1.run.app",
     connected: false,
     connecting: false,
     busy: false,

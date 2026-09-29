@@ -4,7 +4,16 @@
   "description": "A Compass-powered coding agent for Visual Studio Code.",
   "version": "0.1.0",
   "publisher": "toheedsoudagar",
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nu-Pie-AI/Compass.git",
+    "directory": "compass-code"
+  },
+  "homepage": "https://github.com/Nu-Pie-AI/Compass/tree/main/compass-code",
+  "bugs": {
+    "url": "https://github.com/Nu-Pie-AI/Compass/issues"
+  },
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -18,7 +27,7 @@
     "agent",
     "compass",
     "coding assistant",
-    "litellm"
+    "workspace agent"
   ],
   "activationEvents": [
     "onView:compassCode.chat",
@@ -109,7 +118,7 @@
       "properties": {
         "compassCode.apiBaseUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:28000",
+          "default": "https://compass-router-api-567790052414.us-central1.run.app",
           "description": "Compass API base URL. Do not include /v1."
         },
         "compassCode.maxAgentSteps": {

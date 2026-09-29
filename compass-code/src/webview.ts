@@ -21,7 +21,7 @@ type State = {
 };
 
 const initial: State = {
-  baseUrl: "http://127.0.0.1:28000",
+  baseUrl: "https://compass-router-api-567790052414.us-central1.run.app",
   connected: false,
   connecting: false,
   busy: false,
@@ -60,7 +60,7 @@ function render(): void {
 }
 
 function connectMarkup(): string {
-  const baseUrl = state.baseUrl || "http://127.0.0.1:28000";
+  const baseUrl = state.baseUrl || "https://compass-router-api-567790052414.us-central1.run.app";
   return `<section class="welcome-shell">
     <div class="brand-lockup" aria-label="Compass">
       <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 32 32" role="presentation"><path d="M6 9h13a4 4 0 1 0-4-4" /><path d="M26 23H13a4 4 0 1 0 4 4" /><circle cx="6" cy="9" r="3" /><circle cx="26" cy="23" r="3" /></svg></span>
@@ -86,7 +86,7 @@ function connectMarkup(): string {
       <label>Compass API URL<input id="base-url" value="${esc(baseUrl)}" spellcheck="false" /></label>
       <label>Compass API key<input id="api-key" type="password" placeholder="sk-compass-..." autocomplete="off" /></label>
       <button class="primary full" id="connect">${state.connecting ? "Connecting..." : "Continue"}</button>
-      <p class="hint">Local development default: <code>http://127.0.0.1:28000</code></p>
+      <p class="hint">You can change the API URL in VS Code settings for a self-hosted Compass instance.</p>
       ${state.error ? `<div class="alert error">${esc(state.error)}</div>` : ""}
     </section>
   </section>`;

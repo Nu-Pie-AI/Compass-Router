@@ -598,7 +598,7 @@ def usage_requests(user: User = Depends(current_user), db: Session = Depends(get
 def admin_local_test(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     return {
         "mode": "LOCAL TEST MODE",
-        "note": "Provider credentials are stored server-side. Local beta models use the controlled LiteLLM local-test path, not real provider calls.",
+        "note": "Provider credentials are stored server-side. Test routes are deterministic and do not make real provider calls.",
         "providers": provider_credentials_summary(db),
         "models": model_catalog_rows(db),
     }

@@ -2,19 +2,25 @@ import {
   Activity,
   ArrowRight,
   BarChart3,
+  CheckCircle2,
   Check,
   Code2,
   Database,
+  Download,
+  FileCode2,
+  GitBranch,
   Gauge,
   KeyRound,
   Layers3,
   Route,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Wallet,
   Zap,
 } from "lucide-react";
 import Link from "next/link";
+import { LandingNav } from "./LandingNav";
 
 const capabilities = [
   { icon: Route, title: "One API for configured routes", copy: "Connect applications once, then route chat requests through the models and providers enabled for your workspace." },
@@ -33,23 +39,7 @@ const flow = [
 export function MarketingHome() {
   return (
     <main className="marketing-shell">
-      <nav className="marketing-nav" aria-label="Primary navigation">
-        <Link className="brand-lockup" href="/" aria-label="Compass home">
-          <span className="brand-mark"><Route aria-hidden="true" /></span>
-          <span>Compass</span>
-        </Link>
-        <div className="marketing-links">
-          <a href="#platform">Platform</a>
-          <a href="#workflow">How it works</a>
-          <a href="#security">Security</a>
-          <Link href="/models">Models</Link>
-          <Link href="/pricing">Pricing</Link>
-        </div>
-        <div className="marketing-actions">
-          <Link className="button button-quiet" href="/chat">Try chat</Link>
-          <Link className="button button-primary" href="/dashboard">Open console <ArrowRight aria-hidden="true" /></Link>
-        </div>
-      </nav>
+      <LandingNav />
 
       <section className="hero-section">
         <div className="hero-copy">
@@ -162,6 +152,21 @@ export function MarketingHome() {
         </div>
       </section>
 
+      <section className="extension-section" id="extension">
+        <div className="extension-section-copy">
+          <span className="eyebrow"><Code2 aria-hidden="true" /> Compass Code for VS Code</span>
+          <h2>Bring the router into your editor.</h2>
+          <p>Use the Compass Code extension to ask questions, plan changes, inspect files, and make approved edits without leaving VS Code.</p>
+          <div className="extension-feature-list">
+            <span><CheckCircle2 aria-hidden="true" /> Review-first or high-autonomy work styles</span>
+            <span><CheckCircle2 aria-hidden="true" /> Workspace-aware file and terminal tools</span>
+            <span><CheckCircle2 aria-hidden="true" /> Compass model and API-key controls</span>
+          </div>
+          <div className="hero-actions"><Link className="button button-primary button-large" href="/extension"><Download aria-hidden="true" />Explore Compass Code</Link><a className="button button-secondary button-large" href="https://github.com/Nu-Pie-AI/Compass/releases" target="_blank" rel="noreferrer">View releases <ArrowRight aria-hidden="true" /></a></div>
+        </div>
+        <div className="extension-mini-preview"><div className="mini-top"><span><i /><i /><i /></span><strong>Compass Code</strong><small>AGENT</small></div><div className="mini-body"><aside><FileCode2 /><GitBranch /><Terminal /></aside><div><span className="mini-label">REVIEW FIRST</span><strong>Ready when you are.</strong><p>Ask Compass to inspect or change this workspace.</p><div className="mini-input"><span>Describe a task...</span><ArrowRight /></div></div></div></div>
+      </section>
+
       <section className="security-section" id="security">
         <div className="security-mark"><ShieldCheck aria-hidden="true" /></div>
          <div><span className="eyebrow">Designed for controlled access</span><h2>Provider credentials stay behind the Compass API.</h2></div>
@@ -173,7 +178,7 @@ export function MarketingHome() {
       </section>
 
       <section className="final-cta">
-         <div><span className="eyebrow">Compass Router controlled beta</span><h2>Give your applications one controlled chat endpoint.</h2></div>
+        <div><span className="eyebrow">Compass Router</span><h2>Give your applications one controlled chat endpoint.</h2></div>
         <Link className="button button-inverse button-large" href="/dashboard">Open Compass console <ArrowRight aria-hidden="true" /></Link>
       </section>
 

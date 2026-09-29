@@ -161,7 +161,7 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
       <div className="published-model-grid">
         {published.length ? published.map((model) => <article key={model.id} className="published-model-row">
           <div><span className="provider-mark">{providerNames[model.provider] ?? model.provider}</span><h3>{model.display_name}</h3><code>{model.id}</code></div>
-          <div className="model-route"><span>LiteLLM route</span><code>{model.provider_model_id ?? "-"}</code></div>
+          <div className="model-route"><span>Provider route</span><code>{model.provider_model_id ?? "-"}</code></div>
           <div className="model-price"><span>Input / 1K</span><strong>{model.input_price_paise_per_1k} paise</strong></div>
           <div className="model-price"><span>Output / 1K</span><strong>{model.output_price_paise_per_1k} paise</strong></div>
           <span className="key-status active">{model.status}</span>
@@ -171,7 +171,7 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
 
     <section className="provider-inventory" aria-labelledby="provider-inventory-title">
       <div className="catalog-heading">
-        <div><span className="catalog-eyebrow">LITELLM MODEL REGISTRY</span><h2 id="provider-inventory-title">Explore models</h2><p>Compare provider-native IDs, modalities, context, and published provider pricing. Enable compatible chat models with BYOK.</p></div>
+        <div><span className="catalog-eyebrow">PROVIDER MODEL CATALOG</span><h2 id="provider-inventory-title">Explore models</h2><p>Compare provider-native IDs, modalities, context, and published provider pricing. Enable compatible chat models with BYOK.</p></div>
         <button className="console-secondary" disabled={loading} onClick={() => void refresh()}><RefreshCw size={16} className={loading ? "animate-spin" : ""} />{loading ? "Refreshing..." : "Refresh"}</button>
       </div>
 
@@ -200,7 +200,7 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
         </aside>
 
         <div className="catalog-results">
-          <div className="catalog-result-count"><strong>{filtered.length} models</strong><span>{discovery?.scope_note ?? "Controlled LiteLLM registry"}</span></div>
+          <div className="catalog-result-count"><strong>{filtered.length} models</strong><span>{discovery?.scope_note ?? "Provider model registry"}</span></div>
           <div className="model-catalog-list">
             {loading && !discovery ? <div className="model-table-empty">Loading provider catalogs...</div> : filtered.length ? filtered.slice(0, visible).map((model) => {
               const publication = model.compass_model_id ? publishedById.get(model.compass_model_id) : undefined;

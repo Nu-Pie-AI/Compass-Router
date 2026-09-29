@@ -9,7 +9,7 @@ export class CompassClient {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   get baseUrl(): string {
-    return normalizeBaseUrl(vscode.workspace.getConfiguration("compassCode").get<string>("apiBaseUrl", "http://127.0.0.1:28000"));
+    return normalizeBaseUrl(vscode.workspace.getConfiguration("compassCode").get<string>("apiBaseUrl", "https://compass-router-api-567790052414.us-central1.run.app"));
   }
 
   async hasCredential(): Promise<boolean> {

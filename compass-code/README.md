@@ -1,44 +1,38 @@
 # Compass Code
 
-Compass Code is a local-alpha VS Code extension that gives developers a Kilo-style coding-agent workflow while keeping model access, wallet billing, API-key policy, and provider credentials inside Compass.
+Compass Code is the official VS Code coding agent for Compass Router. It gives developers a focused editor workflow for asking questions, planning changes, inspecting a workspace, and applying approved edits through their Compass API key.
 
-The extension is deliberately independent of Kilo's source code. It uses the VS Code webview extension model and a small local agent runtime:
+`VS Code sidebar -> Compass Code agent -> Compass API -> configured provider routes`
 
-`VS Code sidebar -> Compass Code agent -> Compass /v1/chat/completions -> controlled LiteLLM -> providers`
+## Install
 
-## Local setup
+1. Download the latest `.vsix` from the [Compass releases](https://github.com/Nu-Pie-AI/Compass/releases).
+2. In VS Code, run **Extensions: Install from VSIX...** and select the downloaded package.
+3. Open the Compass Code view from the activity bar.
+4. Connect with a Compass API key created in your workspace.
 
-1. Start the Compass stack from `../controlled-beta-work`:
+The published extension uses the hosted Compass API by default. For a self-hosted deployment, change `compassCode.apiBaseUrl` in VS Code settings. The API key is stored through VS Code SecretStorage and is never written to workspace files.
 
-   ```powershell
-   docker compose up -d
-   ```
+## Work styles and safety
 
-2. Install dependencies and build this extension:
+- **Review First** shows plans and asks before file edits or terminal commands.
+- **High Autonomy** reduces interruptions for trusted workspaces.
+- Read, search, and diagnostics tools can be approved automatically.
+- File writes create checkpoints before changing files.
+- Writes and terminal commands require explicit approval by default.
 
-   ```powershell
-   npm.cmd install
-   npm.cmd run check
-   npm.cmd test
-   npm.cmd run build
-   npm.cmd run package
-   ```
+## Build locally
 
-3. Install the generated `compass-code-0.1.0.vsix` in VS Code with **Extensions: Install from VSIX...**, then reload VS Code.
+```powershell
+npm.cmd install
+npm.cmd run check
+npm.cmd test
+npm.cmd run build
+npm.cmd run package
+```
 
-4. Open the Compass Code activity-bar view, connect using a Compass API key created in the Compass UI, and choose one of the models granted to that key.
+The generated package is `compass-code-0.1.0.vsix`.
 
-The default API URL is `http://localhost:28000`. The API key is stored through VS Code SecretStorage and is not placed in `.env`, workspace settings, or source files.
+## Source
 
-## Modes and safety
-
-- Ask and Plan expose read-only workspace tools.
-- Code and Debug can request file edits and terminal commands.
-- Read tools can be auto-approved by default.
-- Writes and terminal commands require an explicit Approve action by default.
-- File writes create checkpoints in the extension global storage before changing files.
-- The extension never receives provider keys; those remain server-side in Compass.
-
-The local deterministic LiteLLM service may return plain text without tool calls. In that case Compass Code still works as a chat and context assistant, but it cannot execute an agent tool step until the selected model/provider supports tool calling.
-
-This is a local development build, not a production marketplace release. Before publishing, add a real publisher identity, a distributable license, automated extension-host tests, and a security review of terminal execution policy.
+The extension is published as part of the [Compass repository](https://github.com/Nu-Pie-AI/Compass/tree/main/compass-code).
