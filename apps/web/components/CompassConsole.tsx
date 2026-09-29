@@ -151,10 +151,14 @@ export function CompassConsole({ view }: { view: string }) {
 
   useEffect(() => {
     if (!hydrated || session) return;
+    if (view === "admin") {
+      window.location.replace("/admin-login");
+      return;
+    }
     const loginUrl = new URL("/login", marketplaceUrl);
     loginUrl.searchParams.set("callbackUrl", "/compass");
     window.location.replace(loginUrl.toString());
-  }, [hydrated, session]);
+  }, [hydrated, session, view]);
 
   function saveCompassKey() {
     const key = activeKey.trim();
