@@ -33,6 +33,7 @@ export function LandingNav() {
         <span>Compass</span>
       </Link>
       <div className="marketing-links">
+        <Link href={signedIn ? "/dashboard" : "/"}>Home</Link>
         <a href="#platform">Platform</a>
         <a href="#workflow">How it works</a>
         <Link href="/extension">VS Code</Link>
