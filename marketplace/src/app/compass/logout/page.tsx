@@ -5,7 +5,9 @@ import { signOut } from "next-auth/react";
 
 export default function CompassLogoutPage() {
   useEffect(() => {
-    void signOut({ callbackUrl: "/" });
+    void signOut({ redirect: false }).finally(() => {
+      window.location.assign(process.env.NEXT_PUBLIC_COMPASS_ROUTER_URL || "https://compass-router-web-567790052414.us-central1.run.app");
+    });
   }, []);
 
   return (
