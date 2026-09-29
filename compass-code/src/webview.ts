@@ -36,6 +36,7 @@ const initial: State = {
 
 let state = (vscode.getState() as State | undefined) ?? initial;
 let workStyle: WorkStyle = "review";
+let showHistory = false;
 
 function formatPaise(paise: number): string {
   return `Rs ${(paise / 100).toFixed(2)}`;
@@ -93,31 +94,44 @@ function connectMarkup(): string {
 }
 
 function connectedMarkup(): string {
-  const account = state.account;
-  const modeButtons = modes.map((mode) => `<button class="mode ${state.mode === mode ? "selected" : ""}" data-mode="${mode}" title="${mode === "ask" ? "Read-only answers" : mode === "plan" ? "Read-only implementation plan" : mode === "code" ? "Edit files with approval" : "Investigate and fix with approval"}">${mode}</button>`).join("");
+  const hasTranscript = state.transcript.length > 0;
   const modelOptions = state.models.map((model) => `<option value="${esc(model.id)}" ${model.id === state.selectedModel ? "selected" : ""}>${esc(model.id)}</option>`).join("");
-  const messages = state.transcript.length ? state.transcript.map(transcriptMarkup).join("") : `<div class="empty"><strong>Ready when you are.</strong><span>Ask Compass to explain, plan, debug, or change the code in this workspace.</span></div>`;
-  return `<header class="topbar">
-    <div class="topbar-brand"><span class="brand-logo small" aria-hidden="true"><svg viewBox="0 0 32 32" role="presentation"><path d="M6 9h13a4 4 0 1 0-4-4" /><path d="M26 23H13a4 4 0 1 0 4 4" /><circle cx="6" cy="9" r="3" /><circle cx="26" cy="23" r="3" /></svg></span><strong>COMPASS CODE</strong><span class="topbar-context">AGENT</span><span class="status-dot" title="Connected"></span></div>
-    <div class="top-actions"><button class="icon-button" id="refresh" title="Refresh models and account">&#x21bb;</button><button class="icon-button" id="new-task" title="Start a new task">&#x2b;</button><button class="icon-button" id="disconnect" title="Disconnect API key">&#x00d7;</button></div>
-  </header>
-  <section class="account-strip">
-    <div><span class="label">TEAM</span><strong>${esc(account?.team?.name ?? "Compass team")}</strong></div>
-    <div><span class="label">WALLET</span><strong>${formatPaise(account?.wallet?.balance_paise ?? 0)}</strong></div>
-    <div><span class="label">REQUESTS</span><strong>${account?.usage.requests ?? 0}</strong></div>
-    <div><span class="label">SPEND</span><strong>${formatPaise(account?.usage.spend_paise ?? 0)}</strong></div>
-  </section>
-  <section class="control-panel">
-    <label class="model-control"><span>MODEL</span><select id="model">${modelOptions || "<option>No models available</option>"}</select></label>
-    <div class="mode-control"><span>MODE</span><div class="mode-group">${modeButtons}</div></div>
-  </section>
-  ${state.error ? `<div class="alert error">${esc(state.error)}</div>` : ""}
-  ${state.permission ? permissionMarkup(state.permission) : ""}
-  <section class="transcript" aria-live="polite">${messages}</section>
-  <section class="composer">
-    <textarea id="prompt" placeholder="Ask Compass to inspect or change this workspace..." rows="4" ${state.busy ? "disabled" : ""}></textarea>
-    <div class="composer-footer"><label class="checkbox"><input id="include-selection" type="checkbox" checked ${state.busy ? "disabled" : ""} /> Include current selection</label><span class="hint">Writes and terminal commands require approval</span><button class="primary send" id="send">${state.busy ? "Stop" : "Send"}</button></div>
-  </section>`;
+  const messages = hasTranscript ? state.transcript.map(transcriptMarkup).join("") : `<div class="empty"><strong>Ready when you are.</strong><span>Ask Compass to explain, plan, debug, or change the code in this workspace.</span></div>`;
+  const firstPrompt = state.transcript.find((item) => item.role === "user")?.content.split("\n")[0].trim() || "New chat";
+  const lastAssistant = [...state.transcript].reverse().find((item) => item.role === "assistant");
+  const workedFor = lastAssistant?.meta?.latencyMs ? `Worked for ${Math.max(1, Math.round(lastAssistant.meta.latencyMs / 1000))}s` : "";
+  const modeOptions = modes.map((mode) => `<option value="${mode}" ${state.mode === mode ? "selected" : ""}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`).join("");
+  const history = showHistory ? `<section class="chat-history" aria-label="Conversation history"><button class="chat-history-item" id="history-current" type="button"><span>${esc(firstPrompt)}</span><time>now</time></button>${hasTranscript ? "" : `<div class="chat-history-empty">No conversations yet.</div>`}</section>` : "";
+  const conversationHeader = hasTranscript ? `<section class="conversation-bar" aria-label="Current conversation">
+      <button class="conversation-back" id="new-task-back" type="button" title="Back to new chat" aria-label="Back to new chat">&#x2190;</button>
+      <span class="conversation-title">${esc(firstPrompt.slice(0, 72))}</span>
+      <div class="conversation-actions"><button class="conversation-icon" type="button" title="Conversation history" aria-label="Conversation history" id="toggle-history">&#x22ef;</button><button class="conversation-icon" type="button" title="Restore last checkpoint" aria-label="Restore last checkpoint" id="restore-checkpoint">&#x21b6;</button></div>
+    </section>` : `<section class="chat-list-header"><div class="chat-list-title"><strong>Chats</strong><span class="status-dot" aria-hidden="true"></span></div><div class="conversation-actions"><button class="conversation-icon" type="button" title="Conversation history" aria-label="Conversation history" id="toggle-history">&#x22ef;</button><button class="conversation-icon" type="button" title="Start a new chat" aria-label="Start a new chat" id="new-task-list">&#x270e;</button></div></section>`;
+  return `<main class="agent-shell">
+    <header class="topbar">
+      <div class="topbar-title"><strong>COMPASS CODE: AGENT</strong><span class="status-dot" title="Connected"></span></div>
+      <div class="top-actions"><button class="icon-button plain" id="refresh" title="Refresh models and account" aria-label="Refresh models and account">&#x21bb;</button><button class="icon-button plain" id="new-task" title="Start a new chat" aria-label="Start a new chat">&#x2b;</button><button class="icon-button plain" id="settings" title="Open Compass Code settings" aria-label="Open Compass Code settings">&#x2699;</button></div>
+    </header>
+    ${conversationHeader}
+    ${history}
+    ${state.error ? `<div class="alert error">${esc(state.error)}</div>` : ""}
+    ${state.permission ? permissionMarkup(state.permission) : ""}
+    <section class="transcript" aria-live="polite">${messages}</section>
+    ${workedFor ? `<div class="worked-row"><span>${workedFor}</span><span aria-hidden="true">&#x203a;</span></div>` : ""}
+    <section class="composer" aria-label="Compass Code composer">
+      <textarea id="prompt" placeholder="${hasTranscript ? "Ask for follow-up changes" : "Do anything"}" rows="3" ${state.busy ? "disabled" : ""}></textarea>
+      <div class="composer-toolbar">
+        <button class="composer-icon" id="attach" type="button" title="Add context" aria-label="Add context">&#x2b;</button>
+        <label class="checkbox compact" title="Include current selection"><input id="include-selection" type="checkbox" checked ${state.busy ? "disabled" : ""} /><span class="selection-symbol" aria-hidden="true">&#x261d;</span><span>Selection</span></label>
+        <label class="select-control" title="Choose a model"><span class="sr-only">Model</span><select id="model" ${state.busy ? "disabled" : ""}>${modelOptions || "<option>No models available</option>"}</select></label>
+        <label class="select-control mode-select" title="Choose a mode"><span class="sr-only">Mode</span><select id="mode" ${state.busy ? "disabled" : ""}>${modeOptions}</select></label>
+        <button class="composer-icon sparkle" type="button" title="Compass actions" aria-label="Compass actions">&#x2726;</button>
+        <button class="composer-icon" id="voice" type="button" title="Voice input is not connected" aria-label="Voice input" disabled>&#x1f399;</button>
+        <button class="send" id="send" type="button" title="${state.busy ? "Stop task" : "Send message"}" aria-label="${state.busy ? "Stop task" : "Send message"}">${state.busy ? "&#x25a0;" : "&#x2191;"}</button>
+      </div>
+      <div class="composer-status"><span>Work locally</span><span class="chevron">&#x2304;</span><span class="approval-note">Writes and terminal commands require approval</span></div>
+    </section>
+  </main>`;
 }
 
 function permissionMarkup(permission: PermissionRequest): string {
@@ -127,6 +141,8 @@ function permissionMarkup(permission: PermissionRequest): string {
 function transcriptMarkup(item: TranscriptItem): string {
   const roleLabel = item.role === "user" ? "YOU" : item.role === "assistant" ? "COMPASS" : item.role.toUpperCase();
   const meta = item.meta ? `<div class="meta"><span>${esc(item.meta.model ?? "")}</span>${item.meta.tokens === undefined ? "" : `<span>${item.meta.tokens} tokens</span>`}${item.meta.costPaise === undefined ? "" : `<span>${formatPaise(item.meta.costPaise)}</span>`}${item.meta.latencyMs === undefined ? "" : `<span>${item.meta.latencyMs} ms</span>`}</div>` : "";
+  if (item.role === "user") return `<article class="message user"><pre>${esc(item.content)}</pre></article>`;
+  if (item.role === "assistant") return `<article class="message assistant"><pre>${esc(item.content)}</pre>${meta}</article>`;
   return `<article class="message ${item.role}"><div class="message-label">${esc(roleLabel)}${item.toolName ? ` &middot; ${esc(item.toolName)}` : ""}</div><pre>${esc(item.content)}</pre>${meta}</article>`;
 }
 
@@ -144,8 +160,24 @@ function bindEvents(): void {
   document.querySelector<HTMLButtonElement>("#disconnect")?.addEventListener("click", () => post({ type: "disconnect" }));
   document.querySelector<HTMLButtonElement>("#refresh")?.addEventListener("click", () => post({ type: "refresh" }));
   document.querySelector<HTMLButtonElement>("#new-task")?.addEventListener("click", () => post({ type: "newTask" }));
+  document.querySelector<HTMLButtonElement>("#new-task-back")?.addEventListener("click", () => post({ type: "newTask" }));
+  document.querySelector<HTMLButtonElement>("#new-task-list")?.addEventListener("click", () => post({ type: "newTask" }));
+  document.querySelector<HTMLButtonElement>("#toggle-history")?.addEventListener("click", () => {
+    showHistory = !showHistory;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#history-current")?.addEventListener("click", () => {
+    showHistory = false;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#restore-checkpoint")?.addEventListener("click", () => post({ type: "restoreCheckpoint" }));
+  document.querySelector<HTMLButtonElement>("#settings")?.addEventListener("click", () => post({ type: "openSettings" }));
+  document.querySelector<HTMLButtonElement>("#attach")?.addEventListener("click", () => {
+    const checkbox = document.querySelector<HTMLInputElement>("#include-selection");
+    if (checkbox) checkbox.checked = true;
+  });
   document.querySelector<HTMLSelectElement>("#model")?.addEventListener("change", (event) => post({ type: "setModel", model: (event.target as HTMLSelectElement).value }));
-  document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => post({ type: "setMode", mode: button.dataset.mode as AgentMode })));
+  document.querySelector<HTMLSelectElement>("#mode")?.addEventListener("change", (event) => post({ type: "setMode", mode: (event.target as HTMLSelectElement).value as AgentMode }));
   document.querySelectorAll<HTMLButtonElement>("[data-permission]").forEach((button) => button.addEventListener("click", () => post({ type: "permission", id: button.dataset.permissionId, approved: button.dataset.permission === "approve" })));
   document.querySelector<HTMLButtonElement>("#send")?.addEventListener("click", () => {
     if (state.busy) {

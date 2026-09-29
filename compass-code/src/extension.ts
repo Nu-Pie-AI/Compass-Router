@@ -28,6 +28,7 @@ type ViewMessage =
   | { type: "stop" }
   | { type: "newTask" }
   | { type: "refresh" }
+  | { type: "openSettings" }
   | { type: "setMode"; mode: AgentMode }
   | { type: "setModel"; model: string }
   | { type: "permission"; id: string; approved: boolean }
@@ -167,6 +168,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           break;
         case "refresh":
           await this.refresh();
+          break;
+        case "openSettings":
+          await vscode.commands.executeCommand("workbench.action.openSettings", "@ext:toheedsoudagar.compass-code");
           break;
         case "setMode":
           this.state.mode = message.mode;
