@@ -30,9 +30,10 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 interface AuthFormProps {
   mode: "signup" | "login";
+  callbackUrl?: string;
 }
 
-function SignupForm() {
+function SignupForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
   const [isLoading, setIsLoading] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const router = useRouter();
@@ -72,6 +73,7 @@ function SignupForm() {
       const signInResult = await signIn("credentials", {
         email: data.email,
         password: data.password,
+        callbackUrl,
         redirect: false,
       });
 
@@ -93,7 +95,7 @@ function SignupForm() {
       } else if (role === "vendor") {
         router.push("/vendors/dashboard");
       } else {
-        router.push("/");
+        router.push(callbackUrl);
       }
     } catch (error) {
       setServerError("An unexpected error occurred");
@@ -187,7 +189,7 @@ function SignupForm() {
         {isLoading ? "Loading..." : "Sign Up"}
       </button>
 
-      <OAuthButtons callbackUrl="/" />
+      <OAuthButtons callbackUrl={callbackUrl} />
     </form>
   );
 }
@@ -328,6 +330,6 @@ function OAuthButtons({ callbackUrl }: { callbackUrl: string }) {
   );
 }
 
-export default function AuthForm({ mode }: AuthFormProps) {
-  return mode === "signup" ? <SignupForm /> : <LoginForm />;
+export default function AuthForm({ mode, callbackUrl = "/" }: AuthFormProps) {
+  return mode === "signup" ? <SignupForm callbackUrl={callbackUrl} /> : <LoginForm />;
 }

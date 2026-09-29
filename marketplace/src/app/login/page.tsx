@@ -50,6 +50,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
       const result = await signIn('credentials', {
         email: data.email,
         password: data.password,
+        callbackUrl,
         redirect: false,
       });
 
@@ -247,7 +248,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
             </Link>
             <span>
             Don&apos;t have an account?{' '}
-            <Link href="/signup" className="text-blue-600 hover:text-blue-700 font-medium hover:underline transition-colors">
+            <Link href={`/signup?callbackUrl=${encodeURIComponent(callbackUrl)}`} className="text-blue-600 hover:text-blue-700 font-medium hover:underline transition-colors">
               Sign up
             </Link>
             </span>

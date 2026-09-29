@@ -3,6 +3,7 @@
 import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useSession } from "next-auth/react";
+import { getSafeAuthCallback } from "@/lib/auth-redirect";
 
 export default function LoginClientWrapper({
   children,
@@ -12,7 +13,7 @@ export default function LoginClientWrapper({
   const searchParams = useSearchParams();
   const router = useRouter();
   const { status } = useSession();
-  const callbackUrl = searchParams.get("callbackUrl") || "/";
+  const callbackUrl = getSafeAuthCallback(searchParams.get("callbackUrl"));
 
   useEffect(() => {
     if (status !== "authenticated") return;
