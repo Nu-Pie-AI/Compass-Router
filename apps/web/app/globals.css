@@ -152,4 +152,15 @@
 @media(max-width:980px){.extension-section,.extension-hero{grid-template-columns:1fr}.extension-mini-preview,.extension-preview{max-width:760px;width:100%}.extension-callout{align-items:flex-start;flex-direction:column}.extension-callout-actions{width:100%}}
 @media(max-width:760px){.marketing-nav{width:calc(100% - 32px);grid-template-columns:1fr auto;min-height:70px}.marketing-links{display:none}.marketing-actions{gap:5px}.marketing-actions .button{min-height:36px;padding:0 10px;font-size:11px}.marketing-actions .button svg{display:none}.extension-section,.extension-hero,.extension-steps{width:calc(100% - 32px)}.extension-section{padding:72px 0}.extension-hero{padding:72px 0 80px}.extension-hero-copy h1{font-size:clamp(42px,12vw,60px)}.extension-preview-body{grid-template-columns:36px minmax(0,1fr)}.preview-agent{display:none}.extension-step-grid{grid-template-columns:1fr}.extension-step-grid article{min-height:0;border-right:0;border-bottom:1px solid rgba(255,255,255,.1)}.extension-step-grid article:last-child{border-bottom:0}.extension-callout{width:calc(100% - 32px);padding:26px 22px}.extension-callout-actions .button{flex:1}}
 .key-usage{display:grid;gap:5px;min-width:150px}.key-usage strong{font-size:11px;font-weight:550;white-space:nowrap}.key-usage small{color:#626775;font-size:10px;white-space:nowrap}
-@media(max-width:520px){.model-filter-grid{grid-template-columns:1fr}.model-selection-toolbar{align-items:flex-start;flex-direction:column}.model-selection-toolbar>div{width:100%;justify-content:space-between}}
+@media(max-width:520px){.model-access-filter-grid{grid-template-columns:1fr}.model-selection-toolbar{align-items:flex-start;flex-direction:column}.model-selection-toolbar>div{width:100%;justify-content:space-between}}
+
+/* Keep the access dialog footer outside the scrollable model collection. */
+.model-access-dialog form{height:calc(100dvh - 88px);max-height:calc(100dvh - 88px)}
+.model-access-dialog fieldset{flex:0 0 auto;overflow:hidden}
+.model-access-dialog .model-options{height:min(420px,42dvh);min-height:160px;flex:none;gap:2px}
+.model-access-dialog .model-options label{min-height:58px;padding:7px 10px;align-items:flex-start;line-height:1.25}
+.model-access-dialog .model-options strong{line-height:1.25}
+.model-access-dialog .model-options code{margin-top:1px;line-height:1.25}
+.model-access-dialog .model-options small{margin-top:2px;line-height:1.25}
+.model-access-dialog .dialog-footer{position:relative;z-index:2;flex:none;margin-top:14px;background:white}
+@media(max-width:520px){.model-access-dialog form{height:calc(100dvh - 76px);max-height:calc(100dvh - 76px)}.model-access-dialog .model-options{height:min(360px,38dvh)}}
