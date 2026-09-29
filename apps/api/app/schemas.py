@@ -180,6 +180,10 @@ class ProviderCredentialUpdate(BaseModel):
     api_key: str = Field(min_length=8, max_length=4000)
 
 
+class ProviderRegisterRequest(BaseModel):
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{1,79}$")
+
+
 class ByokCredentialUpdate(ProviderCredentialUpdate):
     team_id: str
 

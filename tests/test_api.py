@@ -124,6 +124,20 @@ def test_product_owner_controls_users_sessions_platform_and_audit_log():
     assert {"user.role_updated", "user.sessions_revoked", "user.access_updated"} <= actions
 
 
+def test_admin_provider_catalog_and_custom_registration():
+    headers = admin_headers()
+    catalog = client.get("/admin/provider-catalog", headers=headers)
+    assert catalog.status_code == 200, catalog.text
+    assert "nvidia_nim" in {row["name"] for row in catalog.json()}
+
+    provider_name = f"custom_{time.time_ns()}"
+    registered = client.post("/admin/router/providers", json={"name": provider_name}, headers=headers)
+    assert registered.status_code == 200, registered.text
+    assert registered.json()["created"] is True
+    providers = client.get("/admin/router/providers", headers=headers)
+    assert provider_name in {row["name"] for row in providers.json()}
+
+
 def credit(headers: dict, team_id: str, amount_paise: int = 1000, suffix: str = "1") -> None:
     response = client.post("/admin/wallet/topups", json={"team_id": team_id, "amount_paise": amount_paise, "idempotency_key": f"topup-{team_id}-{suffix}"}, headers=headers)
     assert response.status_code == 200, response.text

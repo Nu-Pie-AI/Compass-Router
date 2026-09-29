@@ -18,7 +18,7 @@ from .config import get_settings
 from .db import get_db, init_db
 from .errors import compass_error
 from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
-from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, ProviderCredentialUpdate, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
+from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
 from .security import create_session_token, decode_marketplace_sso_token, decode_session_claims, verify_password
 from .services import (
     LiteLLMClient,
@@ -59,6 +59,31 @@ from .services import (
 )
 
 settings = get_settings()
+
+PROVIDER_CATALOG = [
+    {"name": "openai", "label": "OpenAI", "family": "OpenAI-compatible"},
+    {"name": "gemini", "label": "Google Gemini", "family": "Google AI"},
+    {"name": "anthropic", "label": "Anthropic", "family": "Claude"},
+    {"name": "mistral", "label": "Mistral AI", "family": "Mistral"},
+    {"name": "groq", "label": "Groq", "family": "OpenAI-compatible"},
+    {"name": "deepseek", "label": "DeepSeek", "family": "OpenAI-compatible"},
+    {"name": "xai", "label": "xAI", "family": "OpenAI-compatible"},
+    {"name": "cohere", "label": "Cohere", "family": "Cohere"},
+    {"name": "openrouter", "label": "OpenRouter", "family": "OpenAI-compatible"},
+    {"name": "together_ai", "label": "Together AI", "family": "OpenAI-compatible"},
+    {"name": "fireworks_ai", "label": "Fireworks AI", "family": "OpenAI-compatible"},
+    {"name": "perplexity", "label": "Perplexity", "family": "OpenAI-compatible"},
+    {"name": "nvidia_nim", "label": "NVIDIA NIM", "family": "NVIDIA"},
+    {"name": "ollama_cloud", "label": "Ollama Cloud", "family": "OpenAI-compatible"},
+    {"name": "azure", "label": "Azure OpenAI", "family": "Azure"},
+    {"name": "azure_ai", "label": "Azure AI Foundry", "family": "Azure"},
+    {"name": "vertex_ai", "label": "Google Vertex AI", "family": "Google Cloud"},
+    {"name": "bedrock", "label": "Amazon Bedrock", "family": "AWS"},
+    {"name": "cerebras", "label": "Cerebras", "family": "OpenAI-compatible"},
+    {"name": "sambanova", "label": "SambaNova", "family": "OpenAI-compatible"},
+    {"name": "deepinfra", "label": "DeepInfra", "family": "OpenAI-compatible"},
+    {"name": "huggingface", "label": "Hugging Face", "family": "OpenAI-compatible"},
+]
 
 
 @asynccontextmanager
@@ -1187,11 +1212,16 @@ def usage_requests(user: User = Depends(current_user), db: Session = Depends(get
 @app.get("/admin/local-test")
 def admin_local_test(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     return {
-        "mode": "LOCAL TEST MODE",
-        "note": "Provider credentials are stored server-side. Test routes are deterministic and do not make real provider calls.",
+        "mode": "LOCAL TEST MODE" if settings.local_test_mode else "LIVE PROVIDER MODE",
+        "note": "Provider credentials are stored server-side. Test routes are deterministic and do not make real provider calls." if settings.local_test_mode else "Provider credentials are stored server-side. Requests are routed through the configured provider execution path.",
         "providers": provider_credentials_summary(db),
         "models": model_catalog_rows(db),
     }
+
+
+@app.get("/admin/provider-catalog")
+def admin_provider_catalog(_: User = Depends(admin_user)) -> list[dict]:
+    return PROVIDER_CATALOG
 
 
 @app.get("/admin/router/providers")
@@ -1202,6 +1232,19 @@ def admin_router_providers(_: User = Depends(admin_user), db: Session = Depends(
         health = db.scalar(select(ProviderHealthCheck).where(ProviderHealthCheck.provider_id == provider.id).order_by(ProviderHealthCheck.last_checked_at.desc()).limit(1))
         rows.append({"id": provider.id, "name": provider.name, "status": provider.status, "enabled": provider.enabled, "last_health": {"status": health.status, "latency_ms": health.latency_ms, "error_rate": health.error_rate, "checked_at": health.last_checked_at.isoformat()} if health else None})
     return rows
+
+
+@app.post("/admin/router/providers")
+def admin_register_provider(body: ProviderRegisterRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    provider_name = body.name.strip().lower()
+    provider = db.scalar(select(Provider).where(Provider.name == provider_name))
+    if provider is not None:
+        return {"id": provider.id, "name": provider.name, "status": provider.status, "enabled": provider.enabled, "created": False}
+    provider = Provider(name=provider_name, status="healthy", enabled=True)
+    db.add(provider)
+    record_audit_log(db, actor, "provider.registered", f"provider:{provider_name}", {"name": provider_name})
+    db.commit()
+    return {"id": provider.id, "name": provider.name, "status": provider.status, "enabled": provider.enabled, "created": True}
 
 
 @app.patch("/admin/router/providers/{provider_name}")

@@ -26,16 +26,17 @@ type RazorpayResponse = { razorpay_order_id: string; razorpay_payment_id: string
 type Workspace = { id: string; name: string; team_count: number; created_at?: string };
 type Team = { id: string; workspace_id?: string | null; name: string; slug: string; is_active: boolean; wallet: { currency: string; balance_paise: number } };
 type Dashboard = { mode: string; workspaces: Workspace[]; teams: Team[]; api_keys: ApiKey[]; models: Model[]; usage: { requests: number; tokens: number; spend_paise: number }; recent_requests: RequestRow[] };
-type ProviderName = "openai" | "gemini" | "ollama_cloud";
+type ProviderName = string;
 type AdminMetrics = { requests: { total: number; successful: number; failed: number }; provider_health: { checks: number; open_circuits: number }; billing: { failed_orders: number; pending_refunds: number }; alerts: Array<string | null> };
 type AdminOverview = { users: number; teams: number; requests: number; status: string };
 type AdminEvent = { id: string; event_type: string; severity: string; service: string; message: string; created_at: string };
 type AdminUser = { id: string; email: string; role: string; status: string; status_reason: string; team_count: number; workspace_count: number; created_at: string };
 type AdminAudit = { id: string; actor_user_id?: string | null; action: string; target: string; request_id?: string | null; metadata: Record<string, unknown>; created_at: string };
 type AdminPlatform = { environment: string; execution_mode: string; local_test_mode: boolean; public_signup_enabled: boolean; billing_payment_mode: string; secret_manager_enabled: boolean; provider_execution_mode: string; provider_max_attempts: number; litellm_timeout_seconds: number; configured_provider_credentials: number; sso_configured: boolean; razorpay_configured: boolean; database_dialect: string };
+type AdminProviderOption = { name: string; label: string; family: string };
 type AdminReconciliation = { orders: number; completed_orders: number; matched_credits: number; missing_credit_order_ids: string[]; orphan_credit_references: string[]; total_completed_paise: number; total_credited_paise: number; generated_at: string };
 type RoutingPolicy = { id: string; alias: string; candidate_models: string[]; enabled: boolean };
-type AdminLocal = { note: string; providers: Array<{ name: string; enabled: boolean; status: string; credential_status: string; has_configured_key: boolean; last_four: string }>; models: Model[]; routerModels?: RouterModel[]; routerProviders?: RouterProvider[]; metrics?: AdminMetrics | null; overview?: AdminOverview | null; users?: AdminUser[]; audit?: AdminAudit[]; platform?: AdminPlatform | null; events?: AdminEvent[]; reconciliation?: AdminReconciliation | null; policies?: RoutingPolicy[] };
+type AdminLocal = { note: string; providers: Array<{ name: string; enabled: boolean; status: string; credential_status: string; has_configured_key: boolean; last_four: string }>; models: Model[]; providerCatalog?: AdminProviderOption[]; routerModels?: RouterModel[]; routerProviders?: RouterProvider[]; metrics?: AdminMetrics | null; overview?: AdminOverview | null; users?: AdminUser[]; audit?: AdminAudit[]; platform?: AdminPlatform | null; events?: AdminEvent[]; reconciliation?: AdminReconciliation | null; policies?: RoutingPolicy[] };
 type ChatMessage = { id: string; role: "user" | "assistant"; content: string; meta?: ChatMeta };
 type ChatMeta = { requestId?: string; provider?: string; tokens?: number; costPaise?: number; latencyMs?: number; status?: string };
 type ChatCompletionResponse = {
@@ -110,11 +111,12 @@ export function CompassConsole({ view }: { view: string }) {
 
   const loadData = useCallback(async (activeSession: Session) => {
     const canManage = activeSession.role === "admin" || activeSession.role === "super_admin";
-    const [dash, adminData, usageRows, opsMetrics, routerModels, routerProviders, overview, users, audit, platform, events, reconciliation, policies] = await Promise.all([
+    const [dash, adminData, providerCatalog, usageRows, opsMetrics, routerModels, routerProviders, overview, users, audit, platform, events, reconciliation, policies] = await Promise.all([
       apiFetch<Dashboard>("/dashboard", {}, activeSession.token),
       canManage
         ? apiFetch<AdminLocal>("/admin/local-test", {}, activeSession.token)
         : Promise.resolve(null),
+      canManage ? apiFetch<AdminProviderOption[]>("/admin/provider-catalog", {}, activeSession.token) : Promise.resolve(null),
       apiFetch<RequestRow[]>("/usage/requests", {}, activeSession.token),
       canManage
         ? apiFetch<AdminMetrics>("/admin/operations/metrics", {}, activeSession.token)
@@ -147,7 +149,7 @@ export function CompassConsole({ view }: { view: string }) {
     const ledgerRows = teamId ? await apiFetch<LedgerRow[]>(`/wallet/ledger?team_id=${teamId}`, {}, activeSession.token) : [];
     setDashboard({ ...dash, recent_requests: usageRows });
     setLedger(ledgerRows);
-    setAdmin(adminData ? { ...adminData, metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], audit: audit ?? [], platform, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
+    setAdmin(adminData ? { ...adminData, providerCatalog: providerCatalog ?? [], metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], audit: audit ?? [], platform, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
     if (teamId && teamId !== selectedTeamId) setSelectedTeamId(teamId);
     if (workspaceId && workspaceId !== selectedWorkspaceId) setSelectedWorkspaceId(workspaceId);
     if (!model && dash.models[0]) setModel(dash.models[0].id);
@@ -672,6 +674,7 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
   const [policyAlias, setPolicyAlias] = useState("");
   const [policyModels, setPolicyModels] = useState("");
   const [userFilter, setUserFilter] = useState("");
+  const [newProviderName, setNewProviderName] = useState("");
   const modelIds = (props.admin?.routerModels ?? []).map((model) => model.id);
 
   async function updateModel(modelId: string, changes: Record<string, unknown>) {
@@ -715,6 +718,15 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
     await props.refresh();
   }
 
+  async function registerProvider(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newProviderName.trim().toLowerCase();
+    if (!name) return;
+    await apiFetch("/admin/router/providers", { method: "POST", body: JSON.stringify({ name }) }, props.token);
+    setNewProviderName("");
+    await props.refresh();
+  }
+
   const metrics = props.admin?.metrics;
   const overview = props.admin?.overview;
   const reconciliation = props.admin?.reconciliation;
@@ -725,7 +737,7 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Users and access</h2><p className="mt-2 text-sm text-slate-400">Manage product roles, suspend access, and revoke every active session for a user.</p></div><UsersRound size={20} /></div><input className="mt-4 w-full rounded-card border border-compass-line bg-compass-bg px-3 py-2 text-sm" placeholder="Search users by email" value={userFilter} onChange={(event) => setUserFilter(event.target.value)} /><div className="mt-4 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="border-b border-compass-line px-3 py-2">User</th><th className="border-b border-compass-line px-3 py-2">Role</th><th className="border-b border-compass-line px-3 py-2">Access</th><th className="border-b border-compass-line px-3 py-2">Usage scope</th><th className="border-b border-compass-line px-3 py-2">Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.id} className="border-b border-compass-line/70"><td className="px-3 py-3"><strong>{user.email}</strong><span className="mt-1 block text-xs text-slate-500">Joined {new Date(user.created_at).toLocaleDateString("en-IN")}</span></td><td className="px-3 py-3"><select className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={user.role} onChange={(event) => void updateUserRole(user.id, event.target.value)}><option value="customer">customer</option><option value="admin">admin</option><option value="super_admin">super_admin</option></select></td><td className="px-3 py-3"><span className={`key-status ${user.status === "active" ? "active" : "revoked"}`}>{user.status}</span></td><td className="px-3 py-3 text-xs text-slate-400">{user.workspace_count} workspaces / {user.team_count} teams</td><td className="px-3 py-3"><div className="flex flex-wrap gap-2"><button className="console-secondary" onClick={() => void updateUserStatus(user.id, user.status === "active" ? "suspended" : "active")}>{user.status === "active" ? "Suspend" : "Restore"}</button><button className="console-icon" aria-label={`Revoke sessions for ${user.email}`} title="Revoke all sessions" onClick={() => void revokeUserSessions(user.id)}><ShieldCheck size={16} /></button></div></td></tr>)}</tbody></table></div></section>
 
-    <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Provider credentials</h2><p className="mt-2 text-sm text-slate-400">{props.admin?.note}</p><div className="mt-4 grid gap-3"><label className="grid gap-1 text-sm">Provider<select className="rounded-card border border-compass-line bg-compass-bg px-3 py-2" value={props.providerName} onChange={(event) => props.setProviderName(event.target.value as ProviderName)}><option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="ollama_cloud">Ollama Cloud</option></select></label><label className="grid gap-1 text-sm">API key<input className="rounded-card border border-compass-line bg-compass-bg px-3 py-2" value={props.providerApiKey} onChange={(event) => props.setProviderApiKey(event.target.value)} placeholder="Stored server-side only" type="password" /></label><button disabled={props.busy} className="w-fit console-primary" onClick={props.saveProviderCredential}>Save provider key</button></div><DataTable headers={["Provider", "Credential", "Last four"]} rows={(props.admin?.providers ?? []).map((provider) => [provider.name, provider.has_configured_key ? "configured" : provider.credential_status, provider.last_four ? `****${provider.last_four}` : ""])} /></section>
+    <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Provider credentials</h2><p className="mt-2 text-sm text-slate-400">{props.admin?.note}</p><div className="mt-4 grid gap-3"><label className="grid gap-1 text-sm">Provider slug<input list="compass-provider-catalog" className="rounded-card border border-compass-line bg-compass-bg px-3 py-2" value={props.providerName} onChange={(event) => props.setProviderName(event.target.value)} placeholder="openai, anthropic, nvidia_nim..." /><datalist id="compass-provider-catalog">{(props.admin?.providerCatalog ?? []).map((provider) => <option key={provider.name} value={provider.name}>{provider.label} / {provider.family}</option>)}</datalist></label><label className="grid gap-1 text-sm">API key<input className="rounded-card border border-compass-line bg-compass-bg px-3 py-2" value={props.providerApiKey} onChange={(event) => props.setProviderApiKey(event.target.value)} placeholder="Stored server-side only" type="password" /></label><button disabled={props.busy} className="w-fit console-primary" onClick={props.saveProviderCredential}>Save provider key</button></div><form className="mt-5 flex flex-wrap gap-2" onSubmit={(event) => void registerProvider(event)}><input className="min-w-0 flex-1 rounded-card border border-compass-line bg-compass-bg px-3 py-2 text-sm" value={newProviderName} onChange={(event) => setNewProviderName(event.target.value)} placeholder="Custom LiteLLM provider slug" pattern="[a-z0-9][a-z0-9_-]{1,79}" /><button disabled={props.busy} className="console-secondary" type="submit">Add provider route</button></form><DataTable headers={["Provider", "Credential", "Last four"]} rows={(props.admin?.providers ?? []).map((provider) => [provider.name, provider.has_configured_key ? "configured" : provider.credential_status, provider.last_four ? `****${provider.last_four}` : ""])} /></section>
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Platform and security</h2><p className="mt-2 text-sm text-slate-400">Read-only runtime posture. Change deployment secrets and execution mode through the deployment environment.</p></div><ShieldCheck size={20} /></div><div className="mt-4 grid gap-3 text-sm">{[["Execution", platform?.execution_mode], ["Environment", platform?.environment], ["Database", platform?.database_dialect], ["Secret Manager", platform?.secret_manager_enabled ? "enabled" : "disabled"], ["Provider credentials", String(platform?.configured_provider_credentials ?? 0)], ["Marketplace SSO", platform?.sso_configured ? "configured" : "not configured"], ["Razorpay", platform?.razorpay_configured ? "configured" : "not configured"], ["Signups", platform?.public_signup_enabled ? "enabled" : "disabled"]].map(([label, value]) => <div className="flex items-center justify-between gap-4 border-b border-compass-line pb-2" key={String(label)}><span className="text-slate-400">{label}</span><strong>{String(value ?? "unknown")}</strong></div>)}</div></section>
 
