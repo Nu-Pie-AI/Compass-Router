@@ -30,9 +30,12 @@ type ProviderName = "openai" | "gemini" | "ollama_cloud";
 type AdminMetrics = { requests: { total: number; successful: number; failed: number }; provider_health: { checks: number; open_circuits: number }; billing: { failed_orders: number; pending_refunds: number }; alerts: Array<string | null> };
 type AdminOverview = { users: number; teams: number; requests: number; status: string };
 type AdminEvent = { id: string; event_type: string; severity: string; service: string; message: string; created_at: string };
+type AdminUser = { id: string; email: string; role: string; status: string; status_reason: string; team_count: number; workspace_count: number; created_at: string };
+type AdminAudit = { id: string; actor_user_id?: string | null; action: string; target: string; request_id?: string | null; metadata: Record<string, unknown>; created_at: string };
+type AdminPlatform = { environment: string; execution_mode: string; local_test_mode: boolean; public_signup_enabled: boolean; billing_payment_mode: string; secret_manager_enabled: boolean; provider_execution_mode: string; provider_max_attempts: number; litellm_timeout_seconds: number; configured_provider_credentials: number; sso_configured: boolean; razorpay_configured: boolean; database_dialect: string };
 type AdminReconciliation = { orders: number; completed_orders: number; matched_credits: number; missing_credit_order_ids: string[]; orphan_credit_references: string[]; total_completed_paise: number; total_credited_paise: number; generated_at: string };
 type RoutingPolicy = { id: string; alias: string; candidate_models: string[]; enabled: boolean };
-type AdminLocal = { note: string; providers: Array<{ name: string; enabled: boolean; status: string; credential_status: string; has_configured_key: boolean; last_four: string }>; models: Model[]; routerModels?: RouterModel[]; routerProviders?: RouterProvider[]; metrics?: AdminMetrics | null; overview?: AdminOverview | null; events?: AdminEvent[]; reconciliation?: AdminReconciliation | null; policies?: RoutingPolicy[] };
+type AdminLocal = { note: string; providers: Array<{ name: string; enabled: boolean; status: string; credential_status: string; has_configured_key: boolean; last_four: string }>; models: Model[]; routerModels?: RouterModel[]; routerProviders?: RouterProvider[]; metrics?: AdminMetrics | null; overview?: AdminOverview | null; users?: AdminUser[]; audit?: AdminAudit[]; platform?: AdminPlatform | null; events?: AdminEvent[]; reconciliation?: AdminReconciliation | null; policies?: RoutingPolicy[] };
 type ChatMessage = { id: string; role: "user" | "assistant"; content: string; meta?: ChatMeta };
 type ChatMeta = { requestId?: string; provider?: string; tokens?: number; costPaise?: number; latencyMs?: number; status?: string };
 type ChatCompletionResponse = {
@@ -107,7 +110,7 @@ export function CompassConsole({ view }: { view: string }) {
 
   const loadData = useCallback(async (activeSession: Session) => {
     const canManage = activeSession.role === "admin" || activeSession.role === "super_admin";
-    const [dash, adminData, usageRows, opsMetrics, routerModels, routerProviders, overview, events, reconciliation, policies] = await Promise.all([
+    const [dash, adminData, usageRows, opsMetrics, routerModels, routerProviders, overview, users, audit, platform, events, reconciliation, policies] = await Promise.all([
       apiFetch<Dashboard>("/dashboard", {}, activeSession.token),
       canManage
         ? apiFetch<AdminLocal>("/admin/local-test", {}, activeSession.token)
@@ -123,6 +126,9 @@ export function CompassConsole({ view }: { view: string }) {
         ? apiFetch<RouterProvider[]>("/admin/router/providers", {}, activeSession.token)
         : Promise.resolve(null),
       canManage ? apiFetch<AdminOverview>("/admin/overview", {}, activeSession.token) : Promise.resolve(null),
+      canManage ? apiFetch<AdminUser[]>("/admin/users", {}, activeSession.token) : Promise.resolve(null),
+      canManage ? apiFetch<AdminAudit[]>("/admin/audit?limit=100", {}, activeSession.token) : Promise.resolve(null),
+      canManage ? apiFetch<AdminPlatform>("/admin/platform", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminEvent[]>("/admin/operations/events", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminReconciliation>("/admin/billing/reconciliation", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<RoutingPolicy[]>("/admin/router/policies", {}, activeSession.token) : Promise.resolve(null),
@@ -141,7 +147,7 @@ export function CompassConsole({ view }: { view: string }) {
     const ledgerRows = teamId ? await apiFetch<LedgerRow[]>(`/wallet/ledger?team_id=${teamId}`, {}, activeSession.token) : [];
     setDashboard({ ...dash, recent_requests: usageRows });
     setLedger(ledgerRows);
-    setAdmin(adminData ? { ...adminData, metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
+    setAdmin(adminData ? { ...adminData, metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], audit: audit ?? [], platform, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
     if (teamId && teamId !== selectedTeamId) setSelectedTeamId(teamId);
     if (workspaceId && workspaceId !== selectedWorkspaceId) setSelectedWorkspaceId(workspaceId);
     if (!model && dash.models[0]) setModel(dash.models[0].id);
@@ -665,6 +671,7 @@ function WalletPage({ wallet, ledger, teamId, token, refresh }: { wallet?: { cur
 function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | null; openWorkspaceDialog: () => void; busy: boolean; providerName: ProviderName; setProviderName: (provider: ProviderName) => void; providerApiKey: string; setProviderApiKey: (key: string) => void; saveProviderCredential: () => void; token: string; refresh: () => Promise<void> }) {
   const [policyAlias, setPolicyAlias] = useState("");
   const [policyModels, setPolicyModels] = useState("");
+  const [userFilter, setUserFilter] = useState("");
   const modelIds = (props.admin?.routerModels ?? []).map((model) => model.id);
 
   async function updateModel(modelId: string, changes: Record<string, unknown>) {
@@ -693,13 +700,34 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
     await props.refresh();
   }
 
+  async function updateUserRole(userId: string, role: string) {
+    await apiFetch(`/admin/users/${encodeURIComponent(userId)}/role`, { method: "PATCH", body: JSON.stringify({ role }) }, props.token);
+    await props.refresh();
+  }
+
+  async function updateUserStatus(userId: string, status: "active" | "suspended") {
+    await apiFetch(`/admin/users/${encodeURIComponent(userId)}/status`, { method: "PATCH", body: JSON.stringify({ status, reason: status === "suspended" ? "Suspended from the product owner console." : "Restored by the product owner." }) }, props.token);
+    await props.refresh();
+  }
+
+  async function revokeUserSessions(userId: string) {
+    await apiFetch(`/admin/users/${encodeURIComponent(userId)}/revoke-sessions`, { method: "POST" }, props.token);
+    await props.refresh();
+  }
+
   const metrics = props.admin?.metrics;
   const overview = props.admin?.overview;
   const reconciliation = props.admin?.reconciliation;
+  const users = (props.admin?.users ?? []).filter((user) => !userFilter.trim() || user.email.toLowerCase().includes(userFilter.trim().toLowerCase()));
+  const platform = props.admin?.platform;
   return <div className="grid gap-4 xl:grid-cols-2">
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-4"><div><span className="analytics-eyebrow">Product owner console</span><h2 className="mt-1 text-xl font-semibold">Full Compass Router control</h2><p className="mt-2 max-w-2xl text-sm text-slate-400">You are the product owner. Control access, workspaces, provider routes, model lifecycle, billing integrity, and platform operations from this surface.</p></div><span className="key-status active">{overview?.status ?? "operational"}</span></div><div className="mt-5 grid gap-3 sm:grid-cols-4"><OwnerMetric label="Users" value={String(overview?.users ?? 0)} /><OwnerMetric label="Teams" value={String(overview?.teams ?? props.dashboard?.teams.length ?? 0)} /><OwnerMetric label="Requests" value={String(overview?.requests ?? metrics?.requests.total ?? 0)} /><OwnerMetric label="Open circuits" value={String(metrics?.provider_health.open_circuits ?? 0)} /></div><div className="mt-5 flex flex-wrap gap-2"><Link className="console-secondary" href="/teams"><UsersRound size={16} />Manage teams</Link><Link className="console-secondary" href="/workspaces"><Building2 size={16} />Manage workspaces</Link><Link className="console-secondary" href="/api-keys"><KeyRound size={16} />Manage API keys</Link><Link className="console-secondary" href="/wallet"><Wallet size={16} />Open billing</Link><button disabled={props.busy} className="console-primary" onClick={props.openWorkspaceDialog}><Building2 size={16} />Create workspace</button></div></section>
 
+    <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Users and access</h2><p className="mt-2 text-sm text-slate-400">Manage product roles, suspend access, and revoke every active session for a user.</p></div><UsersRound size={20} /></div><input className="mt-4 w-full rounded-card border border-compass-line bg-compass-bg px-3 py-2 text-sm" placeholder="Search users by email" value={userFilter} onChange={(event) => setUserFilter(event.target.value)} /><div className="mt-4 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="border-b border-compass-line px-3 py-2">User</th><th className="border-b border-compass-line px-3 py-2">Role</th><th className="border-b border-compass-line px-3 py-2">Access</th><th className="border-b border-compass-line px-3 py-2">Usage scope</th><th className="border-b border-compass-line px-3 py-2">Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.id} className="border-b border-compass-line/70"><td className="px-3 py-3"><strong>{user.email}</strong><span className="mt-1 block text-xs text-slate-500">Joined {new Date(user.created_at).toLocaleDateString("en-IN")}</span></td><td className="px-3 py-3"><select className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={user.role} onChange={(event) => void updateUserRole(user.id, event.target.value)}><option value="customer">customer</option><option value="admin">admin</option><option value="super_admin">super_admin</option></select></td><td className="px-3 py-3"><span className={`key-status ${user.status === "active" ? "active" : "revoked"}`}>{user.status}</span></td><td className="px-3 py-3 text-xs text-slate-400">{user.workspace_count} workspaces / {user.team_count} teams</td><td className="px-3 py-3"><div className="flex flex-wrap gap-2"><button className="console-secondary" onClick={() => void updateUserStatus(user.id, user.status === "active" ? "suspended" : "active")}>{user.status === "active" ? "Suspend" : "Restore"}</button><button className="console-icon" aria-label={`Revoke sessions for ${user.email}`} title="Revoke all sessions" onClick={() => void revokeUserSessions(user.id)}><ShieldCheck size={16} /></button></div></td></tr>)}</tbody></table></div></section>
+
     <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Provider credentials</h2><p className="mt-2 text-sm text-slate-400">{props.admin?.note}</p><div className="mt-4 grid gap-3"><label className="grid gap-1 text-sm">Provider<select className="rounded-card border border-compass-line bg-compass-bg px-3 py-2" value={props.providerName} onChange={(event) => props.setProviderName(event.target.value as ProviderName)}><option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="ollama_cloud">Ollama Cloud</option></select></label><label className="grid gap-1 text-sm">API key<input className="rounded-card border border-compass-line bg-compass-bg px-3 py-2" value={props.providerApiKey} onChange={(event) => props.setProviderApiKey(event.target.value)} placeholder="Stored server-side only" type="password" /></label><button disabled={props.busy} className="w-fit console-primary" onClick={props.saveProviderCredential}>Save provider key</button></div><DataTable headers={["Provider", "Credential", "Last four"]} rows={(props.admin?.providers ?? []).map((provider) => [provider.name, provider.has_configured_key ? "configured" : provider.credential_status, provider.last_four ? `****${provider.last_four}` : ""])} /></section>
+
+    <section className="rounded-card border border-compass-line bg-compass-panel p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Platform and security</h2><p className="mt-2 text-sm text-slate-400">Read-only runtime posture. Change deployment secrets and execution mode through the deployment environment.</p></div><ShieldCheck size={20} /></div><div className="mt-4 grid gap-3 text-sm">{[["Execution", platform?.execution_mode], ["Environment", platform?.environment], ["Database", platform?.database_dialect], ["Secret Manager", platform?.secret_manager_enabled ? "enabled" : "disabled"], ["Provider credentials", String(platform?.configured_provider_credentials ?? 0)], ["Marketplace SSO", platform?.sso_configured ? "configured" : "not configured"], ["Razorpay", platform?.razorpay_configured ? "configured" : "not configured"], ["Signups", platform?.public_signup_enabled ? "enabled" : "disabled"]].map(([label, value]) => <div className="flex items-center justify-between gap-4 border-b border-compass-line pb-2" key={String(label)}><span className="text-slate-400">{label}</span><strong>{String(value ?? "unknown")}</strong></div>)}</div></section>
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Provider controls</h2><p className="mt-2 text-sm text-slate-400">Pause a provider without deleting credentials or models.</p><div className="mt-4 grid gap-3">{(props.admin?.routerProviders ?? []).map((provider) => <div className="flex flex-wrap items-center justify-between gap-3 border-b border-compass-line pb-3" key={provider.name}><div><strong>{provider.name}</strong><span className="mt-1 block text-xs text-slate-500">{provider.last_health ? `${provider.last_health.latency_ms} ms · ${provider.last_health.error_rate}% errors` : "No health check recorded"}</span></div><div className="flex items-center gap-2"><select className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={provider.status} onChange={(event) => void updateProvider(provider.name, { status: event.target.value, enabled: provider.enabled })}><option value="healthy">healthy</option><option value="degraded">degraded</option><option value="unavailable">unavailable</option><option value="disabled">disabled</option></select><button className="console-secondary" onClick={() => void updateProvider(provider.name, { status: provider.enabled ? "disabled" : "healthy", enabled: !provider.enabled })}>{provider.enabled ? "Disable" : "Enable"}</button></div></div>)}</div></section>
 
@@ -710,6 +738,8 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
     <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Billing integrity</h2><p className="mt-2 text-sm text-slate-400">Payment and wallet reconciliation status across the product.</p><div className="mt-4 grid gap-3 text-sm">{[["All orders", reconciliation?.orders ?? 0], ["Completed", reconciliation?.completed_orders ?? 0], ["Matched credits", reconciliation?.matched_credits ?? 0], ["Missing credits", reconciliation?.missing_credit_order_ids.length ?? 0], ["Orphan credits", reconciliation?.orphan_credit_references.length ?? 0]].map(([label, value]) => <div className="flex justify-between gap-3 border-b border-compass-line pb-2" key={String(label)}><span className="text-slate-400">{label}</span><strong>{value}</strong></div>)}</div><Link className="console-secondary mt-4 w-fit" href="/wallet"><CreditCard size={16} />Open billing module</Link></section>
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold">Operations events</h2><p className="mt-1 text-sm text-slate-400">Recent provider, routing, authentication, and billing signals.</p></div><Link className="console-secondary" href="/activity"><Activity size={16} />Open activity</Link></div><DataTable headers={["Time", "Severity", "Service", "Event", "Message"]} rows={(props.admin?.events ?? []).slice(0, 12).map((event) => [new Date(event.created_at).toLocaleString("en-IN"), event.severity, event.service, event.event_type, event.message])} /></section>
+
+    <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold">Owner audit log</h2><p className="mt-1 text-sm text-slate-400">Append-only history of privileged access, routing, model, provider, and billing changes.</p></div><Clock3 size={20} /></div><DataTable headers={["Time", "Action", "Target", "Details"]} rows={(props.admin?.audit ?? []).slice(0, 20).map((entry) => [new Date(entry.created_at).toLocaleString("en-IN"), entry.action, entry.target, JSON.stringify(entry.metadata)])} /></section>
   </div>;
 }
 

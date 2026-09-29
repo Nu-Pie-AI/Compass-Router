@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import get_db, init_db
 from .errors import compass_error
-from .models import ApiKey, BatchJob, BillingInvoice, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger, new_id, now
-from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, ProviderCredentialUpdate, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, WalletTopupRequest, WorkspaceCreate
+from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
+from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, ProviderCredentialUpdate, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
 from .security import create_session_token, decode_marketplace_sso_token, decode_session_claims, verify_password
 from .services import (
     LiteLLMClient,
@@ -44,6 +44,7 @@ from .services import (
     model_policy_rows,
     organization_id_for_user,
     provider_credentials_summary,
+    record_audit_log,
     request_rows,
     revoke_byok_api_key,
     revoke_api_key,
@@ -104,6 +105,9 @@ def current_user(authorization: str | None = Header(default=None), db: Session =
     user = db.get(User, user_id)
     if user is None or int(claims.get("sv", 0)) != user.session_version:
         raise compass_error(401, "unauthorized", "Invalid session token.")
+    access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
+    if access is not None and access.status != "active":
+        raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
     return user
 
 
@@ -239,6 +243,10 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> SessionResponse:
     if user is None or not verify_password(body.password, user.password_hash):
         _record_login_failure(db, attempt)
         raise compass_error(401, "invalid_login", "Invalid email or password.")
+    access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
+    if access is not None and access.status != "active":
+        _record_login_failure(db, attempt)
+        raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
     db.delete(attempt)
     db.commit()
     return SessionResponse(
@@ -264,6 +272,9 @@ def marketplace_login(body: MarketplaceSsoRequest, db: Session = Depends(get_db)
     except ValueError as exc:
         raise compass_error(401, "invalid_marketplace_session", "Marketplace sign-in could not be verified.") from exc
     user = upsert_marketplace_user(db, claims["email"], str(claims.get("role", "user")), claims.get("name"))
+    access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
+    if access is not None and access.status != "active":
+        raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
     return SessionResponse(
         token=create_session_token(user.id, user.session_version),
         user_id=user.id,
@@ -332,12 +343,13 @@ def team_limits(team_id: str, user: User = Depends(current_user), db: Session = 
 
 
 @app.patch("/admin/teams/{team_id}/limits")
-def update_team_limits(team_id: str, body: TeamLimitsUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def update_team_limits(team_id: str, body: TeamLimitsUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     limits = db.scalar(select(TeamLimit).where(TeamLimit.team_id == team_id))
     if limits is None:
         raise compass_error(404, "team_limits_not_found", "Team limits were not configured.")
     for field, value in body.model_dump().items():
         setattr(limits, field, value)
+    record_audit_log(db, actor, "team.limits_updated", f"team:{team_id}", body.model_dump())
     db.commit()
     return team_limits_row(limits)
 
@@ -359,15 +371,31 @@ def admin_teams(_: User = Depends(admin_user), db: Session = Depends(get_db)) ->
     return [{"id": team.id, "name": team.name, "slug": team.slug, "notes": team.notes, "is_active": team.is_active, "created_at": team.created_at.isoformat()} for team in teams]
 
 
+@app.patch("/admin/teams/{team_id}/status")
+def admin_update_team_status(team_id: str, body: TeamStatusUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    team = db.get(Team, team_id)
+    if team is None:
+        raise compass_error(404, "team_not_found", "Team not found.")
+    team.is_active = body.enabled
+    team.updated_at = now()
+    record_audit_log(db, actor, "team.status_updated", f"team:{team.id}", {"enabled": team.is_active})
+    db.commit()
+    return {"id": team.id, "is_active": team.is_active}
+
+
 @app.post("/admin/teams")
-def admin_create_team(body: TeamCreate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_create_team(body: TeamCreate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     team = create_team(db, body.name, body.slug, body.notes, body.workspace_id)
+    record_audit_log(db, actor, "team.created", f"team:{team.id}", {"name": team.name, "slug": team.slug, "workspace_id": team.organization_id})
+    db.commit()
     return {"id": team.id, "workspace_id": team.organization_id, "name": team.name, "slug": team.slug, "is_active": team.is_active}
 
 
 @app.post("/admin/teams/{team_id}/members")
-def admin_create_member(team_id: str, body: TeamMemberCreate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_create_member(team_id: str, body: TeamMemberCreate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     member = create_team_member(db, team_id, body.name, body.email.lower(), body.role)
+    record_audit_log(db, actor, "team.member_added", f"team:{team_id}", {"member_id": member.id, "email": member.email, "role": member.role})
+    db.commit()
     return {"id": member.id, "team_id": member.team_id, "name": member.name, "email": member.email, "role": member.role, "is_active": member.is_active}
 
 
@@ -379,7 +407,10 @@ def admin_members(team_id: str, _: User = Depends(admin_user), db: Session = Dep
 
 @app.post("/admin/api-keys")
 def admin_create_key(body: ApiKeyCreate, user: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
-    return create_api_key(db, user.id, body.team_id, body.member_id, body.name, body.allowed_models, body.expires_at)
+    result = create_api_key(db, user.id, body.team_id, body.member_id, body.name, body.allowed_models, body.expires_at)
+    record_audit_log(db, user, "api_key.created", f"team:{body.team_id}", {"name": body.name, "key_id": result.get("id")})
+    db.commit()
+    return result
 
 
 @app.post("/api-keys")
@@ -417,6 +448,9 @@ def revoke_key(api_key_id: str, user: User = Depends(current_user), db: Session 
             raise compass_error(403, "api_key_access_denied", "You cannot revoke this API key.")
         require_team_access(db, user, key_record.team_id)
     key = revoke_api_key(db, api_key_id)
+    if is_admin(user):
+        record_audit_log(db, user, "api_key.revoked", f"api_key:{key.id}", {"team_id": key.team_id, "key_id": key.key_id})
+        db.commit()
     return {"id": key.id, "status": key.status, "revoked_at": key.revoked_at.isoformat() if key.revoked_at else None}
 
 
@@ -433,8 +467,10 @@ def update_key_models(api_key_id: str, body: ApiKeyModelsUpdate, user: User = De
 
 
 @app.post("/admin/wallet/topups")
-def admin_topup(body: WalletTopupRequest, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_topup(body: WalletTopupRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     ledger = credit_wallet(db, body.team_id, body.amount_paise, body.idempotency_key, body.idempotency_key)
+    record_audit_log(db, actor, "wallet.topup_created", f"team:{body.team_id}", {"amount_paise": body.amount_paise, "ledger_id": ledger.id})
+    db.commit()
     return {"ledger_id": ledger.id, "team_id": body.team_id, "balance_paise": ledger.balance_after}
 
 
@@ -897,7 +933,7 @@ def admin_router_policies(_: User = Depends(admin_user), db: Session = Depends(g
 
 
 @app.put("/admin/router/policies/{alias}")
-def admin_upsert_router_policy(alias: str, body: RoutingPolicyUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_upsert_router_policy(alias: str, body: RoutingPolicyUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     if not alias or len(alias) > 200 or "/" in alias or alias.startswith(("openai/", "gemini/", "ollama_cloud/")):
         raise compass_error(400, "invalid_routing_alias", "Routing aliases must be short names distinct from provider model IDs.")
     if len(set(body.candidate_models)) != len(body.candidate_models):
@@ -914,16 +950,18 @@ def admin_upsert_router_policy(alias: str, body: RoutingPolicyUpdate, _: User = 
     else:
         policy.candidate_models = ",".join(body.candidate_models)
     policy.enabled = body.enabled
+    record_audit_log(db, actor, "router.policy_updated", f"routing:{alias}", {"candidate_models": body.candidate_models, "enabled": body.enabled})
     db.commit()
     return {"id": policy.id, "alias": policy.alias, "candidate_models": body.candidate_models, "enabled": policy.enabled}
 
 
 @app.delete("/admin/router/policies/{alias}")
-def admin_delete_router_policy(alias: str, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_delete_router_policy(alias: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     policy = db.scalar(select(RoutingPolicy).where(RoutingPolicy.alias == alias))
     if policy is None:
         raise compass_error(404, "routing_policy_not_found", "Routing policy was not found.")
     db.delete(policy)
+    record_audit_log(db, actor, "router.policy_deleted", f"routing:{alias}")
     db.commit()
     return {"alias": alias, "deleted": True}
 
@@ -1162,19 +1200,20 @@ def admin_router_providers(_: User = Depends(admin_user), db: Session = Depends(
 
 
 @app.patch("/admin/router/providers/{provider_name}")
-def admin_update_provider_status(provider_name: str, body: ProviderStatusUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_update_provider_status(provider_name: str, body: ProviderStatusUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     provider = db.scalar(select(Provider).where(Provider.name == provider_name))
     if provider is None:
         raise compass_error(404, "provider_not_found", "Provider was not found.")
     provider.status = body.status
     if body.enabled is not None:
         provider.enabled = body.enabled
+    record_audit_log(db, actor, "provider.status_updated", f"provider:{provider.name}", {"status": provider.status, "enabled": provider.enabled})
     db.commit()
     return {"name": provider.name, "status": provider.status, "enabled": provider.enabled}
 
 
 @app.patch("/admin/router/models/{model_id:path}")
-def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     model = db.get(ModelCatalog, model_id)
     if model is None:
         raise compass_error(404, "model_not_found", "Model was not found.")
@@ -1189,13 +1228,16 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, _: Use
         if body.fallback_model_id is not None and db.get(ModelCatalog, body.fallback_model_id) is None:
             raise compass_error(404, "fallback_model_not_found", "Fallback model was not found.")
         model.fallback_model_id = body.fallback_model_id
+    record_audit_log(db, actor, "model.governance_updated", f"model:{model.id}", {"status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id})
     db.commit()
     return {"id": model.id, "status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "provider_status": model.provider.status, "provider_enabled": model.provider.enabled}
 
 
 @app.post("/admin/provider-credentials")
-def admin_save_provider_credential(body: ProviderCredentialUpdate, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_save_provider_credential(body: ProviderCredentialUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     credential = upsert_provider_api_key(db, body.provider, body.api_key)
+    record_audit_log(db, actor, "provider.credential_updated", f"provider:{body.provider}", {"last_four": credential.last_four})
+    db.commit()
     return {
         "provider": body.provider,
         "credential_status": credential.status,
@@ -1208,6 +1250,125 @@ def admin_save_provider_credential(body: ProviderCredentialUpdate, _: User = Dep
 @app.get("/admin/overview")
 def admin_overview(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     return {"users": db.query(User).count(), "teams": db.query(Team).count(), "requests": db.query(LlmRequest).count(), "status": "operational"}
+
+
+@app.get("/admin/users")
+def admin_users(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    users = db.scalars(select(User).order_by(User.created_at.desc())).all()
+    team_counts = dict(
+        db.execute(
+            select(func.lower(TeamMember.email), func.count(TeamMember.id))
+            .where(TeamMember.is_active.is_(True))
+            .group_by(func.lower(TeamMember.email))
+        ).all()
+    )
+    workspace_counts = dict(
+        db.execute(
+            select(OrganizationMember.user_id, func.count(OrganizationMember.id))
+            .group_by(OrganizationMember.user_id)
+        ).all()
+    )
+    access_rows = {row.user_id: row for row in db.scalars(select(UserAccess)).all()}
+    return [
+        {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "status": access_rows.get(user.id).status if access_rows.get(user.id) else "active",
+            "status_reason": access_rows.get(user.id).reason if access_rows.get(user.id) else "",
+            "team_count": int(team_counts.get(user.email.lower(), 0)),
+            "workspace_count": int(workspace_counts.get(user.id, 0)),
+            "created_at": user.created_at.isoformat(),
+        }
+        for user in users
+    ]
+
+
+@app.patch("/admin/users/{user_id}/role")
+def admin_update_user_role(user_id: str, body: UserRoleUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise compass_error(404, "user_not_found", "User was not found.")
+    if target.id == actor.id and body.role != target.role:
+        raise compass_error(400, "cannot_change_own_role", "You cannot change your own owner role from this session.")
+    if (target.role == "super_admin" or body.role == "super_admin") and actor.role != "super_admin":
+        raise compass_error(403, "owner_required", "Only the product owner can manage super-admin roles.")
+    previous_role = target.role
+    target.role = body.role
+    target.session_version += 1
+    record_audit_log(db, actor, "user.role_updated", f"user:{target.id}", {"email": target.email, "from": previous_role, "to": target.role})
+    db.commit()
+    return {"id": target.id, "email": target.email, "role": target.role, "status": "active"}
+
+
+@app.patch("/admin/users/{user_id}/status")
+def admin_update_user_status(user_id: str, body: UserAccessUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise compass_error(404, "user_not_found", "User was not found.")
+    if target.id == actor.id and body.status == "suspended":
+        raise compass_error(400, "cannot_suspend_self", "You cannot suspend the product owner session.")
+    access = db.scalar(select(UserAccess).where(UserAccess.user_id == target.id))
+    if access is None:
+        access = UserAccess(user_id=target.id)
+        db.add(access)
+    access.status = body.status
+    access.reason = body.reason.strip()
+    access.updated_by = actor.id
+    access.updated_at = now()
+    target.session_version += 1
+    record_audit_log(db, actor, "user.access_updated", f"user:{target.id}", {"email": target.email, "status": body.status, "reason": access.reason})
+    db.commit()
+    return {"id": target.id, "email": target.email, "status": access.status, "reason": access.reason}
+
+
+@app.post("/admin/users/{user_id}/revoke-sessions")
+def admin_revoke_user_sessions(user_id: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise compass_error(404, "user_not_found", "User was not found.")
+    target.session_version += 1
+    record_audit_log(db, actor, "user.sessions_revoked", f"user:{target.id}", {"email": target.email})
+    db.commit()
+    return {"id": target.id, "email": target.email, "sessions_revoked": True}
+
+
+@app.get("/admin/platform")
+def admin_platform(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    configured_credentials = db.scalar(select(func.count(ProviderCredential.id)).where(ProviderCredential.status == "active")) or 0
+    return {
+        "environment": settings.environment,
+        "execution_mode": "local_test" if settings.local_test_mode else settings.provider_execution_mode,
+        "local_test_mode": settings.local_test_mode,
+        "public_signup_enabled": settings.public_signup_enabled,
+        "billing_payment_mode": settings.billing_payment_mode,
+        "secret_manager_enabled": settings.secret_manager_enabled,
+        "provider_execution_mode": settings.provider_execution_mode,
+        "provider_max_attempts": settings.provider_max_attempts,
+        "litellm_timeout_seconds": settings.litellm_timeout_seconds,
+        "configured_provider_credentials": int(configured_credentials),
+        "sso_configured": bool(settings.compass_sso_secret),
+        "razorpay_configured": bool(settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret),
+        "database_dialect": db.bind.dialect.name if db.bind else "unknown",
+    }
+
+
+@app.get("/admin/audit")
+def admin_audit(_: User = Depends(admin_user), db: Session = Depends(get_db), limit: int = 100) -> list[dict]:
+    safe_limit = max(1, min(limit, 200))
+    rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(safe_limit)).all()
+    return [
+        {
+            "id": row.id,
+            "actor_user_id": row.actor_user_id,
+            "action": row.action,
+            "target": row.target,
+            "request_id": row.request_id,
+            "metadata": json.loads(row.metadata_json or "{}"),
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
 
 
 @app.get("/admin/operations/metrics")

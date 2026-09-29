@@ -15,6 +15,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class UserRoleUpdate(BaseModel):
+    role: Literal["customer", "admin", "super_admin"]
+
+
+class UserAccessUpdate(BaseModel):
+    status: Literal["active", "suspended"]
+    reason: str = Field(default="", max_length=240)
+
+
 class MarketplaceSsoRequest(BaseModel):
     token: str = Field(min_length=32, max_length=4096)
 
@@ -212,3 +221,7 @@ class TeamLimitsUpdate(BaseModel):
     tokens_per_minute: int = Field(ge=0, le=100_000_000)
     daily_spend_limit_paise: int = Field(ge=0, le=5_000_000_000)
     monthly_spend_limit_paise: int = Field(ge=0, le=50_000_000_000)
+
+
+class TeamStatusUpdate(BaseModel):
+    enabled: bool

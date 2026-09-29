@@ -84,6 +84,46 @@ def create_key_fixture(headers: dict, team_id: str, member_id: str | None = None
     return response.json()
 
 
+def test_product_owner_controls_users_sessions_platform_and_audit_log():
+    headers = admin_headers()
+    email = f"owner-control-{time.time_ns()}@example.com"
+    signup = client.post(
+        "/auth/signup",
+        json={"email": email, "password": "OwnerControl123!", "organization_name": "Owner Control Workspace"},
+    )
+    assert signup.status_code == 200, signup.text
+    user = next(row for row in client.get("/admin/users", headers=headers).json() if row["email"] == email)
+    assert user["status"] == "active"
+    assert user["workspace_count"] == 1
+
+    platform = client.get("/admin/platform", headers=headers)
+    assert platform.status_code == 200, platform.text
+    assert platform.json()["database_dialect"] == "sqlite"
+    assert "database_url" not in platform.text
+
+    changed_role = client.patch(f"/admin/users/{user['id']}/role", json={"role": "admin"}, headers=headers)
+    assert changed_role.status_code == 200, changed_role.text
+    stale_me = client.get("/me", headers={"Authorization": f"Bearer {signup.json()['token']}"})
+    assert stale_me.status_code == 401
+
+    revoked = client.post(f"/admin/users/{user['id']}/revoke-sessions", headers=headers)
+    assert revoked.status_code == 200, revoked.text
+    suspended = client.patch(
+        f"/admin/users/{user['id']}/status",
+        json={"status": "suspended", "reason": "security review"},
+        headers=headers,
+    )
+    assert suspended.status_code == 200, suspended.text
+    blocked_login = client.post("/auth/login", json={"email": email, "password": "OwnerControl123!"})
+    assert blocked_login.status_code == 403
+    assert blocked_login.json()["detail"]["error"]["code"] == "account_suspended"
+
+    audit = client.get("/admin/audit?limit=50", headers=headers)
+    assert audit.status_code == 200, audit.text
+    actions = {row["action"] for row in audit.json()}
+    assert {"user.role_updated", "user.sessions_revoked", "user.access_updated"} <= actions
+
+
 def credit(headers: dict, team_id: str, amount_paise: int = 1000, suffix: str = "1") -> None:
     response = client.post("/admin/wallet/topups", json={"team_id": team_id, "amount_paise": amount_paise, "idempotency_key": f"topup-{team_id}-{suffix}"}, headers=headers)
     assert response.status_code == 200, response.text

@@ -20,6 +20,7 @@ from .errors import compass_error
 from .models import (
     ApiKey,
     ApiKeyModel,
+    AuditLog,
     ByokCredential,
     LlmRequest,
     ModelCatalog,
@@ -69,6 +70,25 @@ def _has_usable_reference(reference: str) -> bool:
 
 def select_user_by_email(email: str):
     return select(User).where(User.email == email.lower())
+
+
+def record_audit_log(
+    db: Session,
+    actor: User | None,
+    action: str,
+    target: str,
+    metadata: dict | None = None,
+    request_id: str | None = None,
+) -> AuditLog:
+    entry = AuditLog(
+        actor_user_id=actor.id if actor else None,
+        action=action,
+        target=target,
+        request_id=request_id,
+        metadata_json=json.dumps(metadata or {}, sort_keys=True),
+    )
+    db.add(entry)
+    return entry
 
 
 def organization_id_for_user(db: Session, user_id: str) -> str | None:
@@ -150,7 +170,9 @@ def bootstrap_admin(db: Session) -> None:
         db.add(User(email=settings.admin_email.lower(), password_hash=hash_password(settings.admin_password), role="admin"))
         db.commit()
         return
-    user.role = "admin"
+    # The configured owner account is the highest-privilege product account.
+    # Other administrators can still be managed from the owner console.
+    user.role = "super_admin"
     db.commit()
 
 
