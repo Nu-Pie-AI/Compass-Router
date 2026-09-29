@@ -16,10 +16,6 @@ export default function LoginClientWrapper({
 
   useEffect(() => {
     if (status !== "authenticated") return;
-    if (callbackUrl === "/compass") {
-      window.location.assign(process.env.NEXT_PUBLIC_COMPASS_ROUTER_URL || "https://compass-router-web-567790052414.us-central1.run.app");
-      return;
-    }
     router.replace(callbackUrl);
   }, [callbackUrl, router, status]);
 
