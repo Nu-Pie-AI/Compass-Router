@@ -7,7 +7,8 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 260px; background: var(--vscode-sideBar-background); }
+html, body, #app { height: 100%; }
+body { margin: 0; min-width: 260px; overflow: hidden; background: var(--vscode-sideBar-background); }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid transparent; }
 button:disabled { opacity: .55; cursor: default; }
@@ -46,7 +47,7 @@ textarea { resize: vertical; min-height: 82px; line-height: 1.45; }
 .secondary, .icon-button, .mode { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border-color: var(--vscode-button-border, var(--vscode-widget-border)); }
 .secondary:hover, .icon-button:hover, .mode:hover { background: var(--vscode-toolbar-hoverBackground); }
 .full { width: 100%; }
-.agent-shell { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.agent-shell { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .topbar { display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; padding: 14px 16px 12px; border-bottom: 1px solid var(--vscode-panel-border); font-size: 14px; }
 .topbar-title { display: flex; align-items: center; gap: 8px; }
 .topbar-title strong { font-size: 12px; font-weight: 500; letter-spacing: .03em; }
@@ -69,7 +70,10 @@ textarea { resize: vertical; min-height: 82px; line-height: 1.45; }
 .chat-history-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-history-item time, .chat-history-empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
 .chat-history-empty { padding: 4px 8px; }
-.transcript { flex: 1 1 auto; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 18px 16px; overflow: auto; }
+.transcript { flex: 1 1 0; height: 0; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 18px 16px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
+.transcript::-webkit-scrollbar { width: 8px; }
+.transcript::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, #6b6b6b); border-radius: 4px; }
+.transcript::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground, #8b8b8b); }
 .empty { min-height: 260px; display: grid; align-content: center; justify-items: center; gap: 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 12px; }
 .empty-logo { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 5px; color: var(--vscode-textLink-foreground); opacity: .75; }
 .empty-logo svg { width: 42px; height: 42px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }

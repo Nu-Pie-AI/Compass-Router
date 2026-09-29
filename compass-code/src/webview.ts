@@ -51,12 +51,15 @@ function post(message: unknown): void {
 }
 
 function render(): void {
+  const previousTranscript = document.querySelector<HTMLElement>(".transcript");
+  const previousScrollTop = previousTranscript?.scrollTop ?? 0;
+  const wasAtBottom = !previousTranscript || previousTranscript.scrollHeight - previousTranscript.scrollTop - previousTranscript.clientHeight < 48;
   root.innerHTML = state.connected ? connectedMarkup() : connectMarkup();
   bindEvents();
   vscode.setState(state);
   requestAnimationFrame(() => {
     const transcript = document.querySelector<HTMLElement>(".transcript");
-    if (transcript) transcript.scrollTop = transcript.scrollHeight;
+    if (transcript) transcript.scrollTop = wasAtBottom ? transcript.scrollHeight : previousScrollTop;
   });
 }
 
