@@ -4,7 +4,9 @@ import { CompassAgent } from "./agent.js";
 import { CompassClient } from "./client.js";
 import { CheckpointManager } from "./checkpoints.js";
 import { ToolExecutor } from "./tools.js";
-import type { AccountSummary, AgentMode, CompassModel, PermissionRequest, TranscriptItem, WorkStyle } from "./types.js";
+import type { AccountSummary, AgentMode, CompassModel, ConversationSummary, PermissionRequest, TranscriptItem, WorkStyle } from "./types.js";
+
+type SavedConversation = ConversationSummary & { transcript: TranscriptItem[] };
 
 type ViewState = {
   baseUrl: string;
@@ -16,6 +18,8 @@ type ViewState = {
   mode: AgentMode;
   account: AccountSummary | null;
   transcript: TranscriptItem[];
+  conversations: ConversationSummary[];
+  activeConversationId: string | null;
   permission: PermissionRequest | null;
   error: string | null;
 };
@@ -27,6 +31,7 @@ type ViewMessage =
   | { type: "send"; prompt: string; model: string; mode: AgentMode; includeSelection: boolean }
   | { type: "stop" }
   | { type: "newTask" }
+  | { type: "openConversation"; id: string }
   | { type: "refresh" }
   | { type: "openSettings" }
   | { type: "setMode"; mode: AgentMode }
@@ -41,6 +46,8 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   private readonly tools: ToolExecutor;
   private agent: CompassAgent | undefined;
   private permissionResolver: ((approved: boolean) => void) | undefined;
+  private conversations: SavedConversation[];
+  private activeConversationId: string | null = null;
   private state: ViewState = {
     baseUrl: "https://compass-router-api-567790052414.us-central1.run.app",
     connected: false,
@@ -51,6 +58,8 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     mode: "ask",
     account: null,
     transcript: [],
+    conversations: [],
+    activeConversationId: null,
     permission: null,
     error: null
   };
@@ -58,6 +67,8 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.client = new CompassClient(context);
     this.state.baseUrl = this.client.baseUrl;
+    this.conversations = context.workspaceState.get<SavedConversation[]>("compassCode.conversations", []) ?? [];
+    this.state.conversations = this.summaries();
     this.checkpoints = new CheckpointManager(context);
     this.tools = new ToolExecutor(this.checkpoints);
   }
@@ -108,8 +119,11 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   }
 
   async newTask(): Promise<void> {
+    this.archiveCurrentConversation();
     this.agent?.newTask();
+    this.activeConversationId = null;
     this.state.transcript = [];
+    this.state.activeConversationId = null;
     this.state.permission = null;
     this.state.error = null;
     this.postState();
@@ -125,6 +139,8 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
       selectedModel: "",
       account: null,
       transcript: [],
+      conversations: this.summaries(),
+      activeConversationId: null,
       permission: null,
       error: null
     };
@@ -138,6 +154,18 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     } else {
       vscode.window.showInformationMessage("Compass Code has no checkpoint to restore yet.");
     }
+  }
+
+  private async openConversation(id: string): Promise<void> {
+    const conversation = this.conversations.find((item) => item.id === id);
+    if (!conversation) return;
+    this.agent?.newTask();
+    this.activeConversationId = conversation.id;
+    this.state.activeConversationId = conversation.id;
+    this.state.transcript = [...conversation.transcript];
+    this.state.permission = null;
+    this.state.error = null;
+    this.postState();
   }
 
   private async handleMessage(message: ViewMessage): Promise<void> {
@@ -154,6 +182,10 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           break;
         case "send":
           if (!this.agent) throw new Error("Connect a Compass API key first.");
+          if (!this.activeConversationId) {
+            this.activeConversationId = `chat-${Date.now()}`;
+            this.state.activeConversationId = this.activeConversationId;
+          }
           this.state.mode = message.mode;
           this.state.selectedModel = message.model;
           this.state.error = null;
@@ -165,6 +197,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           break;
         case "newTask":
           await this.newTask();
+          break;
+        case "openConversation":
+          await this.openConversation(message.id);
           break;
         case "refresh":
           await this.refresh();
@@ -287,7 +322,30 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
 
   private append(item: TranscriptItem): void {
     this.state.transcript = [...this.state.transcript, item].slice(-80);
+    this.persistCurrentConversation();
     this.postState();
+  }
+
+  private summaries(): ConversationSummary[] {
+    return this.conversations.map(({ id, title, updatedAt }) => ({ id, title, updatedAt }));
+  }
+
+  private archiveCurrentConversation(): void {
+    this.persistCurrentConversation();
+  }
+
+  private persistCurrentConversation(): void {
+    if (!this.activeConversationId || !this.state.transcript.some((item) => item.role === "user")) return;
+    const title = this.state.transcript.find((item) => item.role === "user")?.content.split("\n")[0].trim().slice(0, 72) || "Compass chat";
+    const saved: SavedConversation = {
+      id: this.activeConversationId,
+      title,
+      updatedAt: Date.now(),
+      transcript: [...this.state.transcript]
+    };
+    this.conversations = [saved, ...this.conversations.filter((item) => item.id !== saved.id)].slice(0, 20);
+    this.state.conversations = this.summaries();
+    void this.context.workspaceState.update("compassCode.conversations", this.conversations);
   }
 
   private postState(): void {

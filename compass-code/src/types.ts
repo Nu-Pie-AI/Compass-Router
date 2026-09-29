@@ -73,6 +73,12 @@ export type TranscriptItem = {
   };
 };
 
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+};
+
 export type PermissionRequest = {
   id: string;
   toolName: string;

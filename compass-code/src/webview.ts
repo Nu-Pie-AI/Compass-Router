@@ -1,4 +1,4 @@
-import type { AccountSummary, AgentMode, CompassModel, PermissionRequest, TranscriptItem, WorkStyle } from "./types.js";
+import type { AccountSummary, AgentMode, CompassModel, ConversationSummary, PermissionRequest, TranscriptItem, WorkStyle } from "./types.js";
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void; getState(): unknown; setState(state: unknown): void };
 
@@ -16,6 +16,8 @@ type State = {
   mode: AgentMode;
   account: AccountSummary | null;
   transcript: TranscriptItem[];
+  conversations: ConversationSummary[];
+  activeConversationId: string | null;
   permission: PermissionRequest | null;
   error: string | null;
 };
@@ -30,6 +32,8 @@ const initial: State = {
   mode: "ask",
   account: null,
   transcript: [],
+  conversations: [],
+  activeConversationId: null,
   permission: null,
   error: null
 };
@@ -104,17 +108,14 @@ function connectedMarkup(): string {
   const lastAssistant = [...state.transcript].reverse().find((item) => item.role === "assistant");
   const workedFor = lastAssistant?.meta?.latencyMs ? `Worked for ${Math.max(1, Math.round(lastAssistant.meta.latencyMs / 1000))}s` : "";
   const modeOptions = modes.map((mode) => `<option value="${mode}" ${state.mode === mode ? "selected" : ""}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`).join("");
-  const history = showHistory ? `<section class="chat-history" aria-label="Conversation history"><button class="chat-history-item" id="history-current" type="button"><span>${esc(firstPrompt)}</span><time>now</time></button>${hasTranscript ? "" : `<div class="chat-history-empty">No conversations yet.</div>`}</section>` : "";
+  const historyItems = state.conversations.map((conversation) => `<button class="chat-history-item" type="button" data-conversation-id="${esc(conversation.id)}"><span>${esc(conversation.title)}</span><time>${formatChatAge(conversation.updatedAt)}</time></button>`).join("");
+  const history = !hasTranscript || showHistory ? `<section class="chat-history" aria-label="Conversation history">${historyItems || `<div class="chat-history-empty">No previous chats yet.</div>`}</section>` : "";
   const conversationHeader = hasTranscript ? `<section class="conversation-bar" aria-label="Current conversation">
       <button class="conversation-back" id="new-task-back" type="button" title="Back to new chat" aria-label="Back to new chat">&#x2190;</button>
       <span class="conversation-title">${esc(firstPrompt.slice(0, 72))}</span>
       <div class="conversation-actions"><button class="conversation-icon" type="button" title="Conversation history" aria-label="Conversation history" id="toggle-history">&#x22ef;</button><button class="conversation-icon" type="button" title="Restore last checkpoint" aria-label="Restore last checkpoint" id="restore-checkpoint">&#x21b6;</button></div>
-    </section>` : `<section class="chat-list-header"><div class="chat-list-title"><strong>Chats</strong><span class="status-dot" aria-hidden="true"></span></div><div class="conversation-actions"><button class="conversation-icon" type="button" title="Conversation history" aria-label="Conversation history" id="toggle-history">&#x22ef;</button><button class="conversation-icon" type="button" title="Start a new chat" aria-label="Start a new chat" id="new-task-list">&#x270e;</button></div></section>`;
+    </section>` : `<section class="chat-list-header"><div class="chat-list-title"><strong>Chats</strong><span class="status-dot" aria-hidden="true"></span></div><div class="conversation-actions"><button class="conversation-icon" type="button" title="Refresh Compass" aria-label="Refresh Compass" id="refresh">&#x21bb;</button><button class="conversation-icon" type="button" title="Open Compass Code settings" aria-label="Open Compass Code settings" id="settings">&#x2699;</button><button class="conversation-icon" type="button" title="Start a new chat" aria-label="Start a new chat" id="new-task-list">&#x270e;</button></div></section>`;
   return `<main class="agent-shell">
-    <header class="topbar">
-      <div class="topbar-title"><strong>COMPASS CODE: AGENT</strong><span class="status-dot" title="Connected"></span></div>
-      <div class="top-actions"><button class="icon-button plain" id="refresh" title="Refresh models and account" aria-label="Refresh models and account">&#x21bb;</button><button class="icon-button plain" id="new-task" title="Start a new chat" aria-label="Start a new chat">&#x2b;</button><button class="icon-button plain" id="settings" title="Open Compass Code settings" aria-label="Open Compass Code settings">&#x2699;</button></div>
-    </header>
     ${conversationHeader}
     ${history}
     ${state.error ? `<div class="alert error">${esc(state.error)}</div>` : ""}
@@ -131,6 +132,15 @@ function connectedMarkup(): string {
       <div class="composer-status"><span class="approval-note">Changes and terminal commands require approval</span></div>
     </section>
   </main>`;
+}
+
+function formatChatAge(updatedAt: number): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - updatedAt) / 60_000));
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function permissionMarkup(permission: PermissionRequest): string {
@@ -165,10 +175,10 @@ function bindEvents(): void {
     showHistory = !showHistory;
     render();
   });
-  document.querySelector<HTMLButtonElement>("#history-current")?.addEventListener("click", () => {
+  document.querySelectorAll<HTMLButtonElement>("[data-conversation-id]").forEach((button) => button.addEventListener("click", () => {
     showHistory = false;
-    render();
-  });
+    post({ type: "openConversation", id: button.dataset.conversationId });
+  }));
   document.querySelector<HTMLButtonElement>("#restore-checkpoint")?.addEventListener("click", () => post({ type: "restoreCheckpoint" }));
   document.querySelector<HTMLButtonElement>("#settings")?.addEventListener("click", () => post({ type: "openSettings" }));
   document.querySelector<HTMLSelectElement>("#model")?.addEventListener("change", (event) => post({ type: "setModel", model: (event.target as HTMLSelectElement).value }));
