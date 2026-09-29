@@ -48,6 +48,7 @@ from .services import (
     request_rows,
     revoke_byok_api_key,
     revoke_api_key,
+    test_platform_credential,
     update_api_key_models,
     register_customer,
     seed_defaults,
@@ -1270,15 +1271,19 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
         model.enabled = body.enabled
     if body.published is not None:
         model.published = body.published
+    if body.input_price_paise_per_1k is not None:
+        model.input_price_paise_per_1k = body.input_price_paise_per_1k
+    if body.output_price_paise_per_1k is not None:
+        model.output_price_paise_per_1k = body.output_price_paise_per_1k
     if "fallback_model_id" in body.model_fields_set:
         if body.fallback_model_id == model_id:
             raise compass_error(400, "routing_policy_loop", "A model cannot fall back to itself.")
         if body.fallback_model_id is not None and db.get(ModelCatalog, body.fallback_model_id) is None:
             raise compass_error(404, "fallback_model_not_found", "Fallback model was not found.")
         model.fallback_model_id = body.fallback_model_id
-    record_audit_log(db, actor, "model.governance_updated", f"model:{model.id}", {"status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id})
+    record_audit_log(db, actor, "model.governance_updated", f"model:{model.id}", {"status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "input_price_paise_per_1k": model.input_price_paise_per_1k, "output_price_paise_per_1k": model.output_price_paise_per_1k})
     db.commit()
-    return {"id": model.id, "status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "provider_status": model.provider.status, "provider_enabled": model.provider.enabled}
+    return {"id": model.id, "status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "input_price_paise_per_1k": model.input_price_paise_per_1k, "output_price_paise_per_1k": model.output_price_paise_per_1k, "provider_status": model.provider.status, "provider_enabled": model.provider.enabled}
 
 
 @app.post("/admin/provider-credentials")
@@ -1293,6 +1298,38 @@ def admin_save_provider_credential(body: ProviderCredentialUpdate, actor: User =
         "last_four": credential.last_four,
         "updated_at": credential.updated_at.isoformat(),
     }
+
+
+@app.post("/admin/provider-credentials/{provider_name}/test")
+def admin_test_provider_credential(provider_name: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    result = test_platform_credential(db, provider_name.strip().lower())
+    record_audit_log(db, actor, "provider.credential_tested", f"provider:{result['provider']}", {"status": result["status"]})
+    db.commit()
+    return result
+
+
+@app.delete("/admin/provider-credentials/{provider_name}")
+def admin_revoke_provider_credential(provider_name: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    provider = db.scalar(select(Provider).where(Provider.name == provider_name.strip().lower()))
+    if provider is None:
+        raise compass_error(404, "provider_not_found", "Provider was not found.")
+    credential = db.scalar(
+        select(ProviderCredential).where(
+            ProviderCredential.provider_id == provider.id,
+            ProviderCredential.organization_id.is_(None),
+            ProviderCredential.credential_mode == "platform",
+        )
+    )
+    if credential is None:
+        raise compass_error(404, "provider_credential_not_found", "Provider credential was not found.")
+    credential.secret_reference = ""
+    credential.status = "revoked"
+    credential.last_four = ""
+    credential.last_tested_at = None
+    credential.updated_at = now()
+    record_audit_log(db, actor, "provider.credential_revoked", f"provider:{provider.name}", {})
+    db.commit()
+    return {"provider": provider.name, "credential_status": credential.status, "has_configured_key": False}
 
 
 @app.get("/admin/overview")
@@ -1398,6 +1435,56 @@ def admin_platform(_: User = Depends(admin_user), db: Session = Depends(get_db))
         "sso_configured": bool(settings.compass_sso_secret),
         "razorpay_configured": bool(settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret),
         "database_dialect": db.bind.dialect.name if db.bind else "unknown",
+    }
+
+
+@app.get("/admin/live-readiness")
+async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    credentials = db.scalars(
+        select(ProviderCredential).where(
+            ProviderCredential.organization_id.is_(None),
+            ProviderCredential.credential_mode == "platform",
+            ProviderCredential.status == "active",
+        )
+    ).all()
+    usable_credentials = sum(1 for row in credentials if row.secret_reference.startswith(("encrypted:", "gcp-secret:")))
+    enabled_providers = db.scalar(select(func.count(Provider.id)).where(Provider.enabled.is_(True), Provider.status != "disabled")) or 0
+    published_models = db.scalar(select(func.count(ModelCatalog.id)).where(ModelCatalog.enabled.is_(True), ModelCatalog.published.is_(True))) or 0
+    blockers: list[str] = []
+    checks = {
+        "local_test_mode": not settings.local_test_mode,
+        "billing_payment_mode": settings.billing_payment_mode == "production",
+        "secret_manager": settings.secret_manager_enabled,
+        "provider_credentials": usable_credentials > 0,
+        "enabled_providers": enabled_providers > 0,
+        "published_models": published_models > 0,
+    }
+    if settings.local_test_mode:
+        blockers.append("LOCAL_TEST_MODE is enabled")
+    if settings.billing_payment_mode != "production":
+        blockers.append("Billing payment mode is not production")
+    if not settings.secret_manager_enabled:
+        blockers.append("Secret Manager is disabled")
+    if usable_credentials == 0:
+        blockers.append("No active provider credential is configured")
+    if enabled_providers == 0:
+        blockers.append("No enabled provider route is available")
+    if published_models == 0:
+        blockers.append("No published model is available")
+    try:
+        litellm = await LiteLLMClient().health_check()
+        checks["litellm"] = str(litellm.get("status", "ok")).lower() in {"ok", "ready", "healthy"}
+    except Exception:
+        checks["litellm"] = False
+        blockers.append("LiteLLM health check failed")
+    return {
+        "ready": not blockers,
+        "blockers": blockers,
+        "checks": checks,
+        "configured_provider_credentials": usable_credentials,
+        "enabled_providers": int(enabled_providers),
+        "published_models": int(published_models),
+        "generated_at": now().isoformat(),
     }
 
 

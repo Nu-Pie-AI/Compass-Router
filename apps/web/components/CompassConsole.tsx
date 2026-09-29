@@ -34,9 +34,11 @@ type AdminUser = { id: string; email: string; role: string; status: string; stat
 type AdminAudit = { id: string; actor_user_id?: string | null; action: string; target: string; request_id?: string | null; metadata: Record<string, unknown>; created_at: string };
 type AdminPlatform = { environment: string; execution_mode: string; local_test_mode: boolean; public_signup_enabled: boolean; billing_payment_mode: string; secret_manager_enabled: boolean; provider_execution_mode: string; provider_max_attempts: number; litellm_timeout_seconds: number; configured_provider_credentials: number; sso_configured: boolean; razorpay_configured: boolean; database_dialect: string };
 type AdminProviderOption = { name: string; label: string; family: string };
+type AdminTeam = { id: string; name: string; slug: string; notes?: string; is_active: boolean; created_at: string };
+type AdminReadiness = { ready: boolean; blockers: string[]; checks: Record<string, boolean>; configured_provider_credentials: number; enabled_providers: number; published_models: number; generated_at: string };
 type AdminReconciliation = { orders: number; completed_orders: number; matched_credits: number; missing_credit_order_ids: string[]; orphan_credit_references: string[]; total_completed_paise: number; total_credited_paise: number; generated_at: string };
 type RoutingPolicy = { id: string; alias: string; candidate_models: string[]; enabled: boolean };
-type AdminLocal = { note: string; providers: Array<{ name: string; enabled: boolean; status: string; credential_status: string; has_configured_key: boolean; last_four: string }>; models: Model[]; providerCatalog?: AdminProviderOption[]; routerModels?: RouterModel[]; routerProviders?: RouterProvider[]; metrics?: AdminMetrics | null; overview?: AdminOverview | null; users?: AdminUser[]; audit?: AdminAudit[]; platform?: AdminPlatform | null; events?: AdminEvent[]; reconciliation?: AdminReconciliation | null; policies?: RoutingPolicy[] };
+type AdminLocal = { note: string; providers: Array<{ name: string; enabled: boolean; status: string; credential_status: string; has_configured_key: boolean; last_four: string }>; models: Model[]; providerCatalog?: AdminProviderOption[]; routerModels?: RouterModel[]; routerProviders?: RouterProvider[]; metrics?: AdminMetrics | null; overview?: AdminOverview | null; users?: AdminUser[]; teams?: AdminTeam[]; audit?: AdminAudit[]; platform?: AdminPlatform | null; readiness?: AdminReadiness | null; events?: AdminEvent[]; reconciliation?: AdminReconciliation | null; policies?: RoutingPolicy[] };
 type ChatMessage = { id: string; role: "user" | "assistant"; content: string; meta?: ChatMeta };
 type ChatMeta = { requestId?: string; provider?: string; tokens?: number; costPaise?: number; latencyMs?: number; status?: string };
 type ChatCompletionResponse = {
@@ -111,7 +113,7 @@ export function CompassConsole({ view }: { view: string }) {
 
   const loadData = useCallback(async (activeSession: Session) => {
     const canManage = activeSession.role === "admin" || activeSession.role === "super_admin";
-    const [dash, adminData, providerCatalog, usageRows, opsMetrics, routerModels, routerProviders, overview, users, audit, platform, events, reconciliation, policies] = await Promise.all([
+    const [dash, adminData, providerCatalog, usageRows, opsMetrics, routerModels, routerProviders, overview, users, teams, audit, platform, readiness, events, reconciliation, policies] = await Promise.all([
       apiFetch<Dashboard>("/dashboard", {}, activeSession.token),
       canManage
         ? apiFetch<AdminLocal>("/admin/local-test", {}, activeSession.token)
@@ -129,8 +131,10 @@ export function CompassConsole({ view }: { view: string }) {
         : Promise.resolve(null),
       canManage ? apiFetch<AdminOverview>("/admin/overview", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminUser[]>("/admin/users", {}, activeSession.token) : Promise.resolve(null),
+      canManage ? apiFetch<AdminTeam[]>("/admin/teams", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminAudit[]>("/admin/audit?limit=100", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminPlatform>("/admin/platform", {}, activeSession.token) : Promise.resolve(null),
+      canManage ? apiFetch<AdminReadiness>("/admin/live-readiness", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminEvent[]>("/admin/operations/events", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<AdminReconciliation>("/admin/billing/reconciliation", {}, activeSession.token) : Promise.resolve(null),
       canManage ? apiFetch<RoutingPolicy[]>("/admin/router/policies", {}, activeSession.token) : Promise.resolve(null),
@@ -149,7 +153,7 @@ export function CompassConsole({ view }: { view: string }) {
     const ledgerRows = teamId ? await apiFetch<LedgerRow[]>(`/wallet/ledger?team_id=${teamId}`, {}, activeSession.token) : [];
     setDashboard({ ...dash, recent_requests: usageRows });
     setLedger(ledgerRows);
-    setAdmin(adminData ? { ...adminData, providerCatalog: providerCatalog ?? [], metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], audit: audit ?? [], platform, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
+    setAdmin(adminData ? { ...adminData, providerCatalog: providerCatalog ?? [], metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], teams: teams ?? [], audit: audit ?? [], platform, readiness, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
     if (teamId && teamId !== selectedTeamId) setSelectedTeamId(teamId);
     if (workspaceId && workspaceId !== selectedWorkspaceId) setSelectedWorkspaceId(workspaceId);
     if (!model && dash.models[0]) setModel(dash.models[0].id);
@@ -675,6 +679,7 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
   const [policyModels, setPolicyModels] = useState("");
   const [userFilter, setUserFilter] = useState("");
   const [newProviderName, setNewProviderName] = useState("");
+  const [controlStatus, setControlStatus] = useState("");
   const modelIds = (props.admin?.routerModels ?? []).map((model) => model.id);
 
   async function updateModel(modelId: string, changes: Record<string, unknown>) {
@@ -713,6 +718,31 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
     await props.refresh();
   }
 
+  async function updateTeamStatus(teamId: string, enabled: boolean) {
+    try {
+      await apiFetch(`/admin/teams/${encodeURIComponent(teamId)}/status`, { method: "PATCH", body: JSON.stringify({ enabled }) }, props.token);
+      setControlStatus(enabled ? "Team enabled." : "Team disabled.");
+      await props.refresh();
+    } catch (error) { setControlStatus(error instanceof Error ? error.message : "Could not update team status."); }
+  }
+
+  async function testProvider(name: string) {
+    try {
+      const result = await apiFetch<{ message: string }>(`/admin/provider-credentials/${encodeURIComponent(name)}/test`, { method: "POST" }, props.token);
+      setControlStatus(`${name}: ${result.message}`);
+      await props.refresh();
+    } catch (error) { setControlStatus(error instanceof Error ? error.message : "Provider credential test failed."); }
+  }
+
+  async function revokeProvider(name: string) {
+    if (!window.confirm(`Revoke the platform credential for ${name}?`)) return;
+    try {
+      await apiFetch(`/admin/provider-credentials/${encodeURIComponent(name)}`, { method: "DELETE" }, props.token);
+      setControlStatus(`${name} credential revoked.`);
+      await props.refresh();
+    } catch (error) { setControlStatus(error instanceof Error ? error.message : "Could not revoke provider credential."); }
+  }
+
   async function revokeUserSessions(userId: string) {
     await apiFetch(`/admin/users/${encodeURIComponent(userId)}/revoke-sessions`, { method: "POST" }, props.token);
     await props.refresh();
@@ -732,7 +762,12 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
   const reconciliation = props.admin?.reconciliation;
   const users = (props.admin?.users ?? []).filter((user) => !userFilter.trim() || user.email.toLowerCase().includes(userFilter.trim().toLowerCase()));
   const platform = props.admin?.platform;
+  const readiness = props.admin?.readiness;
   return <div className="grid gap-4 xl:grid-cols-2">
+    <AdminReadinessPanel readiness={readiness} status={controlStatus} />
+    <AdminTeamLifecycle teams={props.admin?.teams ?? []} onToggle={updateTeamStatus} />
+    <AdminProviderActions providers={props.admin?.providers ?? []} onTest={testProvider} onRevoke={revokeProvider} />
+    <AdminPricingControls models={props.admin?.routerModels ?? []} onUpdate={updateModel} />
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-4"><div><span className="analytics-eyebrow">Product owner console</span><h2 className="mt-1 text-xl font-semibold">Full Compass Router control</h2><p className="mt-2 max-w-2xl text-sm text-slate-400">You are the product owner. Control access, workspaces, provider routes, model lifecycle, billing integrity, and platform operations from this surface.</p></div><span className="key-status active">{overview?.status ?? "operational"}</span></div><div className="mt-5 grid gap-3 sm:grid-cols-4"><OwnerMetric label="Users" value={String(overview?.users ?? 0)} /><OwnerMetric label="Teams" value={String(overview?.teams ?? props.dashboard?.teams.length ?? 0)} /><OwnerMetric label="Requests" value={String(overview?.requests ?? metrics?.requests.total ?? 0)} /><OwnerMetric label="Open circuits" value={String(metrics?.provider_health.open_circuits ?? 0)} /></div><div className="mt-5 flex flex-wrap gap-2"><Link className="console-secondary" href="/teams"><UsersRound size={16} />Manage teams</Link><Link className="console-secondary" href="/workspaces"><Building2 size={16} />Manage workspaces</Link><Link className="console-secondary" href="/api-keys"><KeyRound size={16} />Manage API keys</Link><Link className="console-secondary" href="/wallet"><Wallet size={16} />Open billing</Link><button disabled={props.busy} className="console-primary" onClick={props.openWorkspaceDialog}><Building2 size={16} />Create workspace</button></div></section>
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Users and access</h2><p className="mt-2 text-sm text-slate-400">Manage product roles, suspend access, and revoke every active session for a user.</p></div><UsersRound size={20} /></div><input className="mt-4 w-full rounded-card border border-compass-line bg-compass-bg px-3 py-2 text-sm" placeholder="Search users by email" value={userFilter} onChange={(event) => setUserFilter(event.target.value)} /><div className="mt-4 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="border-b border-compass-line px-3 py-2">User</th><th className="border-b border-compass-line px-3 py-2">Role</th><th className="border-b border-compass-line px-3 py-2">Access</th><th className="border-b border-compass-line px-3 py-2">Usage scope</th><th className="border-b border-compass-line px-3 py-2">Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.id} className="border-b border-compass-line/70"><td className="px-3 py-3"><strong>{user.email}</strong><span className="mt-1 block text-xs text-slate-500">Joined {new Date(user.created_at).toLocaleDateString("en-IN")}</span></td><td className="px-3 py-3"><select className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={user.role} onChange={(event) => void updateUserRole(user.id, event.target.value)}><option value="customer">customer</option><option value="admin">admin</option><option value="super_admin">super_admin</option></select></td><td className="px-3 py-3"><span className={`key-status ${user.status === "active" ? "active" : "revoked"}`}>{user.status}</span></td><td className="px-3 py-3 text-xs text-slate-400">{user.workspace_count} workspaces / {user.team_count} teams</td><td className="px-3 py-3"><div className="flex flex-wrap gap-2"><button className="console-secondary" onClick={() => void updateUserStatus(user.id, user.status === "active" ? "suspended" : "active")}>{user.status === "active" ? "Suspend" : "Restore"}</button><button className="console-icon" aria-label={`Revoke sessions for ${user.email}`} title="Revoke all sessions" onClick={() => void revokeUserSessions(user.id)}><ShieldCheck size={16} /></button></div></td></tr>)}</tbody></table></div></section>
@@ -753,6 +788,23 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold">Owner audit log</h2><p className="mt-1 text-sm text-slate-400">Append-only history of privileged access, routing, model, provider, and billing changes.</p></div><Clock3 size={20} /></div><DataTable headers={["Time", "Action", "Target", "Details"]} rows={(props.admin?.audit ?? []).slice(0, 20).map((entry) => [new Date(entry.created_at).toLocaleString("en-IN"), entry.action, entry.target, JSON.stringify(entry.metadata)])} /></section>
   </div>;
+}
+
+function AdminReadinessPanel({ readiness, status }: { readiness?: AdminReadiness | null; status: string }) {
+  if (!readiness) return null;
+  return <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Live mode readiness</h2><p className="mt-1 text-sm text-slate-400">A deployment gate for switching from deterministic testing to paid provider traffic.</p></div><span className={`key-status ${readiness.ready ? "active" : "revoked"}`}>{readiness.ready ? "ready" : "blocked"}</span></div><div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{Object.entries(readiness.checks).map(([name, passed]) => <div className="flex items-center justify-between gap-3 border-b border-compass-line pb-2 text-sm" key={name}><span className="text-slate-400">{name.replaceAll("_", " ")}</span><strong className={passed ? "text-emerald-400" : "text-amber-400"}>{passed ? "pass" : "attention"}</strong></div>)}</div>{readiness.blockers.length ? <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-amber-300">{readiness.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul> : null}{status ? <p className="mt-4 text-sm text-slate-300" role="status">{status}</p> : null}</section>;
+}
+
+function AdminTeamLifecycle({ teams, onToggle }: { teams: AdminTeam[]; onToggle: (teamId: string, enabled: boolean) => Promise<void> }) {
+  return <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Team lifecycle</h2><p className="mt-1 text-sm text-slate-400">Disable a team to stop its access without deleting wallet, members, keys, or usage history.</p></div><UsersRound size={20} /></div><div className="mt-4 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="border-b border-compass-line px-3 py-2">Team</th><th className="border-b border-compass-line px-3 py-2">Created</th><th className="border-b border-compass-line px-3 py-2">Status</th><th className="border-b border-compass-line px-3 py-2">Action</th></tr></thead><tbody>{teams.map((team) => <tr key={team.id} className="border-b border-compass-line/70"><td className="px-3 py-3"><strong>{team.name}</strong><code className="mt-1 block text-xs text-slate-500">{team.slug}</code></td><td className="px-3 py-3 text-slate-400">{new Date(team.created_at).toLocaleDateString("en-IN")}</td><td className="px-3 py-3"><span className={`key-status ${team.is_active ? "active" : "revoked"}`}>{team.is_active ? "active" : "disabled"}</span></td><td className="px-3 py-3"><button className="console-secondary" onClick={() => void onToggle(team.id, !team.is_active)}>{team.is_active ? "Disable team" : "Enable team"}</button></td></tr>)}</tbody></table></div></section>;
+}
+
+function AdminProviderActions({ providers, onTest, onRevoke }: { providers: AdminLocal["providers"]; onTest: (name: string) => Promise<void>; onRevoke: (name: string) => Promise<void> }) {
+  return <section className="rounded-card border border-compass-line bg-compass-panel p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Credential operations</h2><p className="mt-1 text-sm text-slate-400">Test a stored credential without making a paid model request, or revoke it immediately.</p></div><KeyRound size={20} /></div><div className="mt-4 grid gap-3">{providers.map((provider) => <div className="flex flex-wrap items-center justify-between gap-3 border-b border-compass-line pb-3" key={provider.name}><div><strong>{provider.name}</strong><span className="mt-1 block text-xs text-slate-500">{provider.has_configured_key ? `configured ****${provider.last_four}` : provider.credential_status}</span></div><div className="flex gap-2"><button className="console-secondary" disabled={!provider.has_configured_key} onClick={() => void onTest(provider.name)}>Test</button><button className="console-secondary" disabled={!provider.has_configured_key} onClick={() => void onRevoke(provider.name)}>Revoke</button></div></div>)}</div></section>;
+}
+
+function AdminPricingControls({ models, onUpdate }: { models: RouterModel[]; onUpdate: (modelId: string, changes: Record<string, unknown>) => Promise<void> }) {
+  return <section className="rounded-card border border-compass-line bg-compass-panel p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Pricing controls</h2><p className="mt-1 text-sm text-slate-400">Set input and output prices in paise per 1,000 tokens. Changes are audited.</p></div><BadgeIndianRupee size={20} /></div><div className="mt-4 grid gap-3">{models.map((model) => <div className="grid gap-2 border-b border-compass-line pb-3 sm:grid-cols-[1fr_auto_auto] sm:items-center" key={model.id}><div><strong>{model.display_name}</strong><code className="mt-1 block text-xs text-slate-500">{model.id}</code></div><label className="text-xs text-slate-500">Input<input className="mt-1 w-28 rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs text-slate-200" type="number" min="0" defaultValue={model.input_price_paise_per_1k} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isFinite(value) && value >= 0) void onUpdate(model.id, { status: model.status, input_price_paise_per_1k: Math.round(value) }); }} /></label><label className="text-xs text-slate-500">Output<input className="mt-1 w-28 rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs text-slate-200" type="number" min="0" defaultValue={model.output_price_paise_per_1k} onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isFinite(value) && value >= 0) void onUpdate(model.id, { status: model.status, output_price_paise_per_1k: Math.round(value) }); }} /></label></div>)}</div></section>;
 }
 
 function OwnerMetric({ label, value }: { label: string; value: string }) {

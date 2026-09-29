@@ -502,6 +502,30 @@ def provider_credentials_summary(db: Session) -> list[dict]:
     return rows
 
 
+def test_platform_credential(db: Session, provider_name: str) -> dict:
+    provider = db.scalar(select(Provider).where(Provider.name == provider_name))
+    if provider is None:
+        raise compass_error(404, "provider_not_found", "Provider was not found.")
+    credential = db.scalar(
+        select(ProviderCredential).where(
+            ProviderCredential.provider_id == provider.id,
+            ProviderCredential.organization_id.is_(None),
+            ProviderCredential.credential_mode == "platform",
+        )
+    )
+    if credential is None or credential.status != "active" or not _has_usable_reference(credential.secret_reference):
+        raise compass_error(409, "provider_credential_missing", "Save an active provider credential before testing it.")
+    settings = get_settings()
+    if settings.local_test_mode and credential.secret_reference.startswith("server-side/"):
+        return {"provider": provider.name, "status": "local_test", "message": "Local test credential is available; no provider call was made."}
+    secret = _credential_value(credential.secret_reference)
+    if not secret:
+        raise compass_error(503, "provider_credential_invalid", "The provider credential is empty or unavailable.")
+    credential.last_tested_at = now()
+    db.commit()
+    return {"provider": provider.name, "status": "configured", "message": "Provider credential decrypted successfully; no paid model request was made."}
+
+
 def configured_provider_secret(db: Session, provider_name: str) -> str | None:
     credential = db.scalar(
         select(ProviderCredential)

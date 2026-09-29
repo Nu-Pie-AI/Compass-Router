@@ -201,6 +201,8 @@ class ModelStatusUpdate(BaseModel):
 
 class ModelGovernanceUpdate(ModelStatusUpdate):
     fallback_model_id: str | None = Field(default=None, max_length=200)
+    input_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
+    output_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
 
 
 class ModelPolicyUpdate(BaseModel):
