@@ -25,7 +25,13 @@ const registerSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const validData = registerSchema.parse(body);
+    const parsedData = registerSchema.parse(body);
+    const validData = {
+      ...parsedData,
+      email: parsedData.email.trim().toLowerCase(),
+      contactEmail: parsedData.contactEmail.trim().toLowerCase(),
+      name: parsedData.name.trim(),
+    };
 
     // Check if email already exists
     const existingUser = await prisma.user.findUnique({
@@ -73,7 +79,7 @@ export async function POST(req: NextRequest) {
     });
 
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000';
-    await Promise.all([
+    const notifications = await Promise.allSettled([
       sendSignupConfirmation(validData.email, validData.name),
       notifyAdmin(
         'New vendor signup pending approval',
@@ -81,6 +87,11 @@ export async function POST(req: NextRequest) {
         `${baseUrl}/admin/vendors/pending`
       ),
     ]);
+    for (const notification of notifications) {
+      if (notification.status === 'rejected') {
+        console.error('Vendor signup notification failed:', notification.reason);
+      }
+    }
 
     return NextResponse.json({
       success: true,

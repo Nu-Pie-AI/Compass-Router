@@ -10,7 +10,10 @@ import { notifyAdmin, sendSignupConfirmation } from '@/lib/email';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, email, password, companyName } = body;
+    const name = typeof body.name === 'string' ? body.name.trim() : body.name;
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : body.email;
+    const password = body.password;
+    const companyName = typeof body.companyName === 'string' ? body.companyName.trim() : body.companyName;
 
     // Validate required fields
     if (!name || !email || !password || !companyName) {
@@ -65,7 +68,7 @@ export async function POST(req: NextRequest) {
     });
 
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000';
-    await Promise.all([
+    const notifications = await Promise.allSettled([
       sendSignupConfirmation(user.email, user.name),
       notifyAdmin(
         'New partner signup pending approval',
@@ -73,6 +76,11 @@ export async function POST(req: NextRequest) {
         `${baseUrl}/admin/partners/approve`
       ),
     ]);
+    for (const notification of notifications) {
+      if (notification.status === 'rejected') {
+        console.error('Partner signup notification failed:', notification.reason);
+      }
+    }
 
     return NextResponse.json(
       {

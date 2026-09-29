@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
     });
 
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "http://localhost:3000";
-    await Promise.all([
+    const notifications = await Promise.allSettled([
       sendSignupConfirmation(currentUser.email, currentUser.name),
       notifyAdmin(
         "New OAuth partner signup pending approval",
@@ -77,6 +77,11 @@ export async function POST(req: NextRequest) {
         `${baseUrl}/admin/partners/approve`
       ),
     ]);
+    for (const notification of notifications) {
+      if (notification.status === "rejected") {
+        console.error("OAuth partner signup notification failed:", notification.reason);
+      }
+    }
 
     return NextResponse.json({
       success: true,
