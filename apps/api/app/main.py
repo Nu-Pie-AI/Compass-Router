@@ -4,7 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
-from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -218,8 +218,13 @@ def live() -> dict:
 async def ready(db: Session = Depends(get_db)) -> dict:
     db.execute(select(User).limit(1))
     redis = check_redis(settings.redis_url)
-    litellm = await LiteLLMClient().health_check()
-    return {"status": "ready", "database": {"status": "ok", "dialect": db.bind.dialect.name if db.bind else "unknown"}, "redis": redis, "litellm": {"status": litellm.get("status", "ok")}}
+    try:
+        litellm = await LiteLLMClient().health_check()
+    except (HTTPException, httpx.HTTPError):
+        litellm = {"status": "unavailable", "detail": "LiteLLM health check did not respond."}
+    litellm_status = str(litellm.get("status", "ok"))
+    overall_status = "ready" if settings.local_test_mode or litellm_status in {"ok", "ready", "healthy"} else "degraded"
+    return {"status": overall_status, "database": {"status": "ok", "dialect": db.bind.dialect.name if db.bind else "unknown"}, "redis": redis, "litellm": {"status": litellm_status, "detail": litellm.get("detail")}}
 
 
 @app.post("/auth/signup", response_model=SessionResponse)
