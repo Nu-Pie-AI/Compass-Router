@@ -596,13 +596,16 @@ export function ApiKeyManager(props: KeyManagerProps) {
                 </select>
               </label>
               <label className="model-access-search">
-                <Search size={16} />
-                <input
-                  aria-label="Search models"
-                  placeholder="Search models or providers..."
-                  value={modelSearch}
-                  onChange={(event) => setModelSearch(event.target.value)}
-                />
+                <span>Search</span>
+                <div className="model-access-search-input">
+                  <Search size={16} />
+                  <input
+                    aria-label="Search models"
+                    placeholder="Search models or providers..."
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                  />
+                </div>
               </label>
             </div>
             <div className="model-selection-toolbar">
