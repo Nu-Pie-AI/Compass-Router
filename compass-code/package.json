@@ -2,7 +2,7 @@
   "name": "compass-code",
   "displayName": "Compass Code",
   "description": "A Compass-powered coding agent for Visual Studio Code.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "toheedsoudagar",
   "license": "MIT",
   "repository": {
