@@ -13,16 +13,18 @@ const builds = [
     target: "node20"
   },
   {
-    entryPoints: ["src/webview.ts"],
+    entryPoints: ["src/ui/index.tsx"],
     bundle: true,
     outfile: "media/main.js",
     format: "iife",
     platform: "browser",
+    define: { "process.env.NODE_ENV": JSON.stringify(watch ? "development" : "production") },
+    minify: !watch,
     sourcemap: true,
     target: "es2022"
   },
   {
-    entryPoints: ["src/webview.css"],
+    entryPoints: ["src/ui/styles.css"],
     bundle: true,
     outfile: "media/style.css",
     assetNames: "assets/[name]-[hash]",

@@ -84,22 +84,27 @@ export class CompassAgent {
     this.messages.push({ role: "user", content: userContent });
 
     const allowedTools = this.toolsForMode(mode);
+    const maxTokens = mode === "ask" ? 1536 : mode === "plan" ? 2048 : 3072;
     const maxSteps = vscode.workspace.getConfiguration("compassCode").get<number>("maxAgentSteps", 8);
     let aggregateTokens = 0;
     let aggregateCost = 0;
     let aggregateLatency = 0;
     let lastRequestId: string | undefined;
     let validationFailed = false;
+    let pendingAssistantId: string | undefined;
 
     try {
       for (let step = 0; step < maxSteps; step += 1) {
         const assistantId = randomId("assistant");
+        pendingAssistantId = assistantId;
         let assistantText = "";
         const toolCalls = new Map<number, ToolCall>();
         let assistantModel = model;
+        this.host.append({ id: assistantId, role: "assistant", content: "", streaming: true, meta: { model } });
         for await (const chunk of this.client.stream(model, this.messages.slice(-60), {
           tools: allowedTools,
-          signal: this.running.signal
+          signal: this.running.signal,
+          maxTokens
         })) {
           assistantModel = chunk.model ?? assistantModel;
           aggregateTokens += chunk.usage?.total_tokens ?? 0;
@@ -110,11 +115,7 @@ export class CompassAgent {
           const deltaText = this.messageText(delta?.content) || this.messageText((delta as unknown as { reasoning_content?: unknown } | undefined)?.reasoning_content);
           if (deltaText) {
             assistantText += deltaText;
-            if (this.host.has(assistantId)) {
-              this.host.update(assistantId, { content: assistantText, streaming: true });
-            } else {
-              this.host.append({ id: assistantId, role: "assistant", content: assistantText, streaming: true });
-            }
+            this.host.update(assistantId, { content: assistantText, streaming: true });
           }
           for (const part of delta?.tool_calls ?? []) {
             const current = toolCalls.get(part.index) ?? {
@@ -145,16 +146,16 @@ export class CompassAgent {
         const calls = assistant.tool_calls ?? [];
         if (!calls.length) {
           if (!assistantText) {
-            this.host.append({
-              id: assistantId,
-              role: "assistant",
-              content: "Task completed without a text response.",
+            this.host.update(assistantId, {
+              content: "The selected model returned no text. Check the model route or try again.",
+              streaming: false,
               meta: { model: assistantModel, requestId: lastRequestId, tokens: aggregateTokens, costPaise: aggregateCost, latencyMs: aggregateLatency }
             });
           }
           this.host.setPlanStep("complete", "completed", "The model completed the current request.");
           this.host.setGoalStatus(validationFailed ? "failed" : "completed", validationFailed ? "Validation reported failures." : "Task completed.");
           await this.host.refreshAccount();
+          pendingAssistantId = undefined;
           return;
         }
 
@@ -168,9 +169,13 @@ export class CompassAgent {
       this.host.setGoalStatus("failed", `Stopped after ${maxSteps} agent steps.`);
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
+        if (pendingAssistantId && this.host.has(pendingAssistantId)) {
+          this.host.update(pendingAssistantId, { content: "Task stopped before a response was returned.", streaming: false });
+        }
         this.host.append({ id: randomId("status"), role: "status", content: "Task stopped." });
       } else {
         const message = error instanceof Error ? error.message : "Compass task failed.";
+        if (pendingAssistantId) this.host.update(pendingAssistantId, { content: "No response was received from the selected model.", streaming: false });
         this.host.append({ id: randomId("error"), role: "error", content: message });
         this.host.setPlanStep("complete", "failed", message);
         this.host.setGoalStatus("failed", message);
@@ -180,6 +185,7 @@ export class CompassAgent {
       this.host.setBusy(false);
     }
   }
+
 
   private async handleToolCall(call: ToolCall, allowedTools: ToolDefinition[]): Promise<boolean> {
     const name = call.function.name;
@@ -320,7 +326,7 @@ export class CompassAgent {
 
   private systemPrompt(mode: AgentMode): string {
     return [
-      "You are Compass Code, a careful coding agent running inside Visual Studio Code.",
+      "You are Compass Router, a careful coding agent running inside Visual Studio Code.",
       modeInstructions[mode],
       "Use workspace-relative paths. Inspect existing code before proposing changes.",
       "Honor explicit context references such as @file, @folder, @workspace, @selection, @terminal, @git, and @problems.",

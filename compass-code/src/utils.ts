@@ -45,7 +45,7 @@ export function parseJsonObject(value: string): Record<string, unknown> {
 
 export function truncate(value: string, maxLength = 40_000): string {
   if (value.length <= maxLength) return value;
-  return `${value.slice(0, maxLength)}\n\n[Output truncated by Compass Code]`;
+  return `${value.slice(0, maxLength)}\n\n[Output truncated by Compass Router]`;
 }
 
 export function randomId(prefix: string): string {

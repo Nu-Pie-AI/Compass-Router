@@ -1,14 +1,14 @@
-# Compass Code
+# Compass Router
 
-Compass Code is the VS Code coding agent for Compass Router. It uses real Compass model calls and a typed, permission-gated workspace tool registry for asking questions, planning changes, reviewing edits, running validation, and iterating on repository tasks.
+Compass Router is the VS Code coding agent for Compass Router. It uses real Compass model calls and a typed, permission-gated workspace tool registry for asking questions, planning changes, reviewing edits, running validation, and iterating on repository tasks.
 
-`VS Code sidebar -> Compass Code agent -> Compass API -> configured provider routes`
+`VS Code sidebar -> Compass Router agent -> Compass API -> configured provider routes`
 
 ## Install
 
 1. Download the latest `.vsix` from the [Compass releases](https://github.com/Nu-Pie-AI/Compass/releases).
 2. In VS Code, run **Extensions: Install from VSIX...** and select the downloaded package.
-3. Open the Compass Code view from the activity bar.
+3. Open the Compass Router view from the activity bar.
 4. Connect with a Compass API key created in your workspace.
 
 The published extension uses the hosted Compass API by default. For a self-hosted deployment, change `compassCode.apiBaseUrl` in VS Code settings. The API key is stored through VS Code SecretStorage and is never written to workspace files. The selected model is persisted as `compassCode.defaultModel` and refreshed from the provider on reconnect.
@@ -48,7 +48,7 @@ npm.cmd run build
 npm.cmd run package
 ```
 
-The generated package is `compass-code-0.2.13.vsix` (or the current package version).
+The generated package is `compass-code-0.3.5.vsix` (or the current package version).
 
 ## Source
 

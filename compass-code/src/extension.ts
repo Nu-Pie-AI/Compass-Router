@@ -12,48 +12,7 @@ import type { AccountSummary, AgentGoal, AgentMode, CompassModel, ConversationSu
 
 type SavedConversation = ConversationSummary & { transcript: TranscriptItem[] };
 
-type ViewState = {
-  baseUrl: string;
-  provider: ProviderKind;
-  connected: boolean;
-  connecting: boolean;
-  busy: boolean;
-  models: CompassModel[];
-  selectedModel: string;
-  mode: AgentMode;
-  account: AccountSummary | null;
-  transcript: TranscriptItem[];
-  conversations: ConversationSummary[];
-  activeConversationId: string | null;
-  permission: PermissionRequest | null;
-  error: string | null;
-  goal: AgentGoal | null;
-};
-
-type ViewMessage =
-  | { type: "ready" }
-  | { type: "connect"; baseUrl: string; apiKey: string; provider: ProviderKind; workStyle: WorkStyle }
-  | { type: "disconnect" }
-  | { type: "send"; prompt: string; model: string; mode: AgentMode; includeSelection: boolean }
-  | { type: "stop" }
-  | { type: "pauseGoal" }
-  | { type: "resumeGoal" }
-  | { type: "cancelGoal" }
-  | { type: "reviewGoal" }
-  | { type: "retryLast" }
-  | { type: "newTask" }
-  | { type: "openConversation"; id: string }
-  | { type: "renameConversation"; id: string; title: string }
-  | { type: "deleteConversation"; id: string }
-  | { type: "refresh" }
-  | { type: "openSettings" }
-  | { type: "setMode"; mode: AgentMode }
-  | { type: "setModel"; model: string }
-  | { type: "permission"; id: string; decision: PermissionDecision }
-  | { type: "openDiff"; id: string }
-  | { type: "openFile"; path: string }
-  | { type: "applyCode"; path: string; content: string }
-  | { type: "restoreCheckpoint" };
+import type { ViewMessage, ViewState } from "./protocol.js";
 
 class CompassViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
@@ -70,7 +29,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   private sessionWriteAllowed = false;
   private sessionWriteDenied = false;
   private state: ViewState = {
-    baseUrl: "https://compass-router-api-567790052414.us-central1.run.app",
+    baseUrl: "https://compass-router-api-c4psf2dvua-uc.a.run.app",
     provider: "compass",
     connected: false,
     connecting: false,
@@ -109,7 +68,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     };
     webviewView.webview.html = this.html(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message: ViewMessage) => void this.handleMessage(message));
-    void this.refresh();
+    this.postState();
   }
 
   async connect(): Promise<void> {
@@ -189,7 +148,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     if (restored) {
       this.append({ id: `status-${Date.now()}`, role: "status", content: `Restored checkpoint ${restored}.` });
     } else {
-      vscode.window.showInformationMessage("Compass Code has no checkpoint to restore yet.");
+      vscode.window.showInformationMessage("Compass Router has no checkpoint to restore yet.");
     }
   }
 
@@ -203,8 +162,12 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   }
 
   async openDashboard(): Promise<void> {
-    const url = vscode.workspace.getConfiguration("compassCode").get<string>("marketplaceUrl", "https://compass-marketplace-567790052414.us-central1.run.app");
+    const url = vscode.workspace.getConfiguration("compassCode").get<string>("marketplaceUrl", "https://compass.nu-pie.ai");
     await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+
+  openPage(page: "chat" | "history" | "settings" | "account" | "connect", provider?: ProviderKind): void {
+    void this.view?.webview.postMessage({ type: "navigate", page, provider });
   }
 
   async resumeGoal(): Promise<void> {
@@ -279,7 +242,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   async retryLast(): Promise<void> {
     const prompt = [...this.state.transcript].reverse().find((item) => item.role === "user")?.content;
     if (!prompt || !this.state.selectedModel) {
-      vscode.window.showInformationMessage("Compass Code has no previous request to retry.");
+      vscode.window.showInformationMessage("Compass Router has no previous request to retry.");
       return;
     }
     if (!this.agent) this.ensureAgent();
@@ -294,12 +257,12 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   async runCommandPrompt(prompt: string, mode: AgentMode = "ask"): Promise<void> {
     if (!this.view) await vscode.commands.executeCommand("workbench.view.extension.compassCode");
     if (!this.state.connected) {
-      vscode.window.showWarningMessage("Connect Compass Code before running an AI command.");
+      vscode.window.showWarningMessage("Connect Compass Router before running an AI command.");
       return;
     }
     if (!this.agent) this.ensureAgent();
     if (!this.state.selectedModel) {
-      vscode.window.showWarningMessage("Compass Code has no available model for this workspace.");
+      vscode.window.showWarningMessage("Compass Router has no available model for this workspace.");
       return;
     }
     if (!this.activeConversationId) {
@@ -341,8 +304,11 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async deleteConversation(id: string): Promise<void> {
+    if (this.activeConversationId === id) {
+      this.activeConversationId = null;
+      await this.newTask();
+    }
     this.conversations = this.conversations.filter((item) => item.id !== id);
-    if (this.activeConversationId === id) await this.newTask();
     this.state.conversations = this.summaries();
     await this.context.workspaceState.update("compassCode.conversations", this.conversations);
     this.postState();
@@ -350,6 +316,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
 
   private async handleMessage(message: ViewMessage): Promise<void> {
     try {
+      if (this.state.busy && ["send", "newTask", "openConversation", "deleteConversation", "retryLast", "resumeGoal", "applyCode", "restoreCheckpoint", "setModel", "setMode", "refresh", "connect", "login"].includes(message.type)) return;
       switch (message.type) {
         case "ready":
           await this.refresh();
@@ -357,10 +324,14 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
         case "connect":
           await this.finishConnect(message.baseUrl, message.apiKey, message.workStyle, message.provider);
           break;
+        case "login":
+          await this.connect();
+          break;
         case "disconnect":
           await this.disconnect();
           break;
         case "send":
+          if (this.state.busy) return;
           if (!this.agent) throw new Error("Connect a Compass API key first.");
           if (!this.activeConversationId) {
             this.activeConversationId = `chat-${Date.now()}`;
@@ -406,9 +377,40 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
         case "refresh":
           await this.refresh();
           break;
-        case "openSettings":
-          await vscode.commands.executeCommand("workbench.action.openSettings", "@ext:toheedsoudagar.compass-code");
+        case "openConnect":
+          this.openPage("connect", message.provider);
           break;
+        case "openSettings":
+          this.openPage("settings");
+          break;
+        case "openAccount":
+          this.openPage("account");
+          break;
+        case "openDashboard":
+          await this.openDashboard();
+          break;
+        case "copyTranscript": {
+          const text = this.state.transcript
+            .map((item) => `${item.role.toUpperCase()}\n${item.content}`)
+            .join("\n\n");
+          await vscode.env.clipboard.writeText(text);
+          vscode.window.showInformationMessage("Conversation copied to the clipboard.");
+          break;
+        }
+        case "exportTranscript": {
+          const uri = await vscode.window.showSaveDialog({
+            saveLabel: "Export conversation",
+            filters: { Markdown: ["md"], Text: ["txt"] },
+            defaultUri: vscode.Uri.joinPath(vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(this.context.extensionPath), "compass-conversation.md")
+          });
+          if (uri) {
+            const text = this.state.transcript
+              .map((item) => `## ${item.role === "assistant" ? "Compass" : item.role === "user" ? "You" : item.role}\n\n${item.content}`)
+              .join("\n\n");
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(`# Compass conversation\n\n${text}`, "utf8"));
+          }
+          break;
+        }
         case "setMode":
           this.state.mode = message.mode;
           this.postState();
@@ -443,7 +445,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           break;
       }
     } catch (error) {
-      this.state.error = error instanceof Error ? error.message : "Compass Code failed.";
+      this.state.error = error instanceof Error ? error.message : "Compass Router failed.";
       this.state.connecting = false;
       this.postState();
     }
@@ -474,7 +476,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
       this.state.connected = true;
       this.state.account = provider === "compass" ? await this.client.account() : null;
       this.ensureAgent();
-      this.append({ id: `status-${Date.now()}`, role: "status", content: `Connected to Compass. ${models.length} allowed model${models.length === 1 ? "" : "s"}.` });
+      const connectionName = provider === "compass" ? "Compass Router" : provider === "ollama" ? "Ollama" : "the OpenAI-compatible provider";
+      this.append({ id: `status-${Date.now()}`, role: "status", content: `Connected to ${connectionName}. ${models.length} model${models.length === 1 ? "" : "s"} available.` });
+      this.openPage("chat");
     } catch (error) {
       await this.client.disconnect();
       throw error;
@@ -485,6 +489,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async refresh(): Promise<void> {
+    if (this.state.connecting) return;
     if (!(await this.client.hasCredential())) {
       this.state.connected = false;
       this.postState();
@@ -582,7 +587,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
 
   private persistCurrentConversation(): void {
     if (!this.activeConversationId || !this.state.transcript.some((item) => item.role === "user")) return;
-    const title = this.state.transcript.find((item) => item.role === "user")?.content.split("\n")[0].trim().slice(0, 72) || "Compass chat";
+    const title = this.conversations.find(item => item.id === this.activeConversationId)?.title || this.state.transcript.find((item) => item.role === "user")?.content.split("\n")[0].trim().slice(0, 72) || "Compass chat";
     const firstPrompt = this.state.transcript.find((item) => item.role === "user")?.content ?? "";
     const contextReferences = [...firstPrompt.matchAll(/@(file|folder|workspace|selection|terminal|git|problems)\b/gi)].map((match) => match[1].toLocaleLowerCase());
     const saved: SavedConversation = {
@@ -715,9 +720,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
   <link rel="stylesheet" href="${style}" />
-  <title>Compass Code</title>
+  <title>Compass Router</title>
 </head>
 <body>
   <main id="app" data-nonce="${nonce}"></main>
@@ -737,7 +742,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("compassCode.newTask", () => provider.newTask()),
     vscode.commands.registerCommand("compassCode.chooseModel", () => provider.chooseModel()),
     vscode.commands.registerCommand("compassCode.restoreCheckpoint", () => provider.restoreCheckpoint()),
-    vscode.commands.registerCommand("compassCode.openSettings", () => vscode.commands.executeCommand("workbench.action.openSettings", "@ext:toheedsoudagar.compass-code")),
+    vscode.commands.registerCommand("compassCode.openSettings", () => provider.openPage("settings")),
+    vscode.commands.registerCommand("compassCode.openHistory", () => provider.openPage("history")),
+    vscode.commands.registerCommand("compassCode.openAccount", () => provider.openPage("account")),
     vscode.commands.registerCommand("compassCode.openDashboard", () => provider.openDashboard()),
     vscode.commands.registerCommand("compassCode.explainSelection", () => provider.runCommandPrompt("Explain the selected code, its responsibilities, assumptions, and any risks.", "ask")),
     vscode.commands.registerCommand("compassCode.fixSelection", () => provider.runCommandPrompt("Inspect the selected code, identify the defect, and fix it with the smallest safe edit.", "edit")),

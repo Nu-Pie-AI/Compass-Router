@@ -250,13 +250,13 @@ export class ToolExecutor {
   async preview(name: string, args: Record<string, unknown>): Promise<{ diff: string; changeId?: string; files: string[]; addedLines: number; removedLines: number } | undefined> {
     if (!writeToolNames.has(name)) return undefined;
     const relativePath = this.requiredString(args, "path");
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not modify protected secret files.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not modify protected secret files.");
     const uri = this.uriFor(relativePath);
     let current = "";
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
       if (looksBinary(bytes)) throw new Error("The target file is binary and cannot be safely edited.");
-      if (bytes.length > 2_000_000) throw new Error("The target file is larger than Compass Code's 2 MB edit limit.");
+      if (bytes.length > 2_000_000) throw new Error("The target file is larger than Compass Router's 2 MB edit limit.");
       current = new TextDecoder().decode(bytes);
     } catch (error) {
       if (!(error instanceof vscode.FileSystemError) || error.code !== "FileNotFound") throw error;
@@ -275,7 +275,7 @@ export class ToolExecutor {
       proposed = `${current.slice(0, index)}${newText}${current.slice(index + oldText.length)}`;
     }
     const diff = truncate(this.diffText(relativePath, current, proposed), 12_000);
-    const changeId = this.reviews ? await this.reviews.prepare(uri, proposed, `Compass Code review: ${relativePath}`) : undefined;
+    const changeId = this.reviews ? await this.reviews.prepare(uri, proposed, `Compass Router review: ${relativePath}`) : undefined;
     const oldLines = current === "" ? [] : current.split(/\r?\n/);
     const newLines = proposed === "" ? [] : proposed.split(/\r?\n/);
     let addedLines = 0;
@@ -299,7 +299,7 @@ export class ToolExecutor {
   }
 
   async openFile(relativePath: string): Promise<void> {
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not open protected secret files automatically.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not open protected secret files automatically.");
     await vscode.window.showTextDocument(this.uriFor(relativePath), { preview: false });
   }
 
@@ -331,7 +331,7 @@ export class ToolExecutor {
   private workspaceRoot(): vscode.WorkspaceFolder {
     const root = vscode.workspace.workspaceFolders?.[0];
     if (!root) throw new Error("Open a workspace folder before using agent tools.");
-    if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before allowing Compass Code to inspect or change it.");
+    if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before allowing Compass Router to inspect or change it.");
     return root;
   }
 
@@ -343,12 +343,12 @@ export class ToolExecutor {
   }
 
   private async readFile(relativePath: string): Promise<string> {
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not read protected secret files.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not read protected secret files.");
     const uri = this.uriFor(relativePath);
     const stat = await vscode.workspace.fs.stat(uri);
-    if (stat.size > 1_000_000) throw new Error("The requested file is larger than Compass Code's 1 MB text limit.");
+    if (stat.size > 1_000_000) throw new Error("The requested file is larger than Compass Router's 1 MB text limit.");
     const content = await vscode.workspace.fs.readFile(uri);
-    if (looksBinary(content)) throw new Error("Compass Code will not read binary files as text.");
+    if (looksBinary(content)) throw new Error("Compass Router will not read binary files as text.");
     return truncate(new TextDecoder().decode(content));
   }
 
@@ -411,8 +411,8 @@ export class ToolExecutor {
   }
 
   private async writeFile(relativePath: string, content: string): Promise<string> {
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not write protected secret files.");
-    if (content.length > 2_000_000) throw new Error("Compass Code will not write files larger than 2 MB in one operation.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not write protected secret files.");
+    if (content.length > 2_000_000) throw new Error("Compass Router will not write files larger than 2 MB in one operation.");
     const uri = this.uriFor(relativePath);
     await this.assertUnchanged(uri);
     await this.checkpoints.create(`Before writing ${relativePath}`, [uri]);
@@ -422,12 +422,12 @@ export class ToolExecutor {
   }
 
   private async replaceInFile(relativePath: string, oldText: string, newText: string): Promise<string> {
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not edit protected secret files.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not edit protected secret files.");
     const uri = this.uriFor(relativePath);
     await this.assertUnchanged(uri);
     const bytes = await vscode.workspace.fs.readFile(uri);
     if (looksBinary(bytes)) throw new Error("The target file is binary and cannot be safely edited.");
-    if (bytes.length > 2_000_000) throw new Error("The target file is larger than Compass Code's 2 MB edit limit.");
+    if (bytes.length > 2_000_000) throw new Error("The target file is larger than Compass Router's 2 MB edit limit.");
     const content = new TextDecoder().decode(bytes);
     const first = content.indexOf(oldText);
     if (first < 0) throw new Error("The requested old_text was not found.");
@@ -439,7 +439,7 @@ export class ToolExecutor {
   }
 
   private async deleteFile(relativePath: string): Promise<string> {
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not delete protected secret files.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not delete protected secret files.");
     const uri = this.uriFor(relativePath);
     await this.assertUnchanged(uri);
     await this.checkpoints.create(`Before deleting ${relativePath}`, [uri]);
@@ -459,11 +459,11 @@ export class ToolExecutor {
     } catch (error) {
       if (error instanceof Error && error.message.includes("binary")) throw error;
     }
-    if (current !== expected) throw new Error("The file changed after Compass Code prepared the edit. Refresh the file and review the new change before applying it.");
+    if (current !== expected) throw new Error("The file changed after Compass Router prepared the edit. Refresh the file and review the new change before applying it.");
   }
 
   private async getFileInfo(relativePath: string): Promise<string> {
-    if (isSensitivePath(relativePath)) throw new Error("Compass Code will not inspect protected secret files.");
+    if (isSensitivePath(relativePath)) throw new Error("Compass Router will not inspect protected secret files.");
     const root = this.workspaceRoot();
     const uri = this.uriFor(relativePath);
     const stat = await vscode.workspace.fs.stat(uri);
@@ -475,7 +475,7 @@ export class ToolExecutor {
   }
 
   private async runTerminal(command: string, timeoutSeconds: number, signal?: AbortSignal, onOutput?: (output: string) => void): Promise<string> {
-    if (shellCommandIsBlocked(command)) throw new Error("This terminal command is blocked by Compass Code safety rules.");
+    if (shellCommandIsBlocked(command)) throw new Error("This terminal command is blocked by Compass Router safety rules.");
     const root = this.workspaceRoot();
     const result = await this.terminal.run(command, root.uri.fsPath, timeoutSeconds, signal, (output) => {
       this.recentTerminalOutput = output;

@@ -4,8 +4,9 @@ import math
 import re
 import socket
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, timedelta
 from urllib.parse import urlparse
 
 import httpx
@@ -46,6 +47,9 @@ from .security import decrypt_secret, encrypt_secret, generate_api_key, hash_api
 from .secrets import get_secret_manager, secret_reference_value
 
 
+request_id_context: ContextVar[str | None] = ContextVar("compass_request_id", default=None)
+
+
 def _credential_reference(provider_name: str, secret: str, scope: str) -> str:
     settings = get_settings()
     if settings.secret_manager_enabled:
@@ -84,7 +88,7 @@ def record_audit_log(
         actor_user_id=actor.id if actor else None,
         action=action,
         target=target,
-        request_id=request_id,
+        request_id=request_id or request_id_context.get(),
         metadata_json=json.dumps(metadata or {}, sort_keys=True),
     )
     db.add(entry)
@@ -279,6 +283,61 @@ def ensure_platform_credential(db: Session, provider: Provider) -> None:
         )
 
 
+ENV_PROVIDER_KEYS = {
+    "openai": "openai_api_key",
+    "gemini": "gemini_api_key",
+    "anthropic": "anthropic_api_key",
+    "mistral": "mistral_api_key",
+    "groq": "groq_api_key",
+    "deepseek": "deepseek_api_key",
+    "xai": "xai_api_key",
+    "cohere": "cohere_api_key",
+    "openrouter": "openrouter_api_key",
+    "together_ai": "together_api_key",
+    "fireworks_ai": "fireworks_api_key",
+    "perplexity": "perplexity_api_key",
+    "nvidia_nim": "nvidia_nim_api_key",
+    "ollama_cloud": "ollama_api_key",
+    "azure": "azure_openai_api_key",
+    "azure_ai": "azure_ai_api_key",
+    "vertex_ai": "vertex_ai_api_key",
+    "cerebras": "cerebras_api_key",
+    "sambanova": "sambanova_api_key",
+    "deepinfra": "deepinfra_api_key",
+    "huggingface": "huggingface_api_key",
+}
+
+
+def sync_env_provider_credentials(db: Session) -> None:
+    """Bootstrap provider credentials from the ignored local key file."""
+    settings = get_settings()
+    sync_mode = settings.provider_env_sync_mode.strip().lower()
+    if sync_mode not in {"missing", "replace"}:
+        raise compass_error(500, "provider_env_sync_invalid", "PROVIDER_ENV_SYNC_MODE must be missing or replace.")
+    db.flush()
+    for provider_name, setting_name in ENV_PROVIDER_KEYS.items():
+        api_key = str(getattr(settings, setting_name, "") or "").strip()
+        if not api_key or api_key.lower().startswith("replace-with-") or api_key.startswith("<"):
+            continue
+        provider = ensure_provider(db, provider_name)
+        credential = db.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.provider_id == provider.id,
+                ProviderCredential.organization_id.is_(None),
+                ProviderCredential.credential_mode == "platform",
+            )
+        )
+        if credential is None:
+            credential = ProviderCredential(provider_id=provider.id, credential_mode="platform", secret_reference="", status="active")
+            db.add(credential)
+            db.flush()
+        if sync_mode == "missing" and credential.status == "active" and credential.last_four:
+            continue
+        if credential.last_four != api_key[-4:] or not _has_usable_reference(credential.secret_reference):
+            credential.secret_reference = _credential_reference(provider_name, api_key, "platform")
+            credential.last_four = api_key[-4:]
+        credential.status = "active"
+        credential.updated_at = now()
 def upsert_model(
     db: Session,
     *,
@@ -326,7 +385,9 @@ def seed_defaults(db: Session) -> None:
     providers = {name: ensure_provider(db, name) for name in ("openai", "gemini", "ollama_cloud")}
     for provider in providers.values():
         ensure_platform_credential(db, provider)
-    provider_model = "local-test-chat" if settings.local_test_mode else "gpt-5"
+    sync_env_provider_credentials(db)
+    proxy_mode = settings.provider_execution_mode.strip().lower() == "proxy"
+    provider_model = "local-test-chat" if settings.local_test_mode else ("openai-gpt-4o-mini-smoke" if proxy_mode else "gpt-5")
     gemini_credential = db.scalar(
         select(ProviderCredential).where(
             ProviderCredential.provider_id == providers["gemini"].id,
@@ -335,7 +396,7 @@ def seed_defaults(db: Session) -> None:
             ProviderCredential.status == "active",
         )
     )
-    gemini_provider_model = "gemini-flash-real" if settings.local_test_mode and gemini_credential and gemini_credential.secret_reference.startswith("encrypted:") else provider_model
+    gemini_provider_model = "gemini-flash-real" if settings.local_test_mode and gemini_credential and gemini_credential.secret_reference.startswith("encrypted:") else (provider_model if settings.local_test_mode else ("gemini-flash-real" if proxy_mode else "gemini-3.6-flash"))
     ollama_credential = db.scalar(
         select(ProviderCredential).where(
             ProviderCredential.provider_id == providers["ollama_cloud"].id,
@@ -344,14 +405,14 @@ def seed_defaults(db: Session) -> None:
             ProviderCredential.status == "active",
         )
     )
-    ollama_provider_model = "ollama-cloud-gpt-oss-20b-real" if settings.local_test_mode and ollama_credential and ollama_credential.secret_reference.startswith("encrypted:") else provider_model
+    ollama_provider_model = "ollama-cloud-gpt-oss-20b-real" if settings.local_test_mode and ollama_credential and ollama_credential.secret_reference.startswith("encrypted:") else (provider_model if settings.local_test_mode else ("ollama-cloud-gpt-oss-20b-real" if proxy_mode else "gpt-oss:20b"))
     upsert_model(
         db,
         model_id="openai/gpt-5",
         provider=providers["openai"],
         provider_model_id=provider_model,
         display_name="GPT-5",
-        capabilities="chat,reasoning,local-test",
+        capabilities="chat,reasoning",
         context_window=128000,
         input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
         output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
@@ -363,7 +424,7 @@ def seed_defaults(db: Session) -> None:
         provider=providers["gemini"],
         provider_model_id=gemini_provider_model,
         display_name="Gemini 3.6 Flash",
-        capabilities="chat,fast,local-test",
+        capabilities="chat,fast",
         context_window=1000000,
         input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
         output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
@@ -375,7 +436,7 @@ def seed_defaults(db: Session) -> None:
         provider=providers["ollama_cloud"],
         provider_model_id=ollama_provider_model,
         display_name="GPT-OSS 20B on Ollama Cloud",
-        capabilities="chat,open-weights,local-test",
+        capabilities="chat,open-weights",
         context_window=128000,
         input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
         output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
@@ -424,6 +485,7 @@ def upsert_provider_api_key(db: Session, provider_name: str, api_key: str) -> Pr
     credential.status = "active"
     credential.last_four = api_key[-4:]
     credential.updated_at = now()
+    _set_local_provider_route(db, provider, live=True)
     db.commit()
     return credential
 
@@ -900,9 +962,18 @@ def create_api_key(db: Session, user_id: str, team_id: str, member_id: str | Non
     unique_models = sorted(set(allowed_models))
     for model_id in unique_models:
         model = db.get(ModelCatalog, model_id)
-        if model is None or not model.enabled or not model.published:
+        if (
+            model is None
+            or not model.enabled
+            or not model.published
+            or model.status != "available"
+            or not model.provider.enabled
+            or model.provider.status in {"disabled", "unavailable"}
+        ):
             raise compass_error(404, "model_not_found", f"Model is not available: {model_id}")
     secret, key_id, key_prefix, key_hash = generate_api_key()
+    if expires_at is not None and expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(UTC).replace(tzinfo=None)
     key = ApiKey(key_id=key_id, key_prefix=key_prefix, key_hash=key_hash, user_id=user_id, team_id=team_id, member_id=member_id, name=name, expires_at=expires_at)
     db.add(key)
     db.flush()
@@ -950,7 +1021,15 @@ def allowed_model_ids(db: Session, api_key_id: str) -> set[str]:
         return explicit
     return set(
         db.scalars(
-            select(ModelCatalog.id).where(ModelCatalog.enabled.is_(True), ModelCatalog.published.is_(True))
+            select(ModelCatalog.id)
+            .join(Provider, Provider.id == ModelCatalog.provider_id)
+            .where(
+                ModelCatalog.enabled.is_(True),
+                ModelCatalog.published.is_(True),
+                ModelCatalog.status == "available",
+                Provider.enabled.is_(True),
+                Provider.status.not_in(["disabled", "unavailable"]),
+            )
         ).all()
     )
 
@@ -966,7 +1045,14 @@ def update_api_key_models(db: Session, api_key_id: str, allowed_models: list[str
     unique_models = sorted(set(allowed_models))
     for model_id in unique_models:
         model = db.get(ModelCatalog, model_id)
-        if model is None or not model.enabled or not model.published:
+        if (
+            model is None
+            or not model.enabled
+            or not model.published
+            or model.status != "available"
+            or not model.provider.enabled
+            or model.provider.status in {"disabled", "unavailable"}
+        ):
             raise compass_error(404, "model_not_found", f"Model is not available: {model_id}")
     db.query(ApiKeyModel).filter(ApiKeyModel.api_key_id == api_key_id).delete(synchronize_session=False)
     for model_id in unique_models:
@@ -995,7 +1081,15 @@ def credit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key:
     return ledger
 
 
-def debit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key: str, reference_id: str) -> WalletLedger:
+def debit_wallet(
+    db: Session,
+    team_id: str,
+    amount_paise: int,
+    idempotency_key: str,
+    reference_id: str,
+    reference_type: str = "llm_request",
+    description: str = "Compass API usage charge",
+) -> WalletLedger:
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
     existing = None if wallet is None else db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
     if existing:
@@ -1005,7 +1099,77 @@ def debit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key: 
     before = wallet.balance_paise
     wallet.balance_paise -= amount_paise
     wallet.updated_at = now()
-    ledger = WalletLedger(wallet_id=wallet.id, type="debit", amount_paise=-amount_paise, balance_before=before, balance_after=wallet.balance_paise, reference_type="llm_request", reference_id=reference_id, description="Compass API usage charge", idempotency_key=idempotency_key)
+    ledger = WalletLedger(wallet_id=wallet.id, type="debit", amount_paise=-amount_paise, balance_before=before, balance_after=wallet.balance_paise, reference_type=reference_type, reference_id=reference_id, description=description, idempotency_key=idempotency_key)
+    db.add(ledger)
+    db.commit()
+    return ledger
+
+
+def reserve_wallet(db: Session, team_id: str, amount_paise: int, reservation_id: str) -> WalletLedger:
+    """Hold the estimated charge before a provider call can spend paid balance."""
+    return debit_wallet(
+        db,
+        team_id,
+        amount_paise,
+        f"llm-reservation:{reservation_id}",
+        reservation_id,
+        reference_type="llm_reservation",
+        description="Reserved for in-flight Compass API usage",
+    )
+
+
+def settle_wallet_reservation(db: Session, team_id: str, reservation_id: str, actual_cost_paise: int, reference_id: str) -> WalletLedger | None:
+    """Release the estimate and apply the final charge in one locked transaction."""
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
+    if wallet is None:
+        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+    reservation_key = f"llm-reservation:{reservation_id}"
+    reservation = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == reservation_key))
+    if reservation is None:
+        raise compass_error(409, "wallet_reservation_missing", "The in-flight wallet reservation could not be found.")
+    settlement_key = f"llm-settlement:{reservation_id}"
+    existing = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == settlement_key))
+    if existing is not None:
+        return existing
+
+    reserved_paise = max(0, -reservation.amount_paise)
+    actual_paise = max(0, actual_cost_paise)
+    before_release = wallet.balance_paise
+    wallet.balance_paise += reserved_paise
+    wallet.updated_at = now()
+    db.add(
+        WalletLedger(
+            wallet_id=wallet.id,
+            type="credit",
+            amount_paise=reserved_paise,
+            balance_before=before_release,
+            balance_after=wallet.balance_paise,
+            reference_type="llm_reservation_release",
+            reference_id=reservation_id,
+            description="Released unused Compass API reservation",
+            idempotency_key=f"{settlement_key}:release",
+        )
+    )
+    if actual_paise == 0:
+        db.commit()
+        return None
+    if wallet.balance_paise < actual_paise:
+        db.rollback()
+        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient for the final provider charge.")
+    before_charge = wallet.balance_paise
+    wallet.balance_paise -= actual_paise
+    wallet.updated_at = now()
+    ledger = WalletLedger(
+        wallet_id=wallet.id,
+        type="debit",
+        amount_paise=-actual_paise,
+        balance_before=before_charge,
+        balance_after=wallet.balance_paise,
+        reference_type="llm_request",
+        reference_id=reference_id,
+        description="Compass API usage charge",
+        idempotency_key=settlement_key,
+    )
     db.add(ledger)
     db.commit()
     return ledger
@@ -1380,6 +1544,37 @@ def _native_provider_model(provider_name: str, model_id: str) -> str:
     return model_id.removeprefix(prefix)
 
 
+LOCAL_LIVE_PROXY_MODELS = {
+    "openai": "openai-gpt-4o-mini-smoke",
+    "gemini": "gemini-flash-real",
+    "ollama_cloud": "ollama-cloud-gpt-oss-20b-real",
+}
+
+
+def _local_live_proxy_model(provider_name: str, requested_model: str) -> str:
+    """Map seeded local catalog IDs to the real LiteLLM route after a key is added."""
+    return LOCAL_LIVE_PROXY_MODELS.get(provider_name, requested_model)
+
+
+def _set_local_provider_route(db: Session, provider: Provider, *, live: bool) -> None:
+    """Switch seeded local-test catalog routes only after an explicit key action."""
+    if not get_settings().local_test_mode:
+        return
+    live_model = LOCAL_LIVE_PROXY_MODELS.get(provider.name)
+    if live_model is None:
+        return
+    source_model = "local-test-chat" if live else live_model
+    target_model = live_model if live else "local-test-chat"
+    models = db.scalars(
+        select(ModelCatalog).where(
+            ModelCatalog.provider_id == provider.id,
+            ModelCatalog.provider_model_id == source_model,
+        )
+    ).all()
+    for model in models:
+        model.provider_model_id = target_model
+
+
 def _provider_key(secret_reference: str) -> str:
     if not secret_reference.startswith(("encrypted:", "gcp-secret:")):
         raise compass_error(503, "provider_credential_invalid", "Provider credential is not configured for real execution.")
@@ -1507,6 +1702,52 @@ class DirectProviderClient:
         validate_openai_response(data)
         return data
 
+    async def request_bytes(self, endpoint: str, payload: dict) -> tuple[bytes, str]:
+        if not self.base_url:
+            raise compass_error(503, "provider_execution_unavailable", f"Direct execution is not configured for provider {self.provider_name}.")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(f"{self.base_url}{endpoint}", json=payload, headers=self._headers())
+            except httpx.TimeoutException:
+                raise compass_error(504, "provider_timeout", "Provider request timed out.") from None
+            except httpx.RequestError:
+                raise compass_error(503, "provider_unavailable", "Provider is unavailable.") from None
+        if response.status_code == 429:
+            raise compass_error(429, "provider_rate_limited", "Provider rate limit exceeded.")
+        if response.status_code in {401, 403}:
+            raise compass_error(502, "provider_auth_failed", "Provider rejected the configured credential.")
+        if response.status_code >= 500:
+            raise compass_error(503, "provider_unavailable", "Provider is unavailable.")
+        if response.status_code >= 400:
+            raise compass_error(400, "provider_error", "Provider rejected the request.")
+        return response.content, response.headers.get("content-type", "application/octet-stream")
+
+    async def request_multipart(self, endpoint: str, data: dict, file: tuple[str, bytes, str]) -> dict:
+        if not self.base_url:
+            raise compass_error(503, "provider_execution_unavailable", f"Direct execution is not configured for provider {self.provider_name}.")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(f"{self.base_url}{endpoint}", data=data, files={"file": file}, headers={"Authorization": f"Bearer {self.api_key}"})
+            except httpx.TimeoutException:
+                raise compass_error(504, "provider_timeout", "Provider request timed out.") from None
+            except httpx.RequestError:
+                raise compass_error(503, "provider_unavailable", "Provider is unavailable.") from None
+        if response.status_code == 429:
+            raise compass_error(429, "provider_rate_limited", "Provider rate limit exceeded.")
+        if response.status_code in {401, 403}:
+            raise compass_error(502, "provider_auth_failed", "Provider rejected the configured credential.")
+        if response.status_code >= 500:
+            raise compass_error(503, "provider_unavailable", "Provider is unavailable.")
+        if response.status_code >= 400:
+            raise compass_error(400, "provider_error", "Provider rejected the request.")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise compass_error(502, "malformed_provider_response", "Provider returned malformed JSON.") from None
+        if not isinstance(payload, dict):
+            raise compass_error(502, "malformed_provider_response", "Provider returned an invalid response.")
+        return payload
+
 
 def provider_client(route: ResolvedRoute):
     settings = get_settings()
@@ -1540,6 +1781,8 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+    reservation_id = new_id()
+    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
     started = time.perf_counter()
     response: dict | None = None
     last_error: HTTPException | None = None
@@ -1553,7 +1796,7 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
                 provider_payload = body | {"model": route.resolved_model_id, "stream": False}
                 if route.secret_reference.startswith(("encrypted:", "gcp-secret:")):
                     provider_payload["api_key"] = _credential_value(route.secret_reference)
-                candidate_response = await LiteLLMClient().chat_completion(provider_payload)
+                candidate_response = await provider_client(route).chat_completion(provider_payload)
                 validate_openai_response(candidate_response)
                 response = candidate_response
                 attempt_latency = int((time.perf_counter() - attempt_started) * 1000)
@@ -1578,6 +1821,7 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
         error_code = "provider_error"
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
@@ -1591,7 +1835,7 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
-    debit_wallet(db, api_key.team_id, compass_cost, f"llm:{record.id}", record.id)
+    settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
     response["model"] = body["model"]
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
@@ -1618,14 +1862,17 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
     """Execute non-chat OpenAI-compatible APIs through the same Compass controls."""
     routes = route_candidates(db, api_key, body["model"], capability)
     route = routes[0]
-    estimated_tokens = _estimate_generic_tokens(body) + int(body.get("max_tokens") or body.get("max_output_tokens") or 256)
+    requested_max_tokens = int(body.get("max_tokens") or body.get("max_output_tokens") or 256)
+    estimated_tokens = _estimate_generic_tokens(body) + requested_max_tokens
     enforce_team_limits(db, api_key.team_id, estimated_tokens)
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
-    estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": 256}) for candidate in routes)
+    estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": requested_max_tokens}) for candidate in routes)
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+    reservation_id = new_id()
+    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     started = time.perf_counter()
     response: dict | None = None
@@ -1640,7 +1887,7 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
                 provider_payload = body | {"model": candidate.resolved_model_id}
                 if candidate.secret_reference.startswith(("encrypted:", "gcp-secret:")):
                     provider_payload["api_key"] = _credential_value(candidate.secret_reference)
-                response = await LiteLLMClient().request_json(endpoint, provider_payload)
+                response = await provider_client(candidate).request_json(endpoint, provider_payload)
                 attempt_latency = int((time.perf_counter() - attempt_started) * 1000)
                 record_provider_health(db, candidate.provider, success=True, latency_ms=attempt_latency)
                 attempt_rows.append({"provider": candidate.provider.name, "provider_model_id": candidate.resolved_model_id, "status": "success", "error_code": None, "latency_ms": attempt_latency})
@@ -1665,6 +1912,7 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
         error_code = "provider_error"
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
@@ -1678,8 +1926,7 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
-    if compass_cost:
-        debit_wallet(db, api_key.team_id, compass_cost, f"llm:{record.id}", record.id)
+    settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
     response.setdefault("model", body["model"])
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
@@ -1696,6 +1943,8 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+    reservation_id = new_id()
+    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     started = time.perf_counter()
     last_error: HTTPException | None = None
@@ -1708,7 +1957,7 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
             provider_payload = body | {"model": candidate.resolved_model_id}
             if candidate.secret_reference.startswith(("encrypted:", "gcp-secret:")):
                 provider_payload["api_key"] = _credential_value(candidate.secret_reference)
-            audio, content_type = await LiteLLMClient().request_bytes(endpoint, provider_payload)
+            audio, content_type = await provider_client(candidate).request_bytes(endpoint, provider_payload)
             route = candidate
             attempt_latency = int((time.perf_counter() - started) * 1000)
             record_provider_health(db, candidate.provider, success=True, latency_ms=attempt_latency)
@@ -1729,6 +1978,7 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
         error_code = "provider_error"
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
@@ -1737,7 +1987,7 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
     record = create_request_record(db, api_key, route, body["model"], "success", latency_ms, attempts=attempt_rows)
     record.compass_cost_paise = estimated_cost
     db.flush()
-    debit_wallet(db, api_key.team_id, estimated_cost, f"llm:{record.id}", record.id)
+    settle_wallet_reservation(db, api_key.team_id, reservation_id, estimated_cost, record.id)
     return audio, content_type
 
 
@@ -1752,6 +2002,8 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+    reservation_id = new_id()
+    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     started = time.perf_counter()
     response: dict | None = None
@@ -1764,7 +2016,7 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
             provider_data = form_data | {"model": candidate.resolved_model_id}
             if candidate.secret_reference.startswith(("encrypted:", "gcp-secret:")):
                 provider_data["api_key"] = _credential_value(candidate.secret_reference)
-            response = await LiteLLMClient().request_multipart(endpoint, provider_data, file)
+            response = await provider_client(candidate).request_multipart(endpoint, provider_data, file)
             route = candidate
             attempt_latency = int((time.perf_counter() - attempt_started) * 1000)
             record_provider_health(db, candidate.provider, success=True, latency_ms=attempt_latency)
@@ -1782,6 +2034,7 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
                 break
     latency_ms = int((time.perf_counter() - started) * 1000)
     if response is None:
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         create_request_record(db, api_key, route, model_id, "error", latency_ms, "provider_error", attempt_rows)
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
@@ -1795,8 +2048,7 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
-    if compass_cost:
-        debit_wallet(db, api_key.team_id, compass_cost, f"llm:{record.id}", record.id)
+    settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
 
@@ -1854,14 +2106,31 @@ def stream_openai_chunks(full_response: dict):
 def model_catalog_rows(db: Session, include_unpublished: bool = False) -> list[dict]:
     stmt = select(ModelCatalog).order_by(ModelCatalog.id)
     if not include_unpublished:
-        stmt = stmt.where(ModelCatalog.enabled.is_(True), ModelCatalog.published.is_(True))
+        stmt = stmt.join(Provider, Provider.id == ModelCatalog.provider_id).where(
+            ModelCatalog.enabled.is_(True),
+            ModelCatalog.published.is_(True),
+            ModelCatalog.status == "available",
+            Provider.enabled.is_(True),
+            Provider.status.not_in(["disabled", "unavailable"]),
+        )
     rows = db.scalars(stmt).all()
     return [{"id": row.id, "display_name": row.display_name, "provider": row.provider.name, "provider_model_id": row.provider_model_id, "capabilities": row.capabilities.split(","), "context_window": row.context_window, "input_price_paise_per_1k": row.input_price_paise_per_1k, "output_price_paise_per_1k": row.output_price_paise_per_1k, "supports_streaming": row.supports_streaming, "supports_tools": row.supports_tools, "supports_reasoning": row.supports_reasoning, "supports_vision": row.supports_vision, "fallback_model_id": row.fallback_model_id, "enabled": row.enabled, "published": row.published, "status": row.status, "provider_status": row.provider.status, "provider_enabled": row.provider.enabled} for row in rows]
 
 
 def model_policy_rows(db: Session, team_id: str) -> list[dict]:
     policies = {policy.model_id: policy for policy in db.scalars(select(ModelPolicy).where(ModelPolicy.team_id == team_id)).all()}
-    models = db.scalars(select(ModelCatalog).where(ModelCatalog.published.is_(True)).order_by(ModelCatalog.id)).all()
+    models = db.scalars(
+        select(ModelCatalog)
+        .join(Provider, Provider.id == ModelCatalog.provider_id)
+        .where(
+            ModelCatalog.enabled.is_(True),
+            ModelCatalog.published.is_(True),
+            ModelCatalog.status == "available",
+            Provider.enabled.is_(True),
+            Provider.status.not_in(["disabled", "unavailable"]),
+        )
+        .order_by(ModelCatalog.id)
+    ).all()
     return [{"id": policies.get(model.id).id if model.id in policies else None, "team_id": team_id, "model_id": model.id, "enabled": policies[model.id].enabled if model.id in policies else True, "requests_per_minute": policies[model.id].requests_per_minute if model.id in policies else 0, "daily_spend_limit_paise": policies[model.id].daily_spend_limit_paise if model.id in policies else 0, "monthly_spend_limit_paise": policies[model.id].monthly_spend_limit_paise if model.id in policies else 0, "updated_at": policies[model.id].updated_at.isoformat() if model.id in policies else None} for model in models]
 
 
@@ -1945,7 +2214,7 @@ def dashboard_summary(db: Session, team_ids: list[str] | None = None, user_id: s
     workspaces = db.scalars(select(Organization).where(Organization.id.in_(workspace_ids)).order_by(Organization.created_at.desc())).all() if workspace_ids else []
     team_counts = dict(db.execute(select(Team.organization_id, func.count(Team.id)).where(Team.organization_id.in_(workspace_ids)).group_by(Team.organization_id)).all()) if workspace_ids else {}
     return {
-        "mode": "LOCAL TEST MODE",
+        "mode": "LOCAL TEST MODE" if get_settings().local_test_mode else "LIVE PROVIDER MODE",
         "workspaces": [{"id": workspace.id, "name": workspace.name, "team_count": team_counts.get(workspace.id, 0), "created_at": workspace.created_at.isoformat()} for workspace in workspaces],
         "teams": [{"id": team.id, "name": team.name, "slug": team.slug, "is_active": team.is_active, "wallet": {"currency": wallets.get(team.id).currency if wallets.get(team.id) else "INR", "balance_paise": wallets.get(team.id).balance_paise if wallets.get(team.id) else 0}} for team in teams],
         "api_keys": list_api_keys(db, team_ids=team_ids, user_id=user_id),

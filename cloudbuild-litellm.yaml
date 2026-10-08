@@ -1,0 +1,19 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - BUILDPLATFORM=linux/amd64
+      - --build-arg
+      - TARGETPLATFORM=linux/amd64
+      - -t
+      - us-central1-docker.pkg.dev/compass-510017/compass/litellm:1.99.0-compass.1
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - us-central1-docker.pkg.dev/compass-510017/compass/litellm:1.99.0-compass.1
+images:
+  - us-central1-docker.pkg.dev/compass-510017/compass/litellm:1.99.0-compass.1
+options:
+  logging: GCS_ONLY

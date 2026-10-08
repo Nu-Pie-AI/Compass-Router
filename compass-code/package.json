@@ -1,9 +1,10 @@
 {
   "name": "compass-code",
-  "displayName": "Compass Code",
-  "description": "A Compass-powered coding agent for Visual Studio Code.",
-  "version": "0.2.19",
-  "publisher": "toheedsoudagar",
+  "displayName": "Compass Router",
+  "description": "A Compass Router coding agent for Visual Studio Code.",
+  "version": "0.3.5",
+  "publisher": "nu-pie",
+  "icon": "media/compass-marketplace.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -67,7 +68,7 @@
       "activitybar": [
         {
           "id": "compassCode",
-          "title": "Compass Code",
+          "title": "Compass Router",
           "icon": "media/compass.svg"
         }
       ]
@@ -85,109 +86,121 @@
       {
         "command": "compassCode.connect",
         "title": "Connect",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(plug)"
       },
       {
         "command": "compassCode.disconnect",
         "title": "Disconnect",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(sign-out)"
       },
       {
         "command": "compassCode.openAgent",
         "title": "AI: Open Assistant",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "compassCode.newTask",
         "title": "AI: New Chat",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(add)"
       },
       {
         "command": "compassCode.chooseModel",
         "title": "Choose Model",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(symbol-parameter)"
       },
       {
         "command": "compassCode.restoreCheckpoint",
         "title": "Restore Last Checkpoint",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(history)"
       },
       {
         "command": "compassCode.openSettings",
-        "title": "Compass Code Settings",
-        "category": "Compass Code",
+        "title": "Compass Router Settings",
+        "category": "Compass Router",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "compassCode.openHistory",
+        "title": "Compass Router History",
+        "category": "Compass Router",
+        "icon": "$(history)"
+      },
+      {
+        "command": "compassCode.openAccount",
+        "title": "Compass Router Account",
+        "category": "Compass Router",
+        "icon": "$(account)"
       },
       {
         "command": "compassCode.openDashboard",
         "title": "Open Compass Dashboard",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(link-external)"
       },
       {
         "command": "compassCode.explainSelection",
         "title": "AI: Explain Selection",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "compassCode.fixSelection",
         "title": "AI: Fix Selection",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(wrench)"
       },
       {
         "command": "compassCode.refactorSelection",
         "title": "AI: Refactor Selection",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(wand)"
       },
       {
         "command": "compassCode.optimizeSelection",
         "title": "AI: Optimize Selection",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(rocket)"
       },
       {
         "command": "compassCode.generateTests",
         "title": "AI: Generate Tests",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(beaker)"
       },
       {
         "command": "compassCode.generateDocumentation",
         "title": "AI: Generate Documentation",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(book)"
       },
       {
         "command": "compassCode.fixProblems",
         "title": "AI: Fix Problems",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(lightbulb)"
       },
       {
         "command": "compassCode.reviewChanges",
         "title": "AI: Review Changes",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(git-compare)"
       },
       {
         "command": "compassCode.generateCommitMessage",
         "title": "AI: Generate Commit Message",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(git-commit)"
       },
       {
         "command": "compassCode.stopAgent",
         "title": "AI: Stop Agent",
-        "category": "Compass Code",
+        "category": "Compass Router",
         "icon": "$(debug-stop)"
       }
     ],
@@ -214,14 +227,24 @@
           "group": "navigation@4"
         },
         {
-          "command": "compassCode.openDashboard",
+          "command": "compassCode.openHistory",
           "when": "view == compassCode.chat",
           "group": "navigation@5"
         },
         {
-          "command": "compassCode.disconnect",
+          "command": "compassCode.openAccount",
           "when": "view == compassCode.chat",
           "group": "navigation@6"
+        },
+        {
+          "command": "compassCode.openDashboard",
+          "when": "view == compassCode.chat",
+          "group": "navigation@7"
+        },
+        {
+          "command": "compassCode.disconnect",
+          "when": "view == compassCode.chat",
+          "group": "navigation@8"
         }
       ],
       "editor/context": [
@@ -258,7 +281,7 @@
       ]
     },
     "configuration": {
-      "title": "Compass Code",
+      "title": "Compass Router",
       "properties": {
         "compassCode.provider": {
           "type": "string",
@@ -273,16 +296,16 @@
             "Local Ollama OpenAI-compatible API"
           ],
           "default": "compass",
-          "description": "Model provider used by Compass Code."
+          "description": "Model provider used by Compass Router."
         },
         "compassCode.apiBaseUrl": {
           "type": "string",
-          "default": "https://compass-router-api-567790052414.us-central1.run.app",
+          "default": "https://compass-router-api-c4psf2dvua-uc.a.run.app",
           "description": "Compass API base URL. Do not include /v1."
         },
         "compassCode.marketplaceUrl": {
           "type": "string",
-          "default": "https://compass-marketplace-567790052414.us-central1.run.app",
+          "default": "https://compass.nu-pie.ai",
           "description": "Compass web console URL used by the dashboard command."
         },
         "compassCode.defaultModel": {
@@ -296,6 +319,13 @@
           "minimum": 1,
           "maximum": 24,
           "description": "Maximum model/tool iterations in one task."
+        },
+        "compassCode.requestTimeoutSeconds": {
+          "type": "number",
+          "default": 45,
+          "minimum": 15,
+          "maximum": 120,
+          "description": "Maximum time to wait for one Compass response before showing a retryable error."
         },
         "compassCode.autoApproveReads": {
           "type": "boolean",
@@ -323,7 +353,8 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "check": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run test",
+    "test:ui": "npm run build && playwright test",
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "vscode:prepublish": "npm run check && npm run test && npm run build",
@@ -333,10 +364,15 @@
     "@vscode/codicons": "^0.0.44",
     "dompurify": "^3.2.6",
     "highlight.js": "^11.11.1",
-    "marked": "^15.0.12"
+    "marked": "^15.0.12",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.15.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.4.2",
     "esbuild": "^0.25.3",

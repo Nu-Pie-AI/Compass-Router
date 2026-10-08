@@ -1,7 +1,9 @@
 import os
 import tempfile
 import time
+from datetime import datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -12,15 +14,18 @@ os.environ["ADMIN_EMAIL"] = "admin@example.com"
 os.environ["ADMIN_PASSWORD"] = "CompassAdmin123!"
 os.environ["LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K"] = "2"
 os.environ["LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K"] = "6"
+os.environ["LOCAL_TEST_MODE"] = "true"
+os.environ["PROVIDER_EXECUTION_MODE"] = "proxy"
 os.environ["DEFAULT_TEAM_TOKEN_LIMIT_PER_MINUTE"] = "250000"
 os.environ["PUBLIC_SIGNUP_ENABLED"] = "true"
 
 from app.db import Base, get_db  # noqa: E402
+from app.config import Settings, validate_runtime_config  # noqa: E402
 from app.errors import compass_error  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
-from app.security import hash_api_key  # noqa: E402
-from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks  # noqa: E402
+from app.security import encrypt_secret, hash_api_key  # noqa: E402
+from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
 import app.services as services  # noqa: E402
 
 engine = create_engine(os.environ["DATABASE_URL"], connect_args={"check_same_thread": False})
@@ -62,6 +67,33 @@ def admin_headers() -> dict:
     return {"Authorization": f"Bearer {response.json()['token']}"}
 
 
+def test_security_headers_and_request_id_are_present():
+    response = client.get("/health", headers={"X-Request-ID": "p0-health-check"})
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "p0-health-check"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+
+def test_production_configuration_rejects_development_defaults():
+    with pytest.raises(RuntimeError, match="Unsafe production configuration"):
+        validate_runtime_config(Settings(environment="production"))
+
+
+def test_live_readiness_reports_external_release_blockers(monkeypatch):
+    async def unavailable(self):  # noqa: ARG001
+        return {"status": "unavailable"}
+
+    monkeypatch.setattr(LiteLLMClient, "health_check", unavailable)
+    response = client.get("/admin/live-readiness", headers=admin_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["checks"]["billing_payment_mode"] is False
+    assert "Billing payment mode is not razorpay" in payload["blockers"]
+
+
 def create_team_fixture(headers: dict, slug: str | None = None) -> dict:
     response = client.post("/admin/teams", json={"name": "Beta Team", "slug": slug or f"beta-{time.time_ns()}", "notes": "local test"}, headers=headers)
     assert response.status_code == 200, response.text
@@ -101,7 +133,8 @@ def test_product_owner_controls_users_sessions_platform_and_audit_log():
     assert platform.json()["database_dialect"] == "sqlite"
     assert "database_url" not in platform.text
 
-    changed_role = client.patch(f"/admin/users/{user['id']}/role", json={"role": "admin"}, headers=headers)
+    mutation_headers = headers | {"X-Request-ID": "owner-role-change"}
+    changed_role = client.patch(f"/admin/users/{user['id']}/role", json={"role": "admin"}, headers=mutation_headers)
     assert changed_role.status_code == 200, changed_role.text
     stale_me = client.get("/me", headers={"Authorization": f"Bearer {signup.json()['token']}"})
     assert stale_me.status_code == 401
@@ -122,6 +155,23 @@ def test_product_owner_controls_users_sessions_platform_and_audit_log():
     assert audit.status_code == 200, audit.text
     actions = {row["action"] for row in audit.json()}
     assert {"user.role_updated", "user.sessions_revoked", "user.access_updated"} <= actions
+    role_audit = next(row for row in audit.json() if row["action"] == "user.role_updated")
+    assert role_audit["request_id"] == "owner-role-change"
+
+
+def test_customer_cannot_cross_team_or_enter_owner_controls():
+    email = f"boundary-{time.time_ns()}@example.com"
+    signup = client.post(
+        "/auth/signup",
+        json={"email": email, "password": "Boundary123!", "organization_name": "Boundary Workspace"},
+    )
+    assert signup.status_code == 200, signup.text
+    customer_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+    other_team = create_team_fixture(admin_headers())
+
+    assert client.get("/admin/overview", headers=customer_headers).status_code == 403
+    assert client.get("/wallet", params={"team_id": other_team["id"]}, headers=customer_headers).status_code == 403
+    assert client.get(f"/teams/{other_team['id']}/members", headers=customer_headers).status_code == 403
 
 
 def test_admin_provider_catalog_and_custom_registration():
@@ -136,6 +186,71 @@ def test_admin_provider_catalog_and_custom_registration():
     assert registered.json()["created"] is True
     providers = client.get("/admin/router/providers", headers=headers)
     assert provider_name in {row["name"] for row in providers.json()}
+
+
+def test_ignored_provider_file_values_are_encrypted_into_platform_credentials(monkeypatch):
+    monkeypatch.setattr(services.get_settings(), "openai_api_key", "sk-file-bootstrap-test")
+    monkeypatch.setattr(services.get_settings(), "provider_env_sync_mode", "replace")
+    db = TestingSessionLocal()
+    credential = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+    services.sync_env_provider_credentials(db)
+    assert credential.secret_reference.startswith("encrypted:")
+    assert "sk-file-bootstrap-test" not in credential.secret_reference
+    assert credential.last_four == "test"
+    db.rollback()
+    db.close()
+
+
+def test_admin_provider_credential_wins_over_file_by_default(monkeypatch):
+    monkeypatch.setattr(services.get_settings(), "openai_api_key", "sk-file-bootstrap-test")
+    monkeypatch.setattr(services.get_settings(), "provider_env_sync_mode", "missing")
+    db = TestingSessionLocal()
+    credential = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").first()
+    credential.status = "active"
+    credential.secret_reference = encrypt_secret("admin-panel-secret")
+    credential.last_four = "cret"
+    services.sync_env_provider_credentials(db)
+    assert credential.last_four == "cret"
+    assert services._credential_value(credential.secret_reference) == "admin-panel-secret"
+    db.rollback()
+    db.close()
+
+
+def test_model_publication_requires_a_usable_provider_route():
+    headers = admin_headers()
+    provider_name = f"governance_{time.time_ns()}"
+    registered = client.post("/admin/router/providers", json={"name": provider_name}, headers=headers)
+    assert registered.status_code == 200, registered.text
+    model_id = f"{provider_name}/model-test"
+    db = TestingSessionLocal()
+    db.add(ModelCatalog(id=model_id, provider_id=registered.json()["id"], provider_model_id=model_id, display_name="Governance test model", enabled=False, published=False))
+    db.commit()
+    db.close()
+    blocked = client.patch(
+        f"/admin/router/models/{model_id}",
+        json={"status": "available", "enabled": True, "published": True},
+        headers=headers,
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["error"]["code"] == "provider_credential_required"
+
+
+def test_callable_model_inventory_excludes_disabled_provider():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    key = create_key_fixture(headers, team["id"], models=["openai/gpt-5"])["key"]
+    disabled = client.patch("/admin/router/providers/openai", json={"status": "disabled", "enabled": False}, headers=headers)
+    assert disabled.status_code == 200, disabled.text
+    try:
+        public_models = client.get("/models")
+        assert public_models.status_code == 200
+        assert "openai/gpt-5" not in {row["id"] for row in public_models.json()}
+        key_models = client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+        assert key_models.status_code == 200
+        assert "openai/gpt-5" not in {row["id"] for row in key_models.json()["data"]}
+    finally:
+        restored = client.patch("/admin/router/providers/openai", json={"status": "healthy", "enabled": True}, headers=headers)
+        assert restored.status_code == 200, restored.text
 
 
 def credit(headers: dict, team_id: str, amount_paise: int = 1000, suffix: str = "1") -> None:
@@ -251,6 +366,30 @@ def test_api_key_model_access_is_optional_and_editable_after_creation():
     assert unrestricted.json()["models_restricted"] is False
 
 
+def test_api_key_expiry_accepts_timezone_aware_input():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    member = create_member_fixture(headers, team["id"])
+    created = client.post(
+        "/admin/api-keys",
+        json={
+            "name": "Timezone-aware key",
+            "team_id": team["id"],
+            "member_id": member["id"],
+            "allowed_models": ["openai/gpt-5"],
+            "expires_at": "2030-01-01T00:00:00+05:30",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    db = TestingSessionLocal()
+    stored = db.query(ApiKey).filter(ApiKey.id == created.json()["id"]).one()
+    expires_at = stored.expires_at
+    db.close()
+    assert expires_at == datetime(2029, 12, 31, 18, 30)
+    assert client.get("/v1/models", headers={"Authorization": f"Bearer {created.json()['key']}"}).status_code == 200
+
+
 def test_api_key_authentication_models_and_successful_response(monkeypatch):
     monkeypatch.setattr(LiteLLMClient, "chat_completion", fake_provider)
     _, team, member, key = provision_beta_key()
@@ -275,6 +414,39 @@ def test_api_key_authentication_models_and_successful_response(monkeypatch):
     assert "key_hash" not in account.text
 
 
+def test_direct_provider_execution_mode_uses_direct_client(monkeypatch):
+    class FakeDirectClient:
+        def __init__(self, *_args):
+            pass
+
+        async def chat_completion(self, payload):
+            return await fake_provider(self, payload)
+
+    monkeypatch.setattr(services, "DirectProviderClient", FakeDirectClient)
+    monkeypatch.setattr(services.get_settings(), "local_test_mode", False)
+    monkeypatch.setattr(services.get_settings(), "provider_execution_mode", "direct")
+    _, _, _, key = provision_beta_key()
+    db = TestingSessionLocal()
+    credential = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+    original_reference = credential.secret_reference
+    original_status = credential.status
+    credential.secret_reference = encrypt_secret("direct-test-secret")
+    credential.status = "active"
+    db.commit()
+    db.close()
+    try:
+        response = chat(key)
+        assert response.status_code == 200, response.text
+        assert response.json()["compass"]["local_test_mode"] is False
+    finally:
+        db = TestingSessionLocal()
+        restored = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+        restored.secret_reference = original_reference
+        restored.status = original_status
+        db.commit()
+        db.close()
+
+
 def test_local_test_alias_does_not_require_decrypting_platform_credential(monkeypatch):
     monkeypatch.setattr(LiteLLMClient, "chat_completion", fake_provider)
     _, _, _, key = provision_beta_key()
@@ -293,6 +465,47 @@ def test_local_test_alias_does_not_require_decrypting_platform_credential(monkey
         db = TestingSessionLocal()
         restored = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
         restored.secret_reference = original_reference
+        db.commit()
+        db.close()
+
+
+def test_real_platform_credential_overrides_seeded_local_test_route(monkeypatch):
+    calls = []
+
+    async def live_provider(self, payload):
+        calls.append(payload["model"])
+        return await fake_provider(self, payload)
+
+    monkeypatch.setattr(LiteLLMClient, "chat_completion", live_provider)
+    _, _, _, key = provision_beta_key()
+    db = TestingSessionLocal()
+    provider = db.query(Provider).filter(Provider.name == "gemini").one()
+    credential = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
+    model = db.query(ModelCatalog).filter(ModelCatalog.id == "gemini/gemini-3.6-flash").one()
+    original_reference = credential.secret_reference
+    original_status = credential.status
+    original_last_four = credential.last_four
+    original_provider_model_id = model.provider_model_id
+    db.close()
+    try:
+        db = TestingSessionLocal()
+        upsert_provider_api_key(db, "gemini", "live-gemini-test-key")
+        db.close()
+        db = TestingSessionLocal()
+        assert db.query(ModelCatalog).filter(ModelCatalog.id == "gemini/gemini-3.6-flash").one().provider_model_id == "gemini-flash-real"
+        db.close()
+        response = chat(key, model="gemini/gemini-3.6-flash")
+        assert response.status_code == 200, response.text
+        assert calls == ["gemini-flash-real"]
+        assert response.json()["compass"]["credential_mode"] == "platform"
+    finally:
+        db = TestingSessionLocal()
+        restored = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
+        restored.secret_reference = original_reference
+        restored.status = original_status
+        restored.last_four = original_last_four
+        restored_model = db.query(ModelCatalog).filter(ModelCatalog.id == "gemini/gemini-3.6-flash").one()
+        restored_model.provider_model_id = original_provider_model_id
         db.commit()
         db.close()
 
@@ -380,6 +593,22 @@ def test_successful_request_records_usage_debit_and_provider_attempt(monkeypatch
     db = TestingSessionLocal()
     assert db.query(ProviderAttempt).filter(ProviderAttempt.request_id == usage[0]["id"], ProviderAttempt.status == "success").count() == 1
     db.close()
+
+
+def test_provider_failure_releases_wallet_reservation(monkeypatch):
+    async def failed_provider(self, payload):  # noqa: ARG001
+        raise compass_error(503, "provider_unavailable", "Provider is unavailable.")
+
+    monkeypatch.setattr(LiteLLMClient, "chat_completion", failed_provider)
+    headers, team, _, key = provision_beta_key()
+    before = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"]
+    response = chat(key)
+    assert response.status_code == 503, response.text
+    after = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"]
+    assert after == before
+    ledger = client.get("/wallet/ledger", params={"team_id": team["id"]}, headers=headers).json()
+    assert any(row["reference_type"] == "llm_reservation" for row in ledger)
+    assert any(row["reference_type"] == "llm_reservation_release" for row in ledger)
 
 
 def test_idempotent_debit_does_not_double_charge():

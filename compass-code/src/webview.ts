@@ -152,7 +152,7 @@ function connectedMarkup(): string {
     ${state.permission ? permissionMarkup(state.permission) : ""}
     <div class="transcript-wrap"><section class="transcript" aria-live="polite">${goal}${messages}</section>${showJumpToLatest ? `<button class="jump-latest" id="jump-latest" type="button">Jump to latest</button>` : ""}</div>
     ${workedFor ? `<div class="worked-row"><span>${workedFor}</span><span aria-hidden="true">&#x203a;</span></div>` : ""}
-    <section class="composer" aria-label="Compass Code composer">
+    <section class="composer" aria-label="Compass Router composer">
       <textarea id="prompt" placeholder="${hasTranscript ? "Ask a follow-up about this workspace..." : "Ask Compass to inspect or change this workspace..."} (Shift+Enter for a new line)" rows="3" ${state.busy ? "disabled" : ""}></textarea>
       <div class="composer-toolbar">
         <button class="composer-icon" id="context-toggle" type="button" title="Add workspace context" aria-label="Add workspace context">&#x2b;</button>

@@ -19,7 +19,7 @@ export class TerminalManager {
     const current = vscode.window.terminals.find((terminal) => terminal.shellIntegration?.cwd?.fsPath === cwd && terminal.exitStatus === undefined);
     if (current) return current;
     if (!this.terminal || this.terminal.exitStatus !== undefined) {
-      this.terminal = vscode.window.createTerminal({ name: "Compass Code", cwd });
+      this.terminal = vscode.window.createTerminal({ name: "Compass Router", cwd });
     }
     return this.terminal.shellIntegration ? this.terminal : undefined;
   }

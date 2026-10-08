@@ -26,6 +26,9 @@ services:
       retries: 10
 
   litellm:
+    env_file:
+      - path: .env.providers
+        required: false
     image: ${COMPASS_LITELLM_IMAGE:-compass-litellm:1.99.0-compass.1}
     build:
       context: ../../compass-litellm
@@ -54,6 +57,9 @@ services:
       start_period: 30s
 
   compass-api:
+    env_file:
+      - path: .env.providers
+        required: false
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -67,6 +73,9 @@ services:
       COMPASS_LITELLM_URL: ${COMPASS_LITELLM_URL:-http://litellm:4000}
       LITELLM_URL: ${LITELLM_URL:-http://litellm:4000}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-local-dev-litellm-key}
+      PROVIDER_EXECUTION_MODE: ${PROVIDER_EXECUTION_MODE:-proxy}
+      PROVIDER_MAX_ATTEMPTS: ${PROVIDER_MAX_ATTEMPTS:-2}
+      PROVIDER_ENV_SYNC_MODE: ${PROVIDER_ENV_SYNC_MODE:-missing}
       REQUEST_BODY_LIMIT_BYTES: ${REQUEST_BODY_LIMIT_BYTES:-1000000}
       LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K: ${LOCAL_TEST_INPUT_PRICE_PAISE_PER_1K:-2}
       LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K: ${LOCAL_TEST_OUTPUT_PRICE_PAISE_PER_1K:-6}
@@ -74,7 +83,7 @@ services:
       LITELLM_TIMEOUT_SECONDS: ${LITELLM_TIMEOUT_SECONDS:-60}
       LITELLM_CATALOG_CACHE_SECONDS: ${LITELLM_CATALOG_CACHE_SECONDS:-300}
       USD_TO_INR_PAISE_PER_USD: ${USD_TO_INR_PAISE_PER_USD:-8500}
-      LOCAL_TEST_MODE: ${LOCAL_TEST_MODE:-true}
+      LOCAL_TEST_MODE: ${LOCAL_TEST_MODE:-false}
       PUBLIC_SIGNUP_ENABLED: ${PUBLIC_SIGNUP_ENABLED:-true}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-CompassAdmin123!}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { OpenAICompatibleProvider } from "../src/providers.js";
+import { OpenAICompatibleProvider, providerTools } from "../src/providers.js";
 
 describe("OpenAI-compatible provider", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -47,5 +47,29 @@ describe("OpenAI-compatible provider", () => {
     for await (const chunk of provider.stream("demo", [{ role: "user", content: "Hi" }])) chunks.push(chunk);
 
     expect(chunks[0].choices?.[0].delta?.content).toBe("Planned response");
+  });
+});
+
+describe("provider tool payloads", () => {
+  it("removes extension-only permission metadata before sending tools", () => {
+    const tools = providerTools([{
+      permission: "write",
+      output: { sensitive: true },
+      type: "function",
+      function: {
+        name: "write_file",
+        description: "Write a file",
+        parameters: { type: "object" },
+      },
+    }]);
+
+    expect(tools).toEqual([{
+      type: "function",
+      function: {
+        name: "write_file",
+        description: "Write a file",
+        parameters: { type: "object" },
+      },
+    }]);
   });
 });

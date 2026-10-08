@@ -2,6 +2,11 @@
 .vscode/**
 src/**
 test/**
+test-ui/**
+test-results/**
+playwright.config.ts
+vitest.config.ts
+playwright-report/**
 node_modules/**
 coverage/**
 *.vsix

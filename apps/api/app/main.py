@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
@@ -14,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .config import get_settings
+from .config import get_settings, validate_runtime_config
 from .db import get_db, init_db
 from .errors import compass_error
 from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
@@ -45,6 +46,7 @@ from .services import (
     organization_id_for_user,
     provider_credentials_summary,
     record_audit_log,
+    request_id_context,
     request_rows,
     revoke_byok_api_key,
     revoke_api_key,
@@ -54,6 +56,7 @@ from .services import (
     seed_defaults,
     select_user_by_email,
     stream_openai_chunks,
+    _set_local_provider_route,
     upsert_marketplace_user,
     upsert_byok_api_key,
     upsert_provider_api_key,
@@ -89,6 +92,7 @@ PROVIDER_CATALOG = [
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    validate_runtime_config(settings)
     init_db()
     db = next(get_db())
     try:
@@ -110,6 +114,26 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def request_context_and_security_headers(request: Request, call_next):
+    supplied = request.headers.get("X-Request-ID", "")
+    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", supplied) else new_id()
+    request.state.request_id = request_id
+    token = request_id_context.set(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+    finally:
+        request_id_context.reset(token)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": {"error": {"code": "invalid_request", "message": "Request validation failed.", "type": "compass_error", "fields": exc.errors()}}})
@@ -117,7 +141,11 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
 
 async def enforce_body_limit(request: Request) -> None:
     length = request.headers.get("content-length")
-    if length and int(length) > settings.request_body_limit_bytes:
+    try:
+        too_large = length is not None and int(length) > settings.request_body_limit_bytes
+    except ValueError:
+        raise compass_error(400, "invalid_content_length", "The request content length is invalid.") from None
+    if too_large:
         raise compass_error(413, "request_too_large", "Request body is too large.")
 
 
@@ -244,13 +272,17 @@ def live() -> dict:
 @app.get("/health/ready")
 async def ready(db: Session = Depends(get_db)) -> dict:
     db.execute(select(User).limit(1))
-    redis = check_redis(settings.redis_url)
+    try:
+        redis = check_redis(settings.redis_url)
+    except (OSError, RuntimeError, ValueError) as exc:
+        redis = {"status": "unavailable", "detail": str(exc)}
     try:
         litellm = await LiteLLMClient().health_check()
     except (HTTPException, httpx.HTTPError):
         litellm = {"status": "unavailable", "detail": "LiteLLM health check did not respond."}
     litellm_status = str(litellm.get("status", "ok"))
-    overall_status = "ready" if settings.local_test_mode or litellm_status in {"ok", "ready", "healthy"} else "degraded"
+    redis_ready = redis.get("status") in {"ok", "ready", "healthy"}
+    overall_status = "ready" if redis_ready and (settings.local_test_mode or litellm_status in {"ok", "ready", "healthy"}) else "degraded"
     return {"status": overall_status, "database": {"status": "ok", "dialect": db.bind.dialect.name if db.bind else "unknown"}, "redis": redis, "litellm": {"status": litellm_status, "detail": litellm.get("detail")}}
 
 
@@ -1267,6 +1299,29 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
     model = db.get(ModelCatalog, model_id)
     if model is None:
         raise compass_error(404, "model_not_found", "Model was not found.")
+    requested_enabled = body.enabled if body.enabled is not None else model.enabled
+    requested_published = body.published if body.published is not None else model.published
+    if requested_enabled and requested_published:
+        provider = model.provider
+        if not provider.enabled or provider.status in {"disabled", "unavailable"}:
+            raise compass_error(409, "model_route_unavailable", "Enable and restore the provider before publishing this model.")
+        credential = db.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.provider_id == provider.id,
+                ProviderCredential.organization_id.is_(None),
+                ProviderCredential.credential_mode == "platform",
+                ProviderCredential.status.in_(["active", "local_test"]),
+            )
+        )
+        has_usable_credential = bool(
+            credential
+            and (
+                credential.secret_reference.startswith(("encrypted:", "gcp-secret:"))
+                or (settings.local_test_mode and credential.secret_reference.startswith("server-side/"))
+            )
+        )
+        if not has_usable_credential:
+            raise compass_error(409, "provider_credential_required", "Configure a usable provider credential before publishing this model.")
     model.status = body.status
     if body.enabled is not None:
         model.enabled = body.enabled
@@ -1328,6 +1383,7 @@ def admin_revoke_provider_credential(provider_name: str, actor: User = Depends(a
     credential.last_four = ""
     credential.last_tested_at = None
     credential.updated_at = now()
+    _set_local_provider_route(db, provider, live=False)
     record_audit_log(db, actor, "provider.credential_revoked", f"provider:{provider.name}", {})
     db.commit()
     return {"provider": provider.name, "credential_status": credential.status, "has_configured_key": False}
@@ -1450,11 +1506,23 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
     ).all()
     usable_credentials = sum(1 for row in credentials if row.secret_reference.startswith(("encrypted:", "gcp-secret:")))
     enabled_providers = db.scalar(select(func.count(Provider.id)).where(Provider.enabled.is_(True), Provider.status != "disabled")) or 0
-    published_models = db.scalar(select(func.count(ModelCatalog.id)).where(ModelCatalog.enabled.is_(True), ModelCatalog.published.is_(True))) or 0
+    published_models = db.scalar(
+        select(func.count(ModelCatalog.id))
+        .join(Provider, Provider.id == ModelCatalog.provider_id)
+        .where(
+            ModelCatalog.enabled.is_(True),
+            ModelCatalog.published.is_(True),
+            ModelCatalog.status == "available",
+            Provider.enabled.is_(True),
+            Provider.status.not_in(["disabled", "unavailable"]),
+        )
+    ) or 0
     blockers: list[str] = []
+    payment_mode = settings.billing_payment_mode.strip().lower()
+    execution_mode = settings.provider_execution_mode.strip().lower()
     checks = {
         "local_test_mode": not settings.local_test_mode,
-        "billing_payment_mode": settings.billing_payment_mode == "production",
+        "billing_payment_mode": payment_mode == "razorpay",
         "secret_manager": settings.secret_manager_enabled,
         "provider_credentials": usable_credentials > 0,
         "enabled_providers": enabled_providers > 0,
@@ -1462,8 +1530,8 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
     }
     if settings.local_test_mode:
         blockers.append("LOCAL_TEST_MODE is enabled")
-    if settings.billing_payment_mode != "production":
-        blockers.append("Billing payment mode is not production")
+    if payment_mode != "razorpay":
+        blockers.append("Billing payment mode is not razorpay")
     if not settings.secret_manager_enabled:
         blockers.append("Secret Manager is disabled")
     if usable_credentials == 0:
@@ -1472,12 +1540,15 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
         blockers.append("No enabled provider route is available")
     if published_models == 0:
         blockers.append("No published model is available")
-    try:
-        litellm = await LiteLLMClient().health_check()
-        checks["litellm"] = str(litellm.get("status", "ok")).lower() in {"ok", "ready", "healthy"}
-    except Exception:
-        checks["litellm"] = False
-        blockers.append("LiteLLM health check failed")
+    if execution_mode == "direct":
+        checks["litellm"] = True
+    else:
+        try:
+            litellm = await LiteLLMClient().health_check()
+            checks["litellm"] = str(litellm.get("status", "ok")).lower() in {"ok", "ready", "healthy"}
+        except Exception:
+            checks["litellm"] = False
+            blockers.append("LiteLLM health check failed")
     return {
         "ready": not blockers,
         "blockers": blockers,
