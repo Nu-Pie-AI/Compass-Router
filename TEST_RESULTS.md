@@ -241,9 +241,11 @@ Staging harness status:
 | Redis health error handling | PASS; authentication failures are converted to a generic operational error without credential text |
 | Atomic rate-limit script | PASS; offline test verifies Lua `EVAL`, request/token increments, and TTL expiration commands |
 | Rate-limit rejection | PASS; request-limit result maps to the expected API error reason |
-| Live Redis connectivity | BLOCKED; current `.env` endpoint is not a reachable authenticated TLS staging Redis |
-| Multi-worker rate limiting and outage behavior | NOT RUN; requires dedicated staging Redis |
-| Neon wallet authority/regression | PRESERVED; no Neon schema or financial code was changed in M10 |
+| Live Redis connectivity | PASS; authenticated TLS Upstash TCP connection and PING succeeded |
+| Live Redis commands | PASS; isolated SET/GET, INCR/INCRBY, EXPIRE/TTL, and Lua EVAL passed with cleanup |
+| Multi-worker atomic rate limiting | PASS; 20 concurrent calls produced 5 allowed and 15 rejected reservations |
+| Redis outage behavior | NOT RUN against a real outage; fail-closed behavior is covered by offline API tests |
+| Neon wallet authority/regression | PASS; read-only Neon verifier passed and no schema or financial code was changed in M10 |
 | Python dependency audit | BLOCKED; `pip_audit` is not installed in the current environment |
 
-Neon regression rerun on 2026-10-09: **BLOCKED at DNS resolution** for the configured endpoint. No database write was attempted; the prior verified Neon result remains recorded from commit `f788706`.
+Neon regression rerun on 2026-10-09: **PASS**; pooled/direct connectivity, TLS, Alembic state, and empty protected tables passed.

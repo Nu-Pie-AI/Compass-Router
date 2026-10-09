@@ -77,6 +77,6 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 
 - Redis client integration is READY for staging configuration: pooled `redis-py`, authenticated `rediss://`, bounded timeouts/retries, and atomic Lua rate limiting.
 - Cloud Run API templates already source `REDIS_URL` from Secret Manager and do not expose it to the web service.
-- Offline Redis tests pass. Live readiness remains BLOCKED until a dedicated authenticated TLS Redis endpoint is supplied and verified.
-- Overall release status remains NOT READY; Redis live verification, Clerk, provider, SMTP, Razorpay, GCP, and deployment gates remain open.
-- Neon regression rerun after the M10 code changes is temporarily blocked at DNS resolution; no migration or financial operation was attempted.
+- Offline Redis tests and live Upstash authenticated TLS verification pass for the required commands.
+- Overall release status remains NOT READY; Redis outage behavior, Clerk, provider, SMTP, Razorpay, GCP, and deployment gates remain open.
+- Neon regression rerun after the M10 code changes passes; no migration or financial operation was attempted.

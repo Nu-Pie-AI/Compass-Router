@@ -86,8 +86,14 @@ M4 implementation blockers:
 ## M10 Redis status - 2026-10-09
 
 - Redis transport implementation is complete and provider-neutral. `redis-py` supports authenticated `rediss://` endpoints, pooled connections, bounded retries, and the required atomic Lua limiter.
-- Offline Redis tests pass; no live Redis endpoint was verified.
-- Current local Redis configuration is not a reachable authenticated TLS staging endpoint. Provide a dedicated Upstash Redis-compatible TLS endpoint, or approve/use Memorystore, then place only its URL in ignored `.env` or Secret Manager.
+- Offline Redis tests pass, and live Upstash TCP/TLS verification now passes.
+- The ignored `.env` had a stale local `REDIS_URL` before the configured Upstash `rediss://` value. The stale entry was removed; no secret value was printed or committed.
 - Upstash REST must not be used for the limiter because the application requires atomic Lua `EVAL` with `INCR`, `INCRBY`, and `EXPIRE`.
-- Live multi-worker rate limiting, Redis outage behavior against a real service, and PostgreSQL wallet concurrency against staging remain open gates.
-- Neon regression rerun on 2026-10-09 is currently blocked at DNS resolution for the configured database endpoint. The last verified Neon run remains recorded at commit `f788706`; no M10 code changed Neon configuration or schema.
+- Live multi-worker rate limiting is verified. Redis outage behavior against a real service and PostgreSQL wallet concurrency against staging remain open gates.
+- Neon regression rerun after the M10 code changes now passes. No migration or financial operation was attempted.
+
+## M10 automatic Upstash verification - 2026-10-09
+
+- Standard Redis TCP/TLS credentials were available in the existing `REDIS_URL`. The Upstash REST token was not substituted for Redis configuration.
+- Live Upstash checks passed for authenticated TLS PING, SET/GET, INCR/INCRBY, EXPIRE/TTL, Lua EVAL, and concurrent atomic rate limiting.
+- Earlier screenshots contained credentials; rotate any credentials that were exposed before production use, even though no values were committed here.

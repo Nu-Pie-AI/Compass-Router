@@ -481,11 +481,13 @@ Status: VERIFIED FOR DATABASE-ONLY STAGING CHECKS; DEPLOYMENT STILL BLOCKED
 - No production branch, production service, payment credential, wallet record, or deployment was changed.
 ## M10 - Redis integration and staging verification - 2026-10-09
 
-Status: CLIENT IMPLEMENTATION COMPLETE; LIVE REDIS VERIFICATION BLOCKED
+Status: LIVE STAGING REDIS VERIFICATION COMPLETE; CLOUD RUN DEPLOYMENT STILL BLOCKED
 
 - Audited Redis usage: readiness `PING`, atomic team request/token rate limiting via Lua `EVAL`, `INCR`, `INCRBY`, and `EXPIRE`; no Redis wallet authority, Pub/Sub, streams, blocking queues, or session cache was found.
 - Replaced raw unauthenticated RESP sockets with pooled `redis-py` clients that support `redis://` and `rediss://`, URL authentication, bounded timeouts, health checks, and bounded retries.
 - Preserved production fail-closed behavior when distributed rate limiting is unavailable. Non-production database fallback remains unchanged.
 - Cloud Run staging already references `REDIS_URL` through Secret Manager; no secret values were added to templates or images.
-- Added offline Redis tests and a staging setup guide. Live Redis `PING` is blocked because the current `.env` endpoint is not a reachable authenticated TLS staging endpoint.
+- Added offline Redis tests and a staging setup guide. Live Upstash checks passed for authenticated TLS, required commands, Lua EVAL, and concurrent atomic rate limiting using expiring isolated keys.
+- The Neon read-only verifier passed again after Redis configuration cleanup.
+- Redis outage behavior against a real fault, broader PostgreSQL wallet concurrency, and Cloud Run runtime verification remain open.
 - Neon remains the financial authority; no wallet or database schema changes were made.
