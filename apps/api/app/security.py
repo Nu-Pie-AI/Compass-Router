@@ -74,6 +74,12 @@ def clerk_user_email(clerk_user_id: str) -> str:
     email = getattr(selected, "email_address", None)
     if not isinstance(email, str) or "@" not in email:
         raise ValueError("Clerk user has no usable verified email")
+    verification = getattr(selected, "verification", None)
+    verification_status = getattr(verification, "status", None)
+    if isinstance(verification, dict):
+        verification_status = verification.get("status")
+    if verification_status != "verified":
+        raise ValueError("Clerk user email is not verified")
     return email.strip().lower()
 
 

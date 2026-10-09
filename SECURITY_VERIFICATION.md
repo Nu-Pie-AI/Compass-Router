@@ -21,3 +21,13 @@ Updated: 2026-10-09
 - Pricing and routing revisions preserve previous policy snapshots and audit records; historical usage rows are not rewritten.
 
 Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret Manager deployment, live Clerk MFA validation, staging provider health, Razorpay sandbox, and Cloud Run IAM/logging.
+
+## M11 Clerk security verification - 2026-10-09
+
+- FastAPI Clerk authentication uses the official backend SDK and accepts only `session_token` credentials.
+- Configured audience and authorized-party checks are passed to the SDK; unauthenticated Clerk state fails closed.
+- Client-supplied IDs, roles, and email values are not trusted for authorization or provisioning. Internal mapping uses the verified Clerk subject, and provisioning requires a verified primary email.
+- Production admin requests require Clerk authentication; Super Admin bootstrap and access require the configured Clerk identity and MFA claim when enabled.
+- Human Clerk sessions and Compass API keys remain separate authentication domains.
+- Clerk webhook verification is Svix-based with persisted idempotency state.
+- Live Clerk browser, MFA, revocation, webhook, Secret Manager, and Cloud Run evidence remains outstanding.

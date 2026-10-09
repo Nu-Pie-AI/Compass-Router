@@ -28,3 +28,14 @@ Status: NOT READY
 - [ ] Live M4-M8 release gates: provider, database, browser, payment, GCP, security, and operational verification.
 - [x] M9 local super-admin governance slice: role model, owner bootstrap boundary, wallet controls, revisions, metadata-only admin APIs, migration, UI, and regression coverage.
 - [ ] M9 live Clerk MFA/session, PostgreSQL/Redis concurrency, high-risk reauthentication, browser accessibility, and operational verification.
+
+## M11 Clerk security evidence - 2026-10-09
+
+- [x] Clerk route protection and configured Clerk admin sign-in are implemented.
+- [x] FastAPI Clerk verification, verified-email mapping, owner bootstrap boundary, and webhook idempotency paths are covered by local code/tests.
+- [x] Full local Python regression passes: 105 tests, one existing deprecation warning.
+- [x] Web lint, typecheck, and production build pass.
+- [ ] Real Clerk signup/login/logout and session revocation verification.
+- [ ] Real Clerk MFA/step-up and owner bootstrap verification.
+- [ ] Real Clerk webhook delivery and redelivery verification.
+- [ ] Staging Secret Manager, Cloud Run, browser, and tenant-isolation verification.

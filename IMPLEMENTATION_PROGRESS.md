@@ -490,4 +490,18 @@ Status: LIVE STAGING REDIS VERIFICATION COMPLETE; CLOUD RUN DEPLOYMENT STILL BLO
 - Added offline Redis tests and a staging setup guide. Live Upstash checks passed for authenticated TLS, required commands, Lua EVAL, and concurrent atomic rate limiting using expiring isolated keys.
 - The Neon read-only verifier passed again after Redis configuration cleanup.
 - Redis outage behavior against a real fault, broader PostgreSQL wallet concurrency, and Cloud Run runtime verification remain open.
+
+## M11 - Clerk authentication and Super Admin security - 2026-10-09
+
+Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
+
+- Audited the existing Clerk, Compass session, identity mapping, tenant authorization, owner bootstrap, role, MFA, webhook, and API-key boundaries.
+- Added Clerk route protection for `/dashboard`, `/admin`, and `/extension/authorize` when configured.
+- Admin login now uses Clerk SignIn when configured while preserving the legacy compatibility path when Clerk is absent.
+- Backend Clerk verification remains official SDK based, accepts session tokens only, and applies audience and authorized-party checks.
+- Internal provisioning now requires the selected Clerk primary email to be verified.
+- Added focused Clerk security tests; the complete Python suite passed with 105 tests and one existing Pydantic deprecation warning.
+- Web lint, typecheck, and production build passed.
+- Real Clerk browser signup/login/logout, MFA claims, session revocation, webhook delivery, staging Secret Manager, and Cloud Run verification remain open external gates.
+- No production service, production Clerk instance, production database, original repository, or VS Code extension was modified.
 - Neon remains the financial authority; no wallet or database schema changes were made.

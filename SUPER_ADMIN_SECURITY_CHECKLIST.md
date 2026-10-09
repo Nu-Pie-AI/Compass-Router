@@ -10,3 +10,12 @@
 - [x] Pricing/routing changes preserve revision snapshots.
 - [ ] PostgreSQL locking, Redis limits, retention, tamper resistance, and Cloud Logging redaction verified in staging.
 - [ ] Razorpay sandbox, restore, rollback, alerts, and owner approval evidence recorded.
+
+## M11 evidence update - 2026-10-09
+
+- [x] Clerk verification path is server-side, session-token-only, and audience/authorized-party aware.
+- [x] Admin login selects Clerk SignIn when configured and preserves local compatibility mode when absent.
+- [x] Verified Clerk email is required for internal provisioning.
+- [ ] Staging Clerk instance, verified domain/origins, MFA claims, session revocation, and fresh-authentication behavior verified in a browser.
+- [ ] Exact owner Clerk user ID stored in staging Secret Manager and explicit bootstrap verified.
+- [ ] Staging Clerk webhook endpoint, signature verification, and redelivery verified.

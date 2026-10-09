@@ -97,3 +97,12 @@ M4 implementation blockers:
 - Standard Redis TCP/TLS credentials were available in the existing `REDIS_URL`. The Upstash REST token was not substituted for Redis configuration.
 - Live Upstash checks passed for authenticated TLS PING, SET/GET, INCR/INCRBY, EXPIRE/TTL, Lua EVAL, and concurrent atomic rate limiting.
 - Earlier screenshots contained credentials; rotate any credentials that were exposed before production use, even though no values were committed here.
+
+## M11 Clerk authentication and Super Admin verification - 2026-10-09
+
+- A public staging URL and browser access are required to verify real Clerk signup, login, logout, session revocation, redirect behavior, and protected web routes.
+- `CLERK_WEBHOOK_SIGNING_SECRET` is still a placeholder locally; a staging Clerk webhook endpoint and delivery evidence are required.
+- `PLATFORM_SUPER_ADMIN_CLERK_USER_ID` is not configured; the owner must provide the exact staging Clerk user ID through a secure channel before bootstrap can be tested.
+- The configured local Clerk key prefixes indicate a test setup, but the Clerk dashboard instance, allowed origins, MFA policy, and claims have not been independently verified.
+- Live MFA/step-up behavior, high-risk reauthentication, tenant isolation against a real database, Secret Manager references, Cloud Run IAM, and log redaction remain unverified.
+- Rotate any Clerk or other credentials exposed in earlier screenshots before relying on them for staging or production.

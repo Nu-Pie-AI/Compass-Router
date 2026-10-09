@@ -249,3 +249,22 @@ Staging harness status:
 | Python dependency audit | BLOCKED; `pip_audit` is not installed in the current environment |
 
 Neon regression rerun on 2026-10-09: **PASS**; pooled/direct connectivity, TLS, Alembic state, and empty protected tables passed.
+
+## M11 Clerk authentication and Super Admin verification - 2026-10-09
+
+| Check | Result |
+|---|---|
+| Clerk request options | PASS; official SDK uses session tokens only, configured audience, authorized parties, and server secret |
+| Unauthenticated Clerk state | PASS; fails closed in focused security tests |
+| Verified email requirement | PASS; unverified Clerk email cannot provision an internal user |
+| Focused Clerk/API regression | PASS; 14 passed, 65 deselected |
+| Complete Python regression | PASS; 105 passed, 1 existing Pydantic deprecation warning |
+| Web lint | PASS |
+| Web typecheck | PASS |
+| Web production build | PASS; 23 routes generated |
+| Real Clerk signup/login/logout | NOT RUN; staging browser and public URL are unavailable |
+| Real MFA claim and step-up | NOT RUN; requires the staging Clerk instance and owner account |
+| Real webhook signature and redelivery | NOT RUN; signing secret and endpoint are not configured |
+| Live tenant/admin isolation | NOT RUN; requires approved staging deployment and populated test identities |
+
+No Clerk secret values were printed or committed.

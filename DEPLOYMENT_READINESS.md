@@ -80,3 +80,10 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Offline Redis tests and live Upstash authenticated TLS verification pass for the required commands.
 - Overall release status remains NOT READY; Redis outage behavior, Clerk, provider, SMTP, Razorpay, GCP, and deployment gates remain open.
 - Neon regression rerun after the M10 code changes passes; no migration or financial operation was attempted.
+
+## M11 Clerk staging update - 2026-10-09
+
+- Clerk web route protection, Clerk-based admin sign-in selection, server-side session-token verification, verified-email mapping, owner-bootstrap boundaries, and webhook ledger handling are code-complete and locally tested.
+- The root local configuration is not sufficient for live verification: owner identity is empty and the webhook signing secret is a placeholder.
+- Staging is not deployment-ready for human authentication until the Clerk instance, origins/redirects, webhook, MFA policy, owner identity, Secret Manager references, and Cloud Run service are verified.
+- No Cloud Run deployment, secret write, production change, or live payment was performed.

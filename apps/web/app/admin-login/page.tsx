@@ -2,13 +2,19 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { SignIn } from "@clerk/nextjs";
 import { Compass, LockKeyhole } from "lucide-react";
 
 import { apiFetch } from "../../lib/api";
 
 type Session = { token: string; user_id: string; email: string; organization_id?: string | null; role: string };
+const clerkEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 
-export default function AdminLoginPage() {
+function ClerkAdminLogin() {
+  return <main className="console-login"><section className="console-login-panel" aria-labelledby="admin-login-title"><div className="console-login-brand"><Compass size={24} aria-hidden="true" />Compass Router</div><div className="console-login-copy"><span>ROUTER ADMINISTRATION</span><h1 id="admin-login-title">Administrator sign in</h1><p>Authenticate with the configured Clerk staging instance.</p></div><SignIn routing="hash" signUpUrl="/signup" fallbackRedirectUrl="/admin" /></section></main>;
+}
+
+function LegacyAdminLogin() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -52,4 +58,8 @@ export default function AdminLoginPage() {
       </section>
     </main>
   );
+}
+
+export default function AdminLoginPage() {
+  return clerkEnabled ? <ClerkAdminLogin /> : <LegacyAdminLogin />;
 }
