@@ -51,3 +51,10 @@ The API loads secret values server-side only. The web bundle may contain only th
 - The local root environment has test-prefix Clerk keys, but the owner ID is not configured and the webhook signing secret is a placeholder.
 - No live Clerk browser, MFA, session revocation, webhook, staging DNS, or Cloud Run verification was performed.
 - This proves code readiness only; it does not prove a production Clerk configuration.
+
+## Local browser fix - 2026-10-09
+
+- Root cause: Next.js was launched with `apps/web` as its project directory, while the ignored Clerk configuration lived in the repository-root `.env`. The `clerkEnabled` checks therefore evaluated false and selected the legacy email/password and OTP forms.
+- Fix: `apps/web/next.config.js` now loads the repository-root environment at startup with Next's supported `@next/env` loader. Only the public Clerk publishable key is exposed to the web bundle; Clerk secret values remain server-side.
+- The Next process was restarted after the fix. Local `/login` and `/signup` both return HTTP 200 with the Clerk-enabled route selected; the server log confirms both routes compile and render through the restarted process.
+- A real interactive Clerk sign-in, successful session, logout, and dashboard redirect were not completed in this run because no browser interaction/session credentials were supplied. Do not treat route rendering as proof of authenticated login.

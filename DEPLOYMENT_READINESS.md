@@ -87,3 +87,9 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - The root local configuration is not sufficient for live verification: owner identity is empty and the webhook signing secret is a placeholder.
 - Staging is not deployment-ready for human authentication until the Clerk instance, origins/redirects, webhook, MFA policy, owner identity, Secret Manager references, and Cloud Run service are verified.
 - No Cloud Run deployment, secret write, production change, or live payment was performed.
+
+## Local Clerk login fix - 2026-10-09
+
+- The web app now loads the root ignored environment during Next startup, so configured Clerk is selected instead of the legacy login fallback.
+- Local `/login` and `/signup` route checks pass after restart, and frontend lint/typecheck pass.
+- Live Clerk sign-in, session persistence, logout, MFA, webhook, and Cloud Run verification remain outstanding.

@@ -106,3 +106,9 @@ M4 implementation blockers:
 - The configured local Clerk key prefixes indicate a test setup, but the Clerk dashboard instance, allowed origins, MFA policy, and claims have not been independently verified.
 - Live MFA/step-up behavior, high-risk reauthentication, tenant isolation against a real database, Secret Manager references, Cloud Run IAM, and log redaction remain unverified.
 - Rotate any Clerk or other credentials exposed in earlier screenshots before relying on them for staging or production.
+
+## Local Clerk browser fix - 2026-10-09
+
+- The legacy login appeared because Next.js did not load the repository-root `.env` when launched from `apps/web`; the Clerk public-key check was false.
+- This is fixed locally with startup-time root environment loading in `apps/web/next.config.js`, and the Next server was restarted.
+- Interactive Clerk authentication is still an external/user-action gate: complete a real development-instance sign-in at `http://localhost:3100/login` and verify dashboard, refresh, logout, and protected-route behavior.

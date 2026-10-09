@@ -268,3 +268,15 @@ Neon regression rerun on 2026-10-09: **PASS**; pooled/direct connectivity, TLS, 
 | Live tenant/admin isolation | NOT RUN; requires approved staging deployment and populated test identities |
 
 No Clerk secret values were printed or committed.
+
+## Local Clerk browser configuration fix - 2026-10-09
+
+| Check | Result |
+|---|---|
+| Root `.env` loading from `apps/web` startup | PASS; Next config loads the repository-root environment without copying secrets |
+| Local `/login` route | PASS; HTTP 200 after server restart with Clerk configured |
+| Local `/signup` route | PASS; HTTP 200 after server restart with Clerk configured |
+| Frontend lint | PASS |
+| Frontend typecheck | PASS |
+| Real interactive Clerk sign-in | NOT RUN; requires user completion in the Clerk development instance |
+| Authenticated dashboard, refresh, logout, and session revocation | NOT RUN |
