@@ -19,7 +19,7 @@ Status: NOT READY
 - [x] Explicit release artifact script requires clean Git state and records commit-tagged image digests with provenance/SBOM attestations; no deployment is performed.
 - [x] Structured request logging uses an allow-listed JSON payload with request IDs and excludes authorization, query, body, and provider payload data.
 - [ ] PostgreSQL upgrade and populated-data verification.
-- [ ] Redis rate-limit and concurrency verification.
+- [ ] Redis authenticated TLS endpoint, multi-worker rate-limit, outage, and concurrency verification.
 - [ ] Live LiteLLM/direct-provider discovery and inference staging evidence.
 - [ ] Usage, wallet, pricing, and API-key reconciliation staging evidence.
 - [ ] Clerk, Secret Manager, Cloud Run, Cloud Logging/Monitoring, tracing, alerts, rollback, and DNS verification.

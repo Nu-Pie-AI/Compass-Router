@@ -83,3 +83,11 @@ M4 implementation blockers:
 - `python -m alembic upgrade head` from `apps/api`: PASS through `a1b2c3d4e5f6` using `DIRECT_DATABASE_URL`.
 - The staging branch was empty and contained no rows in the protected customer/financial tables checked by the verifier.
 - The Neon integration blocker is resolved for this staging branch. Live provider, Clerk, Redis, SMTP, Razorpay, GCP, browser, and deployment gates remain open.
+## M10 Redis status - 2026-10-09
+
+- Redis transport implementation is complete and provider-neutral. `redis-py` supports authenticated `rediss://` endpoints, pooled connections, bounded retries, and the required atomic Lua limiter.
+- Offline Redis tests pass; no live Redis endpoint was verified.
+- Current local Redis configuration is not a reachable authenticated TLS staging endpoint. Provide a dedicated Upstash Redis-compatible TLS endpoint, or approve/use Memorystore, then place only its URL in ignored `.env` or Secret Manager.
+- Upstash REST must not be used for the limiter because the application requires atomic Lua `EVAL` with `INCR`, `INCRBY`, and `EXPIRE`.
+- Live multi-worker rate limiting, Redis outage behavior against a real service, and PostgreSQL wallet concurrency against staging remain open gates.
+- Neon regression rerun on 2026-10-09 is currently blocked at DNS resolution for the configured database endpoint. The last verified Neon run remains recorded at commit `f788706`; no M10 code changed Neon configuration or schema.

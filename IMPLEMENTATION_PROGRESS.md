@@ -479,3 +479,13 @@ Status: VERIFIED FOR DATABASE-ONLY STAGING CHECKS; DEPLOYMENT STILL BLOCKED
 - The initial migration had placed the 44 application tables in `public` while the runtime expects `compass`. Added a scoped forward migration that moves only the known Compass application tables into `compass`.
 - Re-ran `python infra/verify_neon_staging.py`: PASS. Alembic state, pooled/direct routing, TLS, and empty protected customer/financial tables are verified.
 - No production branch, production service, payment credential, wallet record, or deployment was changed.
+## M10 - Redis integration and staging verification - 2026-10-09
+
+Status: CLIENT IMPLEMENTATION COMPLETE; LIVE REDIS VERIFICATION BLOCKED
+
+- Audited Redis usage: readiness `PING`, atomic team request/token rate limiting via Lua `EVAL`, `INCR`, `INCRBY`, and `EXPIRE`; no Redis wallet authority, Pub/Sub, streams, blocking queues, or session cache was found.
+- Replaced raw unauthenticated RESP sockets with pooled `redis-py` clients that support `redis://` and `rediss://`, URL authentication, bounded timeouts, health checks, and bounded retries.
+- Preserved production fail-closed behavior when distributed rate limiting is unavailable. Non-production database fallback remains unchanged.
+- Cloud Run staging already references `REDIS_URL` through Secret Manager; no secret values were added to templates or images.
+- Added offline Redis tests and a staging setup guide. Live Redis `PING` is blocked because the current `.env` endpoint is not a reachable authenticated TLS staging endpoint.
+- Neon remains the financial authority; no wallet or database schema changes were made.

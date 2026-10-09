@@ -73,3 +73,10 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - `python -m alembic upgrade head` from `apps/api`: PASS through `a1b2c3d4e5f6`.
 - The schema-repair migration moved only the known 44 Compass application tables from `public` to `compass`; no extra public tables were present.
 - Database readiness is now READY for isolated staging database checks. This does not authorize Cloud Run deployment or change the overall release status.
+## M10 Redis staging update - 2026-10-09
+
+- Redis client integration is READY for staging configuration: pooled `redis-py`, authenticated `rediss://`, bounded timeouts/retries, and atomic Lua rate limiting.
+- Cloud Run API templates already source `REDIS_URL` from Secret Manager and do not expose it to the web service.
+- Offline Redis tests pass. Live readiness remains BLOCKED until a dedicated authenticated TLS Redis endpoint is supplied and verified.
+- Overall release status remains NOT READY; Redis live verification, Clerk, provider, SMTP, Razorpay, GCP, and deployment gates remain open.
+- Neon regression rerun after the M10 code changes is temporarily blocked at DNS resolution; no migration or financial operation was attempted.

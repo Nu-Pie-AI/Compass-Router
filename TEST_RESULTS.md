@@ -233,3 +233,17 @@ Staging harness status:
 - `python -m alembic upgrade head` from `apps/api`: PASS; migrations applied through `a1b2c3d4e5f6` on the Neon staging branch using `DIRECT_DATABASE_URL`.
 - Schema repair: PASS; the scoped migration moved the 44 known Compass application tables from `public` to `compass` after confirming there were no extra public tables.
 - Production safety: PASS for checks performed; no production branch, production service, wallet data, payment data, or deployment was touched.
+## M10 Redis verification - 2026-10-09
+
+| Check | Result |
+|---|---|
+| Redis URL/TLS client construction | PASS; offline test covers `rediss://`, URL auth, pool, timeouts, and bounded retry configuration |
+| Redis health error handling | PASS; authentication failures are converted to a generic operational error without credential text |
+| Atomic rate-limit script | PASS; offline test verifies Lua `EVAL`, request/token increments, and TTL expiration commands |
+| Rate-limit rejection | PASS; request-limit result maps to the expected API error reason |
+| Live Redis connectivity | BLOCKED; current `.env` endpoint is not a reachable authenticated TLS staging Redis |
+| Multi-worker rate limiting and outage behavior | NOT RUN; requires dedicated staging Redis |
+| Neon wallet authority/regression | PRESERVED; no Neon schema or financial code was changed in M10 |
+| Python dependency audit | BLOCKED; `pip_audit` is not installed in the current environment |
+
+Neon regression rerun on 2026-10-09: **BLOCKED at DNS resolution** for the configured endpoint. No database write was attempted; the prior verified Neon result remains recorded from commit `f788706`.

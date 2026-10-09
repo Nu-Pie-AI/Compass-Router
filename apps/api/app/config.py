@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     clerk_audience: str | None = None
     clerk_webhook_signing_secret: str | None = None
     redis_url: str = "redis://localhost:6379/0"
+    redis_socket_timeout_seconds: float = 1.5
+    redis_connect_timeout_seconds: float = 3.0
+    redis_max_connections: int = 20
+    redis_retry_attempts: int = 2
     compass_web_origin: str = "http://localhost:23000"
     compass_sso_secret: str = "dev-compass-sso-secret-change-me"
     gcp_project_id: str | None = None

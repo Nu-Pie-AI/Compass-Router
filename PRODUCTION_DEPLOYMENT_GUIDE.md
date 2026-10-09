@@ -28,3 +28,11 @@ It requires a clean worktree, produces commit-tagged immutable image digests,
 and enables BuildKit provenance/SBOM attestations. It does not apply Cloud Run.
 
 OpenRouter is optional. Jev is not deployable under the current plan.
+## Redis staging requirement
+
+The API requires a standard Redis endpoint for distributed rate limiting. Use a
+dedicated staging endpoint with TLS and authentication, configured as
+`REDIS_URL=rediss://USERNAME:PASSWORD@HOST:PORT/0` through Secret Manager. Do
+not use Upstash REST for this feature: the limiter requires atomic Lua `EVAL`
+with `INCR`, `INCRBY`, and `EXPIRE`. See `REDIS_STAGING_GUIDE.md` for the
+read-only health check and live verification gates.

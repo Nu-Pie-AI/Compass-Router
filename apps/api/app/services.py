@@ -4,17 +4,18 @@ import json
 import math
 import re
 import secrets
-import socket
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
-from urllib.parse import urlparse
-
 import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException
+from redis import Redis
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import RedisError
+from redis.retry import Retry
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -2210,31 +2211,43 @@ def route_candidates(db: Session, api_key: ApiKey, requested_model: str, capabil
     return candidates
 
 
+def _redis_client(redis_url: str) -> Redis:
+    """Create a pooled Redis client; rediss:// enables TLS and URL auth."""
+    settings = get_settings()
+    return Redis.from_url(
+        redis_url,
+        socket_connect_timeout=settings.redis_connect_timeout_seconds,
+        socket_timeout=settings.redis_socket_timeout_seconds,
+        health_check_interval=30,
+        max_connections=max(1, settings.redis_max_connections),
+        retry=Retry(
+            ExponentialBackoff(cap=0.2),
+            retries=max(0, min(settings.redis_retry_attempts, 5)),
+        ),
+        retry_on_error=[ConnectionError, TimeoutError],
+        decode_responses=True,
+    )
+
+
 def check_redis(redis_url: str) -> dict:
-    parsed = urlparse(redis_url)
-    host = parsed.hostname or "localhost"
-    port = parsed.port or 6379
-    with socket.create_connection((host, port), timeout=3) as sock:
-        sock.sendall(b"*1\r\n$4\r\nPING\r\n")
-        data = sock.recv(64)
-    if not data.startswith(b"+PONG"):
-        raise RuntimeError("Redis PING did not return PONG")
-    return {"status": "ok", "host": host, "port": port}
-
-
-def _redis_resp(*parts: str) -> bytes:
-    encoded = [f"*{len(parts)}\r\n".encode()]
-    for part in parts:
-        value = str(part).encode()
-        encoded.extend([f"${len(value)}\r\n".encode(), value, b"\r\n"])
-    return b"".join(encoded)
+    client = _redis_client(redis_url)
+    try:
+        client.ping()
+        connection = client.connection_pool.connection_kwargs
+        return {
+            "status": "ok",
+            "scheme": "rediss" if redis_url.lower().startswith("rediss://") else "redis",
+            "host": connection.get("host", "localhost"),
+            "port": connection.get("port", 6379),
+        }
+    except RedisError as exc:
+        raise RuntimeError("Redis health check failed") from exc
+    finally:
+        client.close()
 
 
 def redis_team_rate_limit(redis_url: str, team_id: str, estimated_tokens: int, request_limit: int, token_limit: int) -> tuple[bool, str | None]:
     """Atomically reserve a request and token slot in Redis when available."""
-    parsed = urlparse(redis_url)
-    host = parsed.hostname or "localhost"
-    port = parsed.port or 6379
     key_suffix = str(int(time.time() // 60))
     request_key = f"compass:limit:{team_id}:requests:{key_suffix}"
     token_key = f"compass:limit:{team_id}:tokens:{key_suffix}"
@@ -2248,16 +2261,25 @@ if requests > tonumber(ARGV[1]) then reason = 1 end
 if tokens > tonumber(ARGV[2]) then reason = 2 end
 return {reason, requests, tokens}
 """
-    with socket.create_connection((host, port), timeout=1.5) as sock:
-        sock.sendall(_redis_resp("EVAL", script, "2", request_key, token_key, str(request_limit), str(token_limit), str(max(estimated_tokens, 0))))
-        data = sock.recv(512)
-    if not data.startswith(b"*"):
-        raise RuntimeError("Redis rate limit command failed")
-    values = [int(part) for part in re.findall(rb":(-?\d+)", data)]
-    if len(values) < 3:
-        raise RuntimeError("Redis rate limit response was invalid")
-    reason = values[0]
-    return reason == 0, {1: "rate_limit_exceeded", 2: "token_limit_exceeded"}.get(reason)
+    client = _redis_client(redis_url)
+    try:
+        values = client.eval(
+            script,
+            2,
+            request_key,
+            token_key,
+            request_limit,
+            token_limit,
+            max(estimated_tokens, 0),
+        )
+        if not isinstance(values, (list, tuple)) or len(values) < 3:
+            raise RuntimeError("Redis rate limit response was invalid")
+        reason = int(values[0])
+        return reason == 0, {1: "rate_limit_exceeded", 2: "token_limit_exceeded"}.get(reason)
+    except RedisError as exc:
+        raise RuntimeError("Redis rate limit command failed") from exc
+    finally:
+        client.close()
 
 
 def calculate_cost_paise(model: ModelCatalog, usage: dict) -> tuple[int, int]:
