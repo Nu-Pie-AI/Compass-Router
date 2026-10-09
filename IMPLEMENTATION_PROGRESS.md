@@ -470,3 +470,12 @@ M9 external/live gates:
 - Verify real provider/model state, SMTP delivery, Razorpay sandbox/reconciliation, GCP Secret Manager, Cloud Run, monitoring, backups, rollback, DNS/TLS, and production redaction review.
 - No deployment, live payment, secret write, destructive migration, or original-repository/VS Code extension change was performed.
 
+## Neon staging verification - 2026-10-09
+
+Status: VERIFIED FOR DATABASE-ONLY STAGING CHECKS; DEPLOYMENT STILL BLOCKED
+
+- Read-only Neon verification reached the configured pooled and direct endpoints with TLS enabled.
+- The staging branch was initially uninitialized; Alembic applied revisions through `a1b2c3d4e5f6` successfully using `DIRECT_DATABASE_URL`.
+- The initial migration had placed the 44 application tables in `public` while the runtime expects `compass`. Added a scoped forward migration that moves only the known Compass application tables into `compass`.
+- Re-ran `python infra/verify_neon_staging.py`: PASS. Alembic state, pooled/direct routing, TLS, and empty protected customer/financial tables are verified.
+- No production branch, production service, payment credential, wallet record, or deployment was changed.

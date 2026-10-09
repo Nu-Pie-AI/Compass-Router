@@ -76,3 +76,10 @@ M4 implementation blockers:
 - Current read-only GCP verification is blocked by expired local credentials: `gcloud auth list` identifies `toheed@nu-pie.com`, but project, Cloud Run, Cloud SQL, Redis, Secret Manager, and Artifact Registry queries all fail with `Reauthentication failed` in non-interactive execution. No interactive login was attempted.
 - M9 intentionally performed no live payment, deployment, secret-management write, destructive migration, or change to the original repository or VS Code extension.
 
+## Neon staging verification update - 2026-10-09
+
+- Owner supplied Neon staging values through the ignored root `.env`; values were not printed, logged, or committed.
+- `python infra/verify_neon_staging.py`: PASS after database initialization and schema repair. TLS, pooled/direct routing, Alembic head, and empty protected customer/financial tables passed.
+- `python -m alembic upgrade head` from `apps/api`: PASS through `a1b2c3d4e5f6` using `DIRECT_DATABASE_URL`.
+- The staging branch was empty and contained no rows in the protected customer/financial tables checked by the verifier.
+- The Neon integration blocker is resolved for this staging branch. Live provider, Clerk, Redis, SMTP, Razorpay, GCP, browser, and deployment gates remain open.

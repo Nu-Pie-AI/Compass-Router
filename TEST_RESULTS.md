@@ -227,3 +227,9 @@ Staging harness status:
 - Secret-prefix scan of `.env.example` and `.env`: **0 matches** for credential prefixes.
 - `.env` Git ignore/tracking check: **ignored and not tracked**.
 - Neon verifier with placeholders: **failed safely before migration/connectivity**, as expected.
+## Neon database integration completion - 2026-10-09
+
+- `python infra/verify_neon_staging.py`: PASS; pooled/direct connectivity, TLS, Alembic state, and empty protected customer/financial tables verified without exposing credentials.
+- `python -m alembic upgrade head` from `apps/api`: PASS; migrations applied through `a1b2c3d4e5f6` on the Neon staging branch using `DIRECT_DATABASE_URL`.
+- Schema repair: PASS; the scoped migration moved the 44 known Compass application tables from `public` to `compass` after confirming there were no extra public tables.
+- Production safety: PASS for checks performed; no production branch, production service, wallet data, payment data, or deployment was touched.

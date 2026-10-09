@@ -1,14 +1,17 @@
 import os
 import tempfile
 
-if not os.environ.get("DATABASE_URL"):
-    os.environ["DATABASE_URL"] = "sqlite:///" + tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+# This module imports the database module at collection time. Keep that import
+# isolated from a developer's root .env so later SQLite API tests are stable.
+os.environ["DATABASE_URL"] = "sqlite:///" + tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+os.environ["DIRECT_DATABASE_URL"] = ""
 
 from app.config import Settings  # noqa: E402
-from app.db import migration_database_url, normalize_database_url  # noqa: E402
 
 
 def test_neon_pooler_url_uses_psycopg_and_preserves_ssl() -> None:
+    from app.db import normalize_database_url
+
     url = normalize_database_url(
         "postgresql://user:password@ep-example-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require&pgbouncer=true&connection_limit=1"
     )
@@ -19,6 +22,8 @@ def test_neon_pooler_url_uses_psycopg_and_preserves_ssl() -> None:
 
 
 def test_direct_database_url_is_selected_for_migrations() -> None:
+    from app.db import migration_database_url
+
     settings = Settings(
         database_url="postgresql+psycopg://pooler/neondb?sslmode=require",
         direct_database_url="postgresql://direct/neondb?sslmode=require",

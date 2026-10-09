@@ -66,3 +66,10 @@ Status: NOT READY
 
 Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay test credentials; GCP project and IAM; domain/DNS; sanitized database backup; commercial and tax decisions. OpenRouter is optional and is not a release prerequisite.
 
+## Neon staging database update - 2026-10-09
+
+- Root `.env` contains owner-supplied Neon staging values and remains ignored/untracked; credentials were not exposed.
+- `python infra/verify_neon_staging.py`: PASS for pooled/direct connectivity, TLS, Alembic state, and empty protected customer/financial tables.
+- `python -m alembic upgrade head` from `apps/api`: PASS through `a1b2c3d4e5f6`.
+- The schema-repair migration moved only the known 44 Compass application tables from `public` to `compass`; no extra public tables were present.
+- Database readiness is now READY for isolated staging database checks. This does not authorize Cloud Run deployment or change the overall release status.
