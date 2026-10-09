@@ -294,3 +294,11 @@ No Clerk secret values were printed or committed.
 | Frontend lint/typecheck | PASS |
 | Frontend production build | PASS |
 | Interactive Clerk authentication | NOT RUN; requires manual browser sign-in and verification |
+
+## Protected dashboard recovery - 2026-10-10
+
+| Check | Result |
+|---|---|
+| Unauthenticated dashboard HTML | PASS; HTTP 200 response generated |
+| Invalid protected-route session handling | PASS; middleware recovery redirects toward login instead of surfacing an unhandled error |
+| Frontend build after recovery change | PASS |

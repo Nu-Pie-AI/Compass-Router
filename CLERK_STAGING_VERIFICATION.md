@@ -66,3 +66,4 @@ The API loads secret values server-side only. The web bundle may contain only th
 - The login, signup, and admin-login server routes now choose Clerk by default. The legacy forms are retained only behind an explicit `LEGACY_AUTH_MODE=true` setting.
 - After a clean restart, `/login`, `/signup`, and `/admin-login` returned HTTP 200 and did not render the legacy forms. The FastAPI health endpoint returned HTTP 200.
 - Interactive Clerk sign-in, MFA, logout, and dashboard session verification still require manual completion in the browser.
+- Protected-route middleware now fails closed to `/login` with a callback URL when Clerk rejects a stale or invalid browser session, instead of exposing a generic internal-server-error page.

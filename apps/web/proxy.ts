@@ -11,14 +11,20 @@ const clerkHandler = clerkMiddleware(async (auth, request) => {
   if (isProtectedRoute(request)) await auth.protect();
 });
 
-export default function proxy(request: NextRequest, event: NextFetchEvent) {
+export default async function proxy(request: NextRequest, event: NextFetchEvent) {
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
     return NextResponse.next();
   }
   if (!isProtectedRoute(request)) {
     return NextResponse.next();
   }
-  return clerkHandler(request, event);
+  try {
+    return await clerkHandler(request, event);
+  } catch {
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("callbackUrl", `${request.nextUrl.pathname}${request.nextUrl.search}`);
+    return NextResponse.redirect(loginUrl);
+  }
 }
 
 export const config = {

@@ -118,3 +118,4 @@ M4 implementation blockers:
 - The local Next process required an ignored `apps/web/.env.local` because Clerk edge middleware did not receive the parent-directory root `.env` through Next config injection.
 - The local file was populated from the existing root values without printing them. It must never be committed or copied into a client bundle beyond the intended public publishable key.
 - The browser must still complete a real Clerk development-instance sign-in to verify session bootstrap, dashboard access, logout, and FastAPI token validation.
+- A browser with a stale Clerk cookie should be redirected to `/login?callbackUrl=/dashboard`; complete a fresh sign-in there before retrying the dashboard.
