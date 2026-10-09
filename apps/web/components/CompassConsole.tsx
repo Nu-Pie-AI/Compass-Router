@@ -3,20 +3,22 @@
 import { Activity, BarChart3, BadgeIndianRupee, Building2, CheckCircle2, CircleAlert, Clock3, CreditCard, KeyRound, MessageSquare, Play, Route, Send, ShieldCheck, Trash2, TrendingUp, UsersRound, Wallet, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
-import { apiFetch, formatPaise } from "../lib/api";
+import { apiFetch, formatPaise, signOutClerkSession } from "../lib/api";
 import { ConsoleShell } from "./ConsoleShell";
 import { ApiKeyManager } from "./ApiKeyManager";
 import { TeamsManager } from "./TeamsManager";
 import { ModelDirectory } from "./ModelDirectory";
 import { ByokManager } from "./ByokManager";
 import { ActivityPage } from "./ActivityPage";
+import { OrganizationAccessManager } from "./OrganizationAccessManager";
 
 type Session = { token: string; user_id: string; email: string; organization_id?: string | null; role: string };
 type ApiKey = { id: string; name: string; key: string; status: string; team_id?: string | null; allowed_models?: string[]; models_restricted?: boolean; last_used_at?: string | null; expires_at?: string | null };
 type Model = { id: string; display_name: string; provider: string; provider_model_id?: string; capabilities?: string[]; context_window?: number; input_price_paise_per_1k: number; output_price_paise_per_1k: number; status: string };
 type RouterModel = Model & { enabled: boolean; published: boolean; fallback_model_id?: string | null; provider_status: string; provider_enabled: boolean };
-type RouterProvider = { name: string; enabled: boolean; status: string; last_health?: { status: string; latency_ms: number; error_rate: number; checked_at: string } | null };
+type RouterProvider = { name: string; enabled: boolean; status: string; commercial_status: "unreviewed" | "approved" | "rejected"; last_health?: { status: string; latency_ms: number; error_rate: number; checked_at: string } | null };
 type RequestRow = { id: string; status: string; error_code?: string | null; model: string; provider: string; tokens: number; input_tokens?: number; output_tokens?: number; cost_paise: number; latency_ms: number; created_at: string };
 type LedgerRow = { id: string; type: string; amount_paise: number; balance_before: number; balance_after: number; reference_id: string; reference_type?: string; created_at?: string };
 type BillingOrder = { id: string; team_id: string; provider: string; provider_order_id: string; payment_id?: string | null; amount_paise: number; refunded_paise: number; currency: string; status: string; failure_code?: string | null; failure_description?: string | null; created_at: string; completed_at?: string | null; can_complete: boolean; can_refund: boolean; checkout_key_id?: string | null };
@@ -66,11 +68,12 @@ const viewTitles: Record<string, [string, string]> = {
 
 const savedCompassKeyStorageKey = "compass.local.savedApiKey";
 const sessionStorageKey = "compass.local.session";
-const marketplaceUrl = process.env.NEXT_PUBLIC_MARKETPLACE_URL ?? "http://localhost:3100";
-
+const clerkEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 export function CompassConsole({ view }: { view: string }) {
+  const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [clerkReady, setClerkReady] = useState(!clerkEnabled);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [admin, setAdmin] = useState<AdminLocal | null>(null);
@@ -109,6 +112,27 @@ export function CompassConsole({ view }: { view: string }) {
       }
       setHydrated(true);
     });
+  }, []);
+
+  useEffect(() => {
+    if (!clerkEnabled) return;
+    const syncClerkSession = () => {
+      const saved = window.localStorage.getItem(sessionStorageKey);
+      if (!saved) {
+        setSession(null);
+        setClerkReady(true);
+        return;
+      }
+      try { setSession(JSON.parse(saved) as Session); }
+      catch { window.localStorage.removeItem(sessionStorageKey); setSession(null); }
+      setClerkReady(true);
+    };
+    window.addEventListener("compass-clerk-session", syncClerkSession);
+    const timeout = window.setTimeout(syncClerkSession, 1500);
+    return () => {
+      window.removeEventListener("compass-clerk-session", syncClerkSession);
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   const loadData = useCallback(async (activeSession: Session) => {
@@ -171,15 +195,13 @@ export function CompassConsole({ view }: { view: string }) {
   }, [loadData, session]);
 
   useEffect(() => {
-    if (!hydrated || session) return;
+    if (!hydrated || !clerkReady || session) return;
     if (view === "admin") {
       window.location.replace("/admin-login");
       return;
     }
-    const loginUrl = new URL("/login", marketplaceUrl);
-    loginUrl.searchParams.set("callbackUrl", "/compass");
-    window.location.replace(loginUrl.toString());
-  }, [hydrated, session, view]);
+    window.location.replace(`/login?callbackUrl=${encodeURIComponent(`/${view}`)}`);
+  }, [clerkReady, hydrated, session, view]);
 
   function saveCompassKey() {
     const key = activeKey.trim();
@@ -388,15 +410,16 @@ export function CompassConsole({ view }: { view: string }) {
     if (session) {
       try { await apiFetch("/auth/logout", { method: "POST" }, session.token); } catch { /* local cleanup still signs the browser out */ }
     }
+    try { await signOutClerkSession(); } catch { /* local cleanup still signs the browser out */ }
     window.localStorage.removeItem(sessionStorageKey);
     setSession(null);
     setDashboard(null);
     setAdmin(null);
     setLedger([]);
-    window.location.assign(new URL("/compass/logout", marketplaceUrl).toString());
+    router.push("/");
   }
 
-  if (!hydrated) return <div className="console-auth-loading">Loading Compass...</div>;
+  if (!hydrated || !clerkReady) return <div className="console-auth-loading">Loading Compass...</div>;
   if (!session) return <div className="console-auth-loading">Continuing with Compass sign-in...</div>;
 
   const canManage = session.role === "admin" || session.role === "super_admin";
@@ -424,7 +447,7 @@ export function CompassConsole({ view }: { view: string }) {
         {view === "admin" ? canManage ? <AdminPage admin={admin} dashboard={dashboard} openWorkspaceDialog={openWorkspaceDialog} busy={busy} providerName={providerName} setProviderName={setProviderName} providerApiKey={providerApiKey} setProviderApiKey={setProviderApiKey} saveProviderCredential={saveProviderCredential} token={session.token} refresh={refresh} /> : <Status>Provider settings are available only to Compass administrators.</Status> : null}
         {view === "dashboard" ? <DashboardPage dashboard={dashboard} openWorkspaceDialog={openWorkspaceDialog} selectedTeamId={selectedTeamId} addCredits={addCredits} busy={busy} canCreate={canCreateWorkspace} canManage={canManage} /> : null}
         {view === "profile" ? <ProfilePage session={session} dashboard={dashboard} /> : null}
-        {view === "workspaces" ? <WorkspaceDirectory dashboard={dashboard} selectedWorkspaceId={activeWorkspaceId} selectWorkspace={changeWorkspace} openWorkspaceDialog={openWorkspaceDialog} canCreate={canCreateWorkspace} /> : null}
+        {view === "workspaces" ? <><WorkspaceDirectory dashboard={dashboard} selectedWorkspaceId={activeWorkspaceId} selectWorkspace={changeWorkspace} openWorkspaceDialog={openWorkspaceDialog} canCreate={canCreateWorkspace} /><OrganizationAccessManager token={session.token} /></> : null}
       </div>
     </ConsoleShell>
     {canCreateWorkspace ? <WorkspaceDialog open={workspaceDialogOpen} name={workspaceName} notes={workspaceNotes} busy={busy} setOpen={setWorkspaceDialogOpen} setName={setWorkspaceName} setNotes={setWorkspaceNotes} onSubmit={createWorkspace} /> : null}
@@ -787,7 +810,7 @@ function AdminPage(props: { admin: AdminLocal | null; dashboard: Dashboard | nul
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Platform and security</h2><p className="mt-2 text-sm text-slate-400">Read-only runtime posture. Change deployment secrets and execution mode through the deployment environment.</p></div><ShieldCheck size={20} /></div><div className="mt-4 grid gap-3 text-sm">{[["Execution", platform?.execution_mode], ["Environment", platform?.environment], ["Database", platform?.database_dialect], ["Secret Manager", platform?.secret_manager_enabled ? "enabled" : "disabled"], ["Provider credentials", String(platform?.configured_provider_credentials ?? 0)], ["Marketplace SSO", platform?.sso_configured ? "configured" : "not configured"], ["Razorpay", platform?.razorpay_configured ? "configured" : "not configured"], ["Signups", platform?.public_signup_enabled ? "enabled" : "disabled"]].map(([label, value]) => <div className="flex items-center justify-between gap-4 border-b border-compass-line pb-2" key={String(label)}><span className="text-slate-400">{label}</span><strong>{String(value ?? "unknown")}</strong></div>)}</div></section>
 
-    <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Provider controls</h2><p className="mt-2 text-sm text-slate-400">Pause a provider without deleting credentials or models.</p><div className="mt-4 grid gap-3">{(props.admin?.routerProviders ?? []).map((provider) => <div className="flex flex-wrap items-center justify-between gap-3 border-b border-compass-line pb-3" key={provider.name}><div><strong>{provider.name}</strong><span className="mt-1 block text-xs text-slate-500">{provider.last_health ? `${provider.last_health.latency_ms} ms · ${provider.last_health.error_rate}% errors` : "No health check recorded"}</span></div><div className="flex items-center gap-2"><select className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={provider.status} onChange={(event) => void updateProvider(provider.name, { status: event.target.value, enabled: provider.enabled })}><option value="healthy">healthy</option><option value="degraded">degraded</option><option value="unavailable">unavailable</option><option value="disabled">disabled</option></select><button className="console-secondary" onClick={() => void updateProvider(provider.name, { status: provider.enabled ? "disabled" : "healthy", enabled: !provider.enabled })}>{provider.enabled ? "Disable" : "Enable"}</button></div></div>)}</div></section>
+    <section className="rounded-card border border-compass-line bg-compass-panel p-5"><h2 className="text-base font-semibold">Provider controls</h2><p className="mt-2 text-sm text-slate-400">Technical health and commercial approval are separate gates for customer traffic.</p><div className="mt-4 grid gap-3">{(props.admin?.routerProviders ?? []).map((provider) => <div className="flex flex-wrap items-center justify-between gap-3 border-b border-compass-line pb-3" key={provider.name}><div><strong>{provider.name}</strong><span className="mt-1 block text-xs text-slate-500">{provider.last_health ? `${provider.last_health.latency_ms} ms · ${provider.last_health.error_rate}% errors` : "No health check recorded"}</span></div><div className="flex flex-wrap items-center gap-2"><select aria-label={`${provider.name} technical status`} className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={provider.status} onChange={(event) => void updateProvider(provider.name, { status: event.target.value, enabled: provider.enabled, commercial_status: provider.commercial_status })}><option value="healthy">healthy</option><option value="degraded">degraded</option><option value="unavailable">unavailable</option><option value="disabled">disabled</option></select><select aria-label={`${provider.name} commercial status`} className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={provider.commercial_status} onChange={(event) => void updateProvider(provider.name, { status: provider.status, enabled: provider.enabled, commercial_status: event.target.value })}><option value="unreviewed">commercial review pending</option><option value="approved">commercially approved</option><option value="rejected">commercially rejected</option></select><button className="console-secondary" onClick={() => void updateProvider(provider.name, { status: provider.enabled ? "disabled" : "healthy", enabled: !provider.enabled, commercial_status: provider.commercial_status })}>{provider.enabled ? "Disable" : "Enable"}</button></div></div>)}</div></section>
 
     <section className="rounded-card border border-compass-line bg-compass-panel p-5 xl:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">Model governance</h2><p className="mt-1 text-sm text-slate-400">Enable, publish, deprecate, and configure fallback routes for every catalog model.</p></div><span className="text-sm text-slate-400">{props.admin?.routerModels?.length ?? 0} models</span></div><div className="mt-4 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="border-b border-compass-line px-3 py-2">Model</th><th className="border-b border-compass-line px-3 py-2">Provider</th><th className="border-b border-compass-line px-3 py-2">Lifecycle</th><th className="border-b border-compass-line px-3 py-2">Controls</th><th className="border-b border-compass-line px-3 py-2">Fallback</th><th className="border-b border-compass-line px-3 py-2">Health</th></tr></thead><tbody>{(props.admin?.routerModels ?? []).map((model) => <tr key={model.id} className="border-b border-compass-line/70"><td className="px-3 py-3"><strong>{model.display_name}</strong><code className="mt-1 block text-xs text-slate-500">{model.id}</code></td><td className="px-3 py-3">{model.provider}</td><td className="px-3 py-3"><select className="rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={model.status} onChange={(event) => void updateModel(model.id, { status: event.target.value })}><option value="available">available</option><option value="unavailable">unavailable</option><option value="deprecated">deprecated</option><option value="expired">expired</option></select></td><td className="space-y-2 px-3 py-3 text-xs"><label className="flex items-center gap-2"><input type="checkbox" checked={model.enabled} onChange={(event) => void updateModel(model.id, { status: model.status, enabled: event.target.checked })} />Enabled</label><label className="flex items-center gap-2"><input type="checkbox" checked={model.published} onChange={(event) => void updateModel(model.id, { status: model.status, published: event.target.checked })} />Published</label></td><td className="px-3 py-3"><select className="max-w-48 rounded-card border border-compass-line bg-compass-bg px-2 py-1 text-xs" value={model.fallback_model_id ?? ""} onChange={(event) => void updateModel(model.id, { status: model.status, fallback_model_id: event.target.value || null })}><option value="">No fallback</option>{modelIds.filter((id) => id !== model.id).map((id) => <option key={id} value={id}>{id}</option>)}</select></td><td className="px-3 py-3"><span className={`key-status ${model.provider_enabled && model.provider_status === "healthy" ? "active" : "revoked"}`}>{model.provider_enabled ? model.provider_status : "disabled"}</span></td></tr>)}</tbody></table></div></section>
 

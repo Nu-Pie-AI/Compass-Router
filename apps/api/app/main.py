@@ -2,8 +2,9 @@ import hashlib
 import hmac
 import json
 import re
+import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -11,16 +12,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import httpx
 from jose import JWTError
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .admin_authorization import clerk_mfa_verified, has_platform_permission, platform_permissions, platform_roles, require_platform_permission, require_super_admin
+from .admin_services import adjust_wallet, bootstrap_platform_owner, grant_platform_role, platform_settings_rows, revoke_platform_role, update_platform_settings
+from .authorization import is_admin, require_project_access, require_team_access, require_team_owner, require_workspace_access, team_ids_for_user, team_owner_ids_for_user, workspace_ids_for_user
+from .catalog import capability_matches, provider_protocol
 from .config import get_settings, validate_runtime_config
 from .db import get_db, init_db
 from .errors import compass_error
-from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
-from .schemas import ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
-from .security import create_session_token, decode_marketplace_sso_token, decode_session_claims, verify_password
+from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, CatalogSyncRun, ClerkWebhookEvent, EmailOtpChallenge, ExtensionDeviceAuthorization, Invitation, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PricingPolicy, PricingRevision, Project, ProjectMember, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, RoutingPolicyRevision, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
+from .observability import configure_logging, log_request
+from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
+from .security import authenticate_clerk_request, clerk_user_email, create_session_token, decode_marketplace_sso_token, decode_session_claims, hash_password, verify_password
 from .services import (
     LiteLLMClient,
     allowed_model_ids,
@@ -34,29 +40,52 @@ from .services import (
     complete_json_api,
     complete_multipart_api,
     create_api_key,
+    create_invitation,
+    create_otp_challenge,
+    create_project,
     create_team,
     create_team_member,
     credit_wallet,
     dashboard_summary,
     credential_provider_names,
+    catalog_sync_status,
     litellm_model_catalog,
+    provider_catalog_response,
+    sync_litellm_catalog,
     list_api_keys,
     model_catalog_rows,
     model_policy_rows,
     organization_id_for_user,
+    project_ids_for_user,
+    project_rows,
     provider_credentials_summary,
     record_audit_log,
     request_id_context,
     request_rows,
     revoke_byok_api_key,
     revoke_api_key,
+    rotate_api_key,
     test_platform_credential,
     update_api_key_models,
+    openrouter_catalog_response,
+    pricing_policy_row,
+    sync_openrouter_catalog,
+    ensure_default_pricing_policy,
     register_customer,
+    provision_clerk_customer,
     seed_defaults,
     select_user_by_email,
     stream_openai_chunks,
+    stream_chat,
+    stream_json_api,
+    verify_otp_challenge,
     _set_local_provider_route,
+    api_project_context,
+    device_session_context,
+    approve_extension_device as approve_extension_device_service,
+    poll_extension_device_authorization,
+    revoke_extension_sessions_for_user,
+    start_extension_device_authorization,
     upsert_marketplace_user,
     upsert_byok_api_key,
     upsert_provider_api_key,
@@ -92,6 +121,7 @@ PROVIDER_CATALOG = [
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_logging(settings.observability_log_level)
     validate_runtime_config(settings)
     init_db()
     db = next(get_db())
@@ -120,8 +150,14 @@ async def request_context_and_security_headers(request: Request, call_next):
     request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", supplied) else new_id()
     request.state.request_id = request_id
     token = request_id_context.set(request_id)
+    project_token = api_project_context.set(request.headers.get("X-Compass-Project-Id"))
+    device_token = device_session_context.set(None)
+    started_at = time.perf_counter()
+    status_code = 500
+    error_type = None
     try:
         response = await call_next(request)
+        status_code = response.status_code
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -130,8 +166,21 @@ async def request_context_and_security_headers(request: Request, call_next):
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
+    except Exception as exc:
+        error_type = type(exc).__name__
+        raise
     finally:
+        log_request(
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=status_code,
+            latency_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+            error_type=error_type,
+        )
         request_id_context.reset(token)
+        api_project_context.reset(project_token)
+        device_session_context.reset(device_token)
 
 
 @app.exception_handler(RequestValidationError)
@@ -149,31 +198,68 @@ async def enforce_body_limit(request: Request) -> None:
         raise compass_error(413, "request_too_large", "Request body is too large.")
 
 
-def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> User:
+def current_clerk_identity(request: Request) -> dict:
+    authorization = request.headers.get("authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise compass_error(401, "unauthorized", "Missing Clerk session token.")
+    try:
+        return authenticate_clerk_request(request)
+    except Exception:
+        raise compass_error(401, "unauthorized", "Invalid Clerk session token.") from None
+
+
+def current_user(request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise compass_error(401, "unauthorized", "Missing session token.")
+    token = authorization.removeprefix("Bearer ").strip()
+    user = None
     try:
-        claims = decode_session_claims(authorization.removeprefix("Bearer ").strip())
-        user_id = str(claims["sub"])
+        claims = decode_session_claims(token)
+        candidate = db.get(User, str(claims["sub"]))
+        if candidate is not None and int(claims.get("sv", 0)) == candidate.session_version:
+            user = candidate
+            request.state.auth_source = "session"
     except (JWTError, ValueError, KeyError):
-        raise compass_error(401, "unauthorized", "Invalid session token.") from None
-    user = db.get(User, user_id)
-    if user is None or int(claims.get("sv", 0)) != user.session_version:
-        raise compass_error(401, "unauthorized", "Invalid session token.")
+        pass
+    if user is None:
+        try:
+            clerk_claims = authenticate_clerk_request(request)
+            user = db.scalar(select(User).where(User.clerk_user_id == str(clerk_claims["sub"])))
+            request.state.auth_source = "clerk"
+            request.state.clerk_claims = clerk_claims
+        except Exception:
+            raise compass_error(401, "unauthorized", "Invalid session token.") from None
+        if user is None:
+            raise compass_error(401, "identity_not_provisioned", "Your Clerk account is not provisioned in Compass yet.")
     access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
     if access is not None and access.status != "active":
         raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
     return user
 
 
-def admin_user(user: User = Depends(current_user)) -> User:
-    if user.role not in {"admin", "super_admin"}:
+def admin_user(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
+    if not has_platform_permission(db, user, "admin.view"):
         raise compass_error(403, "admin_required", "Admin authorization is required.")
+    if settings.environment.strip().lower() in {"production", "prod"}:
+        if getattr(request.state, "auth_source", "") != "clerk":
+            raise compass_error(401, "clerk_admin_auth_required", "Platform administration requires a Clerk-authenticated session.")
+        if "PLATFORM_SUPER_ADMIN" in platform_roles(db, user) and settings.platform_super_admin_require_mfa and not clerk_mfa_verified(getattr(request.state, "clerk_claims", {})):
+            raise compass_error(403, "admin_mfa_required", "Verified MFA is required for Super Admin operations.")
     return user
 
 
-def is_admin(user: User) -> bool:
-    return user.role in {"admin", "super_admin"}
+def organization_admin(user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
+    if is_admin(user):
+        return user
+    organization_id = organization_id_for_user(db, user.id)
+    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]))) if organization_id else None
+    if membership is None:
+        raise compass_error(403, "organization_admin_required", "Organization owner or administrator access is required.")
+    return user
+
+
+def _session_response(db: Session, user: User) -> SessionResponse:
+    return SessionResponse(token=create_session_token(user.id, user.session_version), user_id=user.id, email=user.email, organization_id=organization_id_for_user(db, user.id), role=user.role)
 
 
 def _login_guard(db: Session, email: str) -> LoginAttempt:
@@ -200,55 +286,11 @@ def _record_login_failure(db: Session, attempt: LoginAttempt) -> None:
     db.commit()
 
 
-def team_ids_for_user(db: Session, user: User) -> list[str]:
-    if is_admin(user):
-        return list(db.scalars(select(Team.id)).all())
-    return list(
-        db.scalars(
-            select(TeamMember.team_id).where(
-                func.lower(TeamMember.email) == user.email.lower(),
-                TeamMember.is_active.is_(True),
-            )
-        ).all()
-    )
-
-
-def workspace_ids_for_user(db: Session, user: User) -> list[str]:
-    if is_admin(user):
-        return list(db.scalars(select(Organization.id)).all())
-    return list(db.scalars(select(OrganizationMember.organization_id).where(OrganizationMember.user_id == user.id)).all())
-
-
-def require_workspace_access(db: Session, user: User, workspace_id: str) -> None:
-    if workspace_id not in workspace_ids_for_user(db, user):
-        raise compass_error(403, "workspace_access_denied", "You do not have access to this workspace.")
-
-
-def require_team_access(db: Session, user: User, team_id: str) -> None:
-    if team_id not in team_ids_for_user(db, user):
-        raise compass_error(403, "team_access_denied", "You do not have access to this team.")
-
-
-def require_team_owner(db: Session, user: User, team_id: str) -> None:
-    if is_admin(user):
-        return
-    membership = db.scalar(
-        select(TeamMember).where(
-            TeamMember.team_id == team_id,
-            func.lower(TeamMember.email) == user.email.lower(),
-            TeamMember.is_active.is_(True),
-            TeamMember.role.in_(["owner", "admin"]),
-        )
-    )
-    if membership is None:
-        raise compass_error(403, "team_owner_required", "A team owner or administrator is required.")
-
-
 def team_rows(db: Session, team_ids: list[str]) -> list[dict]:
     if not team_ids:
         return []
     teams = db.scalars(select(Team).where(Team.id.in_(team_ids)).order_by(Team.created_at.desc())).all()
-    return [{"id": team.id, "workspace_id": team.organization_id, "name": team.name, "slug": team.slug, "notes": team.notes, "is_active": team.is_active, "created_at": team.created_at.isoformat()} for team in teams]
+    return [{"id": team.id, "workspace_id": team.organization_id, "project_id": team.project_id, "name": team.name, "slug": team.slug, "notes": team.notes, "is_active": team.is_active, "created_at": team.created_at.isoformat()} for team in teams]
 
 
 def workspace_rows(db: Session, workspace_ids: list[str]) -> list[dict]:
@@ -300,6 +342,32 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> SessionRespons
     )
 
 
+@app.post("/auth/signup/request-otp")
+def request_signup_otp(body: OtpRequest, db: Session = Depends(get_db)) -> dict:
+    if not settings.public_signup_enabled:
+        raise compass_error(403, "signup_disabled", "Account signup is disabled for this Compass environment.")
+    if db.scalar(select_user_by_email(body.email.lower())) is not None:
+        raise compass_error(409, "account_exists", "An account already exists for this email.")
+    challenge, code = create_otp_challenge(db, body.email, "signup")
+    response = {"challenge_id": challenge.id, "email": challenge.email, "expires_at": challenge.expires_at.isoformat(), "delivery": settings.email_delivery_mode}
+    if settings.local_test_mode:
+        response["debug_otp"] = code
+    return response
+
+
+@app.post("/auth/signup/verify-otp", response_model=SessionResponse)
+def verify_signup_otp(body: SignupOtpVerify, db: Session = Depends(get_db)) -> SessionResponse:
+    if not settings.public_signup_enabled:
+        raise compass_error(403, "signup_disabled", "Account signup is disabled for this Compass environment.")
+    verify_otp_challenge(db, body.challenge_id, body.email, body.code, "signup")
+    if db.scalar(select_user_by_email(body.email.lower())) is not None:
+        raise compass_error(409, "account_exists", "An account already exists for this email.")
+    user, organization, _ = register_customer(db, body.email, f"otp-only:{new_id()}", body.organization_name)
+    user.email_verified_at = now()
+    db.commit()
+    return _session_response(db, user)
+
+
 @app.post("/auth/login", response_model=SessionResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> SessionResponse:
     attempt = _login_guard(db, body.email)
@@ -322,11 +390,129 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> SessionResponse:
     )
 
 
+@app.post("/auth/login/request-otp")
+def request_login_otp(body: OtpRequest, db: Session = Depends(get_db)) -> dict:
+    user = db.scalar(select_user_by_email(body.email.lower()))
+    if user is None:
+        raise compass_error(404, "account_not_found", "No Compass account exists for this email.")
+    challenge, code = create_otp_challenge(db, body.email, "login")
+    response = {"challenge_id": challenge.id, "email": challenge.email, "expires_at": challenge.expires_at.isoformat(), "delivery": settings.email_delivery_mode}
+    if settings.local_test_mode:
+        response["debug_otp"] = code
+    return response
+
+
+@app.post("/auth/login/verify-otp", response_model=SessionResponse)
+def verify_login_otp(body: LoginOtpVerify, db: Session = Depends(get_db)) -> SessionResponse:
+    verify_otp_challenge(db, body.challenge_id, body.email, body.code, "login")
+    user = db.scalar(select_user_by_email(body.email.lower()))
+    if user is None:
+        raise compass_error(404, "account_not_found", "No Compass account exists for this email.")
+    access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
+    if access is not None and access.status != "active":
+        raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
+    user.email_verified_at = user.email_verified_at or now()
+    db.commit()
+    return _session_response(db, user)
+
+
 @app.post("/auth/logout")
 def logout(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     user.session_version += 1
     db.commit()
     return {"signed_out": True}
+
+
+@app.post("/auth/clerk/bootstrap", response_model=SessionResponse)
+def clerk_bootstrap(identity: dict = Depends(current_clerk_identity), db: Session = Depends(get_db)) -> SessionResponse:
+    clerk_id = str(identity["sub"])
+    email = identity.get("email") if isinstance(identity.get("email"), str) else None
+    if not email:
+        try:
+            email = clerk_user_email(clerk_id)
+        except Exception:
+            raise compass_error(503, "clerk_email_unavailable", "Clerk identity is valid but its verified email is not available yet.") from None
+    user, _, _ = provision_clerk_customer(db, clerk_id, email)
+    return _session_response(db, user)
+
+
+@app.post("/webhooks/clerk")
+async def clerk_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+    if not settings.clerk_webhook_signing_secret:
+        raise compass_error(503, "clerk_webhook_not_configured", "Clerk webhook verification is not configured.")
+    from svix.webhooks import Webhook, WebhookVerificationError
+
+    payload_bytes = await request.body()
+    try:
+        payload = Webhook(settings.clerk_webhook_signing_secret).verify(payload_bytes, dict(request.headers))
+    except WebhookVerificationError:
+        raise compass_error(401, "invalid_webhook_signature", "The Clerk webhook signature is invalid.") from None
+    if not isinstance(payload, dict):
+        raise compass_error(400, "invalid_webhook_payload", "The Clerk webhook payload is invalid.")
+    event_id = request.headers.get("svix-id")
+    event_type = str(payload.get("type") or "")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if not event_id or not event_type:
+        raise compass_error(400, "invalid_webhook_payload", "The Clerk webhook event is missing its type or id.")
+    duplicate = db.scalar(select(ClerkWebhookEvent).where(ClerkWebhookEvent.event_id == event_id))
+    if duplicate is not None:
+        if duplicate.status != "failed":
+            return {"accepted": True, "duplicate": True, "event_id": event_id, "status": duplicate.status}
+        db.delete(duplicate)
+        db.commit()
+    event = ClerkWebhookEvent(event_id=event_id, event_type=event_type, payload_hash=hashlib.sha256(payload_bytes).hexdigest(), status="received")
+    db.add(event)
+    db.flush()
+    try:
+        if event_type in {"user.created", "user.updated"}:
+            clerk_id = str(data.get("id") or "")
+            email_addresses = data.get("email_addresses") if isinstance(data.get("email_addresses"), list) else []
+            primary_id = data.get("primary_email_address_id")
+            email_row = next((row for row in email_addresses if isinstance(row, dict) and row.get("id") == primary_id), None)
+            email_row = email_row or next((row for row in email_addresses if isinstance(row, dict)), None)
+            email = email_row.get("email_address") if isinstance(email_row, dict) else None
+            if clerk_id and isinstance(email, str) and "@" in email:
+                provision_clerk_customer(db, clerk_id, email)
+                event.status = "processed"
+            else:
+                event.status = "deferred"
+        elif event_type == "user.deleted":
+            clerk_id = str(data.get("id") or "")
+            user = db.scalar(select(User).where(User.clerk_user_id == clerk_id)) if clerk_id else None
+            if user is not None:
+                access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
+                if access is None:
+                    access = UserAccess(user_id=user.id)
+                    db.add(access)
+                access.status = "suspended"
+                access.reason = "Clerk identity deleted"
+                user.session_version += 1
+            event.status = "processed"
+        else:
+            event.status = "ignored"
+        event.processed_at = now()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        db.add(ClerkWebhookEvent(event_id=event_id, event_type=event_type, payload_hash=hashlib.sha256(payload_bytes).hexdigest(), status="failed", error_message=str(exc)[:500]))
+        db.commit()
+        raise compass_error(409, "clerk_webhook_processing_failed", "The Clerk webhook could not be applied.") from None
+    return {"accepted": True, "duplicate": False, "event_id": event_id, "status": event.status}
+
+
+@app.post("/auth/extension/device/start")
+def start_extension_device(body: ExtensionDeviceStart, db: Session = Depends(get_db)) -> dict:
+    return start_extension_device_authorization(db, body.device_name)
+
+
+@app.post("/auth/extension/device/poll")
+def poll_extension_device(body: ExtensionDevicePoll, db: Session = Depends(get_db)) -> dict:
+    return poll_extension_device_authorization(db, body.device_code)
+
+
+@app.post("/auth/extension/device/approve")
+def approve_extension_device(body: ExtensionDeviceApprove, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    return approve_extension_device_service(db, user, body.user_code, body.project_id, body.team_id)
 
 
 @app.post("/auth/marketplace", response_model=SessionResponse)
@@ -370,6 +556,141 @@ def workspaces(user: User = Depends(current_user), db: Session = Depends(get_db)
     return workspace_rows(db, workspace_ids_for_user(db, user))
 
 
+@app.get("/projects")
+def projects(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    return project_rows(db, project_ids_for_user(db, user))
+
+
+@app.post("/projects")
+def create_customer_project(body: ProjectCreate, user: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    organization_id = organization_id_for_user(db, user.id)
+    if organization_id is None:
+        raise compass_error(400, "workspace_required", "Create or select a workspace before creating a project.")
+    project = create_project(db, organization_id, body.name, body.slug, body.description, user.id)
+    return {"id": project.id, "organization_id": project.organization_id, "name": project.name, "slug": project.slug, "description": project.description, "is_default": project.is_default, "is_active": project.is_active}
+
+
+@app.patch("/projects/{project_id}")
+def update_customer_project(project_id: str, body: ProjectUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    project = require_project_access(db, user, project_id, write=True)
+    project.name = body.name.strip()
+    project.description = body.description.strip()
+    project.updated_at = now()
+    db.commit()
+    return {"id": project.id, "organization_id": project.organization_id, "name": project.name, "slug": project.slug, "description": project.description, "is_default": project.is_default, "is_active": project.is_active}
+
+
+@app.get("/organization/members")
+def organization_members(user: User = Depends(organization_admin), db: Session = Depends(get_db)) -> list[dict]:
+    organization_id = organization_id_for_user(db, user.id)
+    rows = db.execute(select(User, OrganizationMember).join(OrganizationMember, OrganizationMember.user_id == User.id).where(OrganizationMember.organization_id == organization_id).order_by(User.email)).all()
+    return [{"user_id": member_user.id, "email": member_user.email, "role": membership.role, "status": (db.scalar(select(UserAccess.status).where(UserAccess.user_id == member_user.id)) or "active"), "email_verified": member_user.email_verified_at is not None} for member_user, membership in rows]
+
+
+@app.delete("/organization/members/{user_id}")
+def remove_organization_member(user_id: str, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    organization_id = organization_id_for_user(db, actor.id)
+    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user_id))
+    if membership is None:
+        raise compass_error(404, "member_not_found", "Organization member not found.")
+    if membership.role == "owner":
+        raise compass_error(400, "owner_required", "Transfer ownership before removing the organization owner.")
+    member_user = db.get(User, user_id)
+    if member_user is None:
+        raise compass_error(404, "member_not_found", "Organization member not found.")
+    membership.role = "removed"
+    remaining_membership = db.scalar(
+        select(OrganizationMember.id).where(
+            OrganizationMember.user_id == user_id,
+            OrganizationMember.organization_id != organization_id,
+            OrganizationMember.role != "removed",
+        )
+    )
+    if remaining_membership is None:
+        access = db.scalar(select(UserAccess).where(UserAccess.user_id == user_id))
+        if access is None:
+            access = UserAccess(user_id=user_id, status="suspended", reason="Removed from organization", updated_by=actor.id)
+            db.add(access)
+        else:
+            access.status = "suspended"
+            access.reason = "Removed from organization"
+            access.updated_by = actor.id
+        member_user.session_version += 1
+        revoke_extension_sessions_for_user(db, user_id)
+    else:
+        revoke_extension_sessions_for_user(db, user_id, organization_id=organization_id)
+    db.query(ProjectMember).filter(ProjectMember.user_id == user_id, ProjectMember.project_id.in_(select(Project.id).where(Project.organization_id == organization_id))).update({ProjectMember.status: "removed"}, synchronize_session=False)
+    team_ids = select(Team.id).where(Team.organization_id == organization_id)
+    db.query(TeamMember).filter(
+        TeamMember.team_id.in_(team_ids),
+        or_(TeamMember.user_id == user_id, and_(TeamMember.user_id.is_(None), func.lower(TeamMember.email) == member_user.email.lower())),
+    ).update({TeamMember.is_active: False}, synchronize_session=False)
+    db.commit()
+    return {"user_id": user_id, "status": "removed"}
+
+
+@app.post("/organization/invitations")
+def invite_organization_member(body: InvitationCreate, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    project = require_project_access(db, actor, body.project_id, write=True)
+    invitation, token = create_invitation(db, actor, project, body.email, body.role, body.team_id)
+    return {"id": invitation.id, "email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role, "status": invitation.status, "expires_at": invitation.expires_at.isoformat(), "accept_token": token}
+
+
+@app.get("/invitations/{token}")
+def invitation_details(token: str, db: Session = Depends(get_db)) -> dict:
+    invitation = db.scalar(select(Invitation).where(Invitation.token_hash == hashlib.sha256(token.encode("utf-8")).hexdigest()))
+    if invitation is None or invitation.status != "pending" or invitation.expires_at < now():
+        raise compass_error(404, "invitation_not_found", "This invitation is invalid or expired.")
+    project = db.get(Project, invitation.project_id)
+    organization = db.get(Organization, invitation.organization_id)
+    return {"id": invitation.id, "email": invitation.email, "organization": organization.name if organization else "", "project": project.name if project else "", "role": invitation.role, "expires_at": invitation.expires_at.isoformat()}
+
+
+@app.post("/auth/invitations/{token}/request-otp")
+def request_invitation_otp(token: str, db: Session = Depends(get_db)) -> dict:
+    invitation = db.scalar(select(Invitation).where(Invitation.token_hash == hashlib.sha256(token.encode("utf-8")).hexdigest()))
+    if invitation is None or invitation.status != "pending" or invitation.expires_at < now():
+        raise compass_error(404, "invitation_not_found", "This invitation is invalid or expired.")
+    challenge, code = create_otp_challenge(db, invitation.email, f"invitation:{invitation.id}")
+    response = {"challenge_id": challenge.id, "email": invitation.email, "expires_at": challenge.expires_at.isoformat(), "delivery": settings.email_delivery_mode}
+    if settings.local_test_mode:
+        response["debug_otp"] = code
+    return response
+
+
+@app.post("/auth/invitations/{token}/accept", response_model=SessionResponse)
+def accept_invitation(token: str, body: InvitationOtpVerify, db: Session = Depends(get_db)) -> SessionResponse:
+    invitation = db.scalar(select(Invitation).where(Invitation.token_hash == hashlib.sha256(token.encode("utf-8")).hexdigest()))
+    if invitation is None or invitation.status != "pending" or invitation.expires_at < now() or invitation.email != body.email.lower():
+        raise compass_error(404, "invitation_not_found", "This invitation is invalid or expired.")
+    verify_otp_challenge(db, body.challenge_id, body.email, body.code, f"invitation:{invitation.id}")
+    user = db.scalar(select_user_by_email(body.email.lower()))
+    if user is None:
+        user = User(email=body.email.lower(), password_hash=hash_password(f"otp-only:{new_id()}"), role="customer", email_verified_at=now())
+        db.add(user)
+        db.flush()
+    else:
+        user.email_verified_at = user.email_verified_at or now()
+    organization_membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == invitation.organization_id, OrganizationMember.user_id == user.id))
+    if organization_membership is None:
+        db.add(OrganizationMember(user_id=user.id, organization_id=invitation.organization_id, role="admin" if invitation.role == "admin" else "customer"))
+    project_membership = db.scalar(select(ProjectMember).where(ProjectMember.project_id == invitation.project_id, ProjectMember.user_id == user.id))
+    if project_membership is None:
+        db.add(ProjectMember(project_id=invitation.project_id, user_id=user.id, role=invitation.role))
+    if invitation.team_id:
+        team_member = db.scalar(select(TeamMember).where(TeamMember.team_id == invitation.team_id, func.lower(TeamMember.email) == body.email.lower()))
+        if team_member is None:
+            db.add(TeamMember(team_id=invitation.team_id, user_id=user.id, name=body.name, email=body.email.lower(), role=invitation.role))
+        else:
+            team_member.user_id = user.id
+            team_member.name = body.name
+            team_member.is_active = True
+    invitation.status = "accepted"
+    invitation.accepted_at = now()
+    db.commit()
+    return _session_response(db, user)
+
+
 @app.post("/workspaces")
 def create_workspace(body: WorkspaceCreate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     workspace = Organization(name=body.name.strip())
@@ -408,6 +729,7 @@ def team_limits(team_id: str, user: User = Depends(current_user), db: Session = 
 
 @app.patch("/admin/teams/{team_id}/limits")
 def update_team_limits(team_id: str, body: TeamLimitsUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.manage")
     limits = db.scalar(select(TeamLimit).where(TeamLimit.team_id == team_id))
     if limits is None:
         raise compass_error(404, "team_limits_not_found", "Team limits were not configured.")
@@ -424,19 +746,26 @@ def create_customer_team(body: TeamCreate, user: User = Depends(current_user), d
     if workspace_id is None:
         raise compass_error(400, "workspace_required", "Create or select a workspace before creating a team.")
     require_workspace_access(db, user, workspace_id)
-    team = create_team(db, body.name, body.slug, body.notes, workspace_id)
-    create_team_member(db, team.id, user.email, user.email, "owner")
-    return {"id": team.id, "workspace_id": team.organization_id, "name": team.name, "slug": team.slug, "is_active": team.is_active}
+    project_id = body.project_id or db.scalar(select(Project.id).where(Project.organization_id == workspace_id, Project.is_default.is_(True)))
+    if project_id:
+        require_project_access(db, user, project_id, write=True)
+    team = create_team(db, body.name, body.slug, body.notes, workspace_id, project_id)
+    member = create_team_member(db, team.id, user.email, user.email, "owner")
+    member.user_id = user.id
+    db.commit()
+    return {"id": team.id, "workspace_id": team.organization_id, "project_id": team.project_id, "name": team.name, "slug": team.slug, "is_active": team.is_active}
 
 
 @app.get("/admin/teams")
-def admin_teams(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_teams(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "customers.view")
     teams = db.scalars(select(Team).order_by(Team.created_at.desc())).all()
     return [{"id": team.id, "name": team.name, "slug": team.slug, "notes": team.notes, "is_active": team.is_active, "created_at": team.created_at.isoformat()} for team in teams]
 
 
 @app.patch("/admin/teams/{team_id}/status")
 def admin_update_team_status(team_id: str, body: TeamStatusUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.manage")
     team = db.get(Team, team_id)
     if team is None:
         raise compass_error(404, "team_not_found", "Team not found.")
@@ -449,14 +778,16 @@ def admin_update_team_status(team_id: str, body: TeamStatusUpdate, actor: User =
 
 @app.post("/admin/teams")
 def admin_create_team(body: TeamCreate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
-    team = create_team(db, body.name, body.slug, body.notes, body.workspace_id)
+    require_platform_permission(db, actor, "customers.manage")
+    team = create_team(db, body.name, body.slug, body.notes, body.workspace_id, body.project_id)
     record_audit_log(db, actor, "team.created", f"team:{team.id}", {"name": team.name, "slug": team.slug, "workspace_id": team.organization_id})
     db.commit()
-    return {"id": team.id, "workspace_id": team.organization_id, "name": team.name, "slug": team.slug, "is_active": team.is_active}
+    return {"id": team.id, "workspace_id": team.organization_id, "project_id": team.project_id, "name": team.name, "slug": team.slug, "is_active": team.is_active}
 
 
 @app.post("/admin/teams/{team_id}/members")
 def admin_create_member(team_id: str, body: TeamMemberCreate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.manage")
     member = create_team_member(db, team_id, body.name, body.email.lower(), body.role)
     record_audit_log(db, actor, "team.member_added", f"team:{team_id}", {"member_id": member.id, "email": member.email, "role": member.role})
     db.commit()
@@ -464,14 +795,16 @@ def admin_create_member(team_id: str, body: TeamMemberCreate, actor: User = Depe
 
 
 @app.get("/admin/teams/{team_id}/members")
-def admin_members(team_id: str, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_members(team_id: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "customers.view")
     rows = db.scalars(select(TeamMember).where(TeamMember.team_id == team_id).order_by(TeamMember.created_at.desc())).all()
     return [{"id": row.id, "team_id": row.team_id, "name": row.name, "email": row.email, "role": row.role, "is_active": row.is_active} for row in rows]
 
 
 @app.post("/admin/api-keys")
 def admin_create_key(body: ApiKeyCreate, user: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
-    result = create_api_key(db, user.id, body.team_id, body.member_id, body.name, body.allowed_models, body.expires_at)
+    require_platform_permission(db, user, "customers.manage")
+    result = create_api_key(db, user.id, body.team_id, body.member_id, body.name, body.allowed_models, body.expires_at, body.project_id)
     record_audit_log(db, user, "api_key.created", f"team:{body.team_id}", {"name": body.name, "key_id": result.get("id")})
     db.commit()
     return result
@@ -479,27 +812,25 @@ def admin_create_key(body: ApiKeyCreate, user: User = Depends(admin_user), db: S
 
 @app.post("/api-keys")
 def create_key(body: ApiKeyCreate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
-    require_team_access(db, user, body.team_id)
+    require_team_owner(db, user, body.team_id)
     member_id = body.member_id
-    if not is_admin(user):
-        member = db.scalar(
-            select(TeamMember).where(
-                TeamMember.team_id == body.team_id,
-                func.lower(TeamMember.email) == user.email.lower(),
-                TeamMember.is_active.is_(True),
-            )
-        )
+    if member_id is None:
+        member = db.scalar(select(TeamMember).where(TeamMember.team_id == body.team_id, TeamMember.user_id == user.id, TeamMember.is_active.is_(True)))
+        if member is None:
+            member = db.scalar(select(TeamMember).where(TeamMember.team_id == body.team_id, func.lower(TeamMember.email) == user.email.lower(), TeamMember.is_active.is_(True)))
         if member is None:
             raise compass_error(403, "team_membership_required", "An active team membership is required.")
         member_id = member.id
-    return create_api_key(db, user.id, body.team_id, member_id, body.name, body.allowed_models, body.expires_at)
+    return create_api_key(db, user.id, body.team_id, member_id, body.name, body.allowed_models, body.expires_at, body.project_id)
 
 
 @app.get("/api-keys")
 def list_keys(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
     if is_admin(user):
         return list_api_keys(db)
-    return list_api_keys(db, team_ids=team_ids_for_user(db, user), user_id=user.id)
+    visible = list_api_keys(db, team_ids=team_ids_for_user(db, user), user_id=user.id)
+    owned = list_api_keys(db, team_ids=team_owner_ids_for_user(db, user))
+    return list({row["id"]: row for row in visible + owned}.values())
 
 
 @app.post("/api-keys/{api_key_id}/revoke")
@@ -508,14 +839,29 @@ def revoke_key(api_key_id: str, user: User = Depends(current_user), db: Session 
     if key_record is None:
         raise compass_error(404, "api_key_not_found", "API key not found.")
     if not is_admin(user):
-        if key_record.user_id != user.id or not key_record.team_id:
+        if not key_record.team_id:
             raise compass_error(403, "api_key_access_denied", "You cannot revoke this API key.")
-        require_team_access(db, user, key_record.team_id)
+        require_team_owner(db, user, key_record.team_id)
     key = revoke_api_key(db, api_key_id)
     if is_admin(user):
         record_audit_log(db, user, "api_key.revoked", f"api_key:{key.id}", {"team_id": key.team_id, "key_id": key.key_id})
         db.commit()
     return {"id": key.id, "status": key.status, "revoked_at": key.revoked_at.isoformat() if key.revoked_at else None}
+
+
+@app.post("/api-keys/{api_key_id}/rotate")
+def rotate_key(api_key_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    key_record = db.get(ApiKey, api_key_id)
+    if key_record is None:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    if not is_admin(user):
+        if not key_record.team_id:
+            raise compass_error(403, "api_key_access_denied", "You cannot rotate this API key.")
+        require_team_owner(db, user, key_record.team_id)
+    result = rotate_api_key(db, api_key_id, user.id)
+    record_audit_log(db, user, "api_key.rotated", f"api_key:{api_key_id}", {"replacement_id": result["id"], "team_id": key_record.team_id})
+    db.commit()
+    return result
 
 
 @app.patch("/api-keys/{api_key_id}/models")
@@ -524,14 +870,15 @@ def update_key_models(api_key_id: str, body: ApiKeyModelsUpdate, user: User = De
     if key is None:
         raise compass_error(404, "api_key_not_found", "API key not found.")
     if not is_admin(user):
-        if key.user_id != user.id or not key.team_id:
+        if not key.team_id:
             raise compass_error(403, "api_key_access_denied", "You cannot update this API key.")
-        require_team_access(db, user, key.team_id)
+        require_team_owner(db, user, key.team_id)
     return update_api_key_models(db, api_key_id, body.allowed_models)
 
 
 @app.post("/admin/wallet/topups")
 def admin_topup(body: WalletTopupRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "finance.adjust")
     ledger = credit_wallet(db, body.team_id, body.amount_paise, body.idempotency_key, body.idempotency_key)
     record_audit_log(db, actor, "wallet.topup_created", f"team:{body.team_id}", {"amount_paise": body.amount_paise, "ledger_id": ledger.id})
     db.commit()
@@ -915,7 +1262,8 @@ def billing_invoices(team_id: str, user: User = Depends(current_user), db: Sessi
 
 
 @app.get("/admin/billing/reconciliation")
-def billing_reconciliation(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def billing_reconciliation(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "finance.view")
     orders = db.scalars(select(PaymentOrder).order_by(PaymentOrder.created_at.asc())).all()
     ledgers = db.scalars(select(WalletLedger).where(WalletLedger.reference_type == "payment_order")).all()
     ledger_refs = {row.reference_id for row in ledgers}
@@ -941,18 +1289,73 @@ def models(db: Session = Depends(get_db)) -> list[dict]:
 
 
 @app.get("/admin/models/discover")
-async def admin_discover_models(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+async def admin_discover_models(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "models.manage")
     return await litellm_model_catalog(db, force=True)
 
 
 @app.get("/catalog/models")
-async def catalog_models(team_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+async def catalog_models(team_id: str | None = None, provider: str | None = None, capability: str | None = None, min_context: int | None = None, include_unavailable: bool = True, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     if team_id:
         require_team_access(db, user, team_id)
-    result = await litellm_model_catalog(db)
+    result = provider_catalog_response(db, provider=provider)
+    if not result["models"]:
+        result = await litellm_model_catalog(db)
     available_providers = credential_provider_names(db, team_id) if team_id else set()
-    result["models"] = [row | {"credential_available": row["provider"] in available_providers} for row in result["models"]]
+    models = result["models"]
+    if capability:
+        models = [row for row in models if capability_matches(capability, row.get("capability_types"), row.get("capabilities"))]
+    if min_context is not None:
+        models = [row for row in models if (row.get("context_window") or 0) >= min_context]
+    if not include_unavailable:
+        models = [row for row in models if row.get("route_ready", False)]
+    result["models"] = [row | {"credential_available": row["provider"] in available_providers} for row in models]
+    result["total"] = len(result["models"])
     return result
+
+
+@app.post("/admin/catalog/sync")
+async def admin_sync_catalog(provider: str = "litellm", actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "models.manage")
+    if provider == "litellm":
+        return await sync_litellm_catalog(db, force=True)
+    if provider == "openrouter":
+        return await sync_openrouter_catalog(db, force=True)
+    raise compass_error(400, "catalog_provider_unsupported", "The requested catalog provider has no verified discovery adapter.")
+
+
+@app.get("/admin/catalog/status")
+def admin_catalog_status(provider: str = "litellm", actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "models.view")
+    if provider == "openrouter":
+        return openrouter_catalog_response(db)["sync"]
+    if provider == "litellm":
+        return catalog_sync_status(db, "litellm", settings.litellm_catalog_cache_seconds * 3)
+    raise compass_error(400, "catalog_provider_unsupported", "The requested catalog provider has no verified discovery adapter.")
+
+
+@app.get("/admin/catalog/pricing-policies")
+def admin_pricing_policies(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "models.view")
+    return [pricing_policy_row(row) for row in db.scalars(select(PricingPolicy).order_by(PricingPolicy.effective_at.desc())).all()]
+
+
+@app.post("/admin/catalog/pricing-policies")
+def admin_create_pricing_policy(body: PricingPolicyCreate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "models.manage")
+    if db.scalar(select(PricingPolicy).where(PricingPolicy.version == body.version)) is not None:
+        raise compass_error(409, "pricing_policy_exists", "A pricing policy with this version already exists.")
+    effective_at = body.effective_at
+    if effective_at is None:
+        effective_at = now()
+    elif effective_at.tzinfo is not None:
+        effective_at = effective_at.astimezone(UTC).replace(tzinfo=None)
+    db.query(PricingPolicy).filter(PricingPolicy.status == "active").update({PricingPolicy.status: "retired"}, synchronize_session=False)
+    policy = PricingPolicy(version=body.version, markup_bps=body.markup_bps, usd_to_inr_paise_per_usd=body.usd_to_inr_paise_per_usd, status="active", effective_at=effective_at)
+    db.add(policy)
+    record_audit_log(db, actor, "catalog.pricing_policy_created", f"pricing_policy:{body.version}", {"markup_bps": body.markup_bps, "usd_to_inr_paise_per_usd": body.usd_to_inr_paise_per_usd})
+    db.commit()
+    return pricing_policy_row(policy)
 
 
 @app.post("/models/activate")
@@ -986,18 +1389,21 @@ def update_team_model_policy(team_id: str, model_id: str, body: ModelPolicyUpdat
 
 
 @app.get("/admin/router/models")
-def admin_router_models(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_router_models(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "models.view")
     return model_catalog_rows(db, include_unpublished=True)
 
 
 @app.get("/admin/router/policies")
-def admin_router_policies(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_router_policies(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "routing.view")
     rows = db.scalars(select(RoutingPolicy).order_by(RoutingPolicy.alias)).all()
     return [{"id": row.id, "alias": row.alias, "candidate_models": [item for item in row.candidate_models.split(",") if item], "enabled": row.enabled} for row in rows]
 
 
 @app.put("/admin/router/policies/{alias}")
-def admin_upsert_router_policy(alias: str, body: RoutingPolicyUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_upsert_router_policy(alias: str, body: AdminRoutingPolicyUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "routing.manage")
     if not alias or len(alias) > 200 or "/" in alias or alias.startswith(("openai/", "gemini/", "ollama_cloud/")):
         raise compass_error(400, "invalid_routing_alias", "Routing aliases must be short names distinct from provider model IDs.")
     if len(set(body.candidate_models)) != len(body.candidate_models):
@@ -1012,15 +1418,17 @@ def admin_upsert_router_policy(alias: str, body: RoutingPolicyUpdate, actor: Use
         policy = RoutingPolicy(alias=alias, candidate_models=",".join(body.candidate_models))
         db.add(policy)
     else:
+        db.add(RoutingPolicyRevision(routing_policy_id=policy.id, administrator_id=actor.id, alias=policy.alias, candidate_models=policy.candidate_models, enabled=policy.enabled, change_reason=body.change_reason.strip()))
         policy.candidate_models = ",".join(body.candidate_models)
     policy.enabled = body.enabled
-    record_audit_log(db, actor, "router.policy_updated", f"routing:{alias}", {"candidate_models": body.candidate_models, "enabled": body.enabled})
+    record_audit_log(db, actor, "router.policy_updated", f"routing:{alias}", {"candidate_models": body.candidate_models, "enabled": body.enabled, "change_reason": body.change_reason.strip()})
     db.commit()
     return {"id": policy.id, "alias": policy.alias, "candidate_models": body.candidate_models, "enabled": policy.enabled}
 
 
 @app.delete("/admin/router/policies/{alias}")
 def admin_delete_router_policy(alias: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "routing.manage")
     policy = db.scalar(select(RoutingPolicy).where(RoutingPolicy.alias == alias))
     if policy is None:
         raise compass_error(404, "routing_policy_not_found", "Routing policy was not found.")
@@ -1030,9 +1438,24 @@ def admin_delete_router_policy(alias: str, actor: User = Depends(admin_user), db
     return {"alias": alias, "deleted": True}
 
 
+@app.post("/admin/router/policies/{alias}/rollback")
+def admin_rollback_router_policy(alias: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "routing.manage")
+    policy = db.scalar(select(RoutingPolicy).where(RoutingPolicy.alias == alias))
+    revision = db.scalar(select(RoutingPolicyRevision).where(RoutingPolicyRevision.alias == alias).order_by(RoutingPolicyRevision.created_at.desc()))
+    if policy is None or revision is None:
+        raise compass_error(404, "routing_revision_not_found", "No previous verified routing policy is available for rollback.")
+    db.add(RoutingPolicyRevision(routing_policy_id=policy.id, administrator_id=actor.id, alias=policy.alias, candidate_models=policy.candidate_models, enabled=policy.enabled, change_reason="Rollback snapshot"))
+    policy.candidate_models = revision.candidate_models
+    policy.enabled = revision.enabled
+    record_audit_log(db, actor, "router.policy_rolled_back", f"routing:{alias}", {"revision_id": revision.id})
+    db.commit()
+    return {"id": policy.id, "alias": policy.alias, "candidate_models": [item for item in policy.candidate_models.split(",") if item], "enabled": policy.enabled, "rolled_back_revision_id": revision.id}
+
+
 @app.get("/byok/credentials")
 def list_byok_credentials(team_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
-    require_team_access(db, user, team_id)
+    require_team_owner(db, user, team_id)
     return byok_credentials_summary(db, team_id)
 
 
@@ -1070,6 +1493,7 @@ def openai_models(authorization: str | None = Header(default=None), db: Session 
 def openai_account(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
     key = authenticate_api_key(db, authorization)
     team = db.get(Team, key.team_id) if key.team_id else None
+    project = db.get(Project, key.project_id) if key.project_id else None
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == key.team_id)) if key.team_id else None
     requests = list(
         db.scalars(
@@ -1088,6 +1512,7 @@ def openai_account(authorization: str | None = Header(default=None), db: Session
     ).one()
     return {
         "team": {"id": team.id, "name": team.name, "slug": team.slug} if team else None,
+        "project": {"id": project.id, "name": project.name, "slug": project.slug, "is_default": project.is_default} if project else None,
         "wallet": {"currency": wallet.currency, "balance_paise": wallet.balance_paise} if wallet else None,
         "api_key": {"id": key.id, "name": key.name, "status": key.status, "allowed_models": sorted(allowed_model_ids(db, key.id)), "models_restricted": api_key_models_restricted(db, key.id)},
         "usage": {"requests": int(totals[0]), "tokens": int(totals[1]), "spend_paise": int(totals[2])},
@@ -1106,7 +1531,7 @@ def router_status(authorization: str | None = Header(default=None), db: Session 
     return {
         "status": "operational",
         "routing": {"fallback_enabled": True, "max_attempts": max(1, min(settings.provider_max_attempts, 5))},
-        "providers": [{"name": provider.name, "status": provider.status, "enabled": provider.enabled} for provider in provider_rows],
+        "providers": [{"name": provider.name, "status": provider.status, "commercial_status": provider.commercial_status, "enabled": provider.enabled} for provider in provider_rows],
         "models": models,
         "api_key": {"id": key.id, "rate_limit": key.rate_limit, "daily_limit_paise": key.daily_limit, "monthly_limit_paise": key.monthly_limit},
     }
@@ -1117,6 +1542,8 @@ async def chat_completions(body: ChatCompletionRequest, authorization: str | Non
     api_key = authenticate_api_key(db, authorization)
     payload = body.model_dump()
     if body.stream:
+        if not settings.local_test_mode:
+            return StreamingResponse(await stream_chat(db, api_key, payload), media_type="text/event-stream")
         full_response = await complete_chat(db, api_key, payload | {"stream": False})
         return StreamingResponse(stream_openai_chunks(full_response), media_type="text/event-stream")
     return await complete_chat(db, api_key, payload)
@@ -1125,9 +1552,14 @@ async def chat_completions(body: ChatCompletionRequest, authorization: str | Non
 @app.post("/v1/responses", dependencies=[Depends(enforce_body_limit)])
 async def responses(body: ResponsesRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     api_key = authenticate_api_key(db, authorization)
-    response = await complete_json_api(db, api_key, body.model_dump(exclude_none=True), "/v1/responses", "responses")
+    payload = body.model_dump(exclude_none=True)
     if not body.stream:
-        return response
+        return await complete_json_api(db, api_key, payload, "/v1/responses", "responses")
+
+    if not settings.local_test_mode:
+        return StreamingResponse(await stream_json_api(db, api_key, payload, "/v1/responses", "responses"), media_type="text/event-stream")
+
+    response = await complete_json_api(db, api_key, payload, "/v1/responses", "responses")
 
     def response_events():
         yield f"event: response.completed\ndata: {json.dumps(response)}\n\n"
@@ -1151,7 +1583,7 @@ async def image_generations(body: ImageGenerationRequest, authorization: str | N
 @app.post("/v1/audio/speech", dependencies=[Depends(enforce_body_limit)])
 async def audio_speech(body: AudioSpeechRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     api_key = authenticate_api_key(db, authorization)
-    audio, content_type = await complete_binary_api(db, api_key, body.model_dump(exclude_none=True), "/v1/audio/speech", "audio")
+    audio, content_type = await complete_binary_api(db, api_key, body.model_dump(exclude_none=True), "/v1/audio/speech", "audio_speech")
     return Response(content=audio, media_type=content_type)
 
 
@@ -1178,7 +1610,7 @@ async def audio_transcriptions(
         form_data,
         (file.filename or "audio.bin", content, file.content_type or "application/octet-stream"),
         "/v1/audio/transcriptions",
-        "audio",
+        "audio_transcription",
     )
     return payload
 
@@ -1259,43 +1691,51 @@ def admin_provider_catalog(_: User = Depends(admin_user)) -> list[dict]:
 
 
 @app.get("/admin/router/providers")
-def admin_router_providers(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_router_providers(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "providers.view")
     providers = db.scalars(select(Provider).order_by(Provider.name)).all()
     rows = []
     for provider in providers:
         health = db.scalar(select(ProviderHealthCheck).where(ProviderHealthCheck.provider_id == provider.id).order_by(ProviderHealthCheck.last_checked_at.desc()).limit(1))
-        rows.append({"id": provider.id, "name": provider.name, "status": provider.status, "enabled": provider.enabled, "last_health": {"status": health.status, "latency_ms": health.latency_ms, "error_rate": health.error_rate, "checked_at": health.last_checked_at.isoformat()} if health else None})
+        rows.append({"id": provider.id, "name": provider.name, "status": provider.status, "commercial_status": provider.commercial_status, "enabled": provider.enabled, "last_health": {"status": health.status, "latency_ms": health.latency_ms, "error_rate": health.error_rate, "checked_at": health.last_checked_at.isoformat()} if health else None})
     return rows
 
 
 @app.post("/admin/router/providers")
 def admin_register_provider(body: ProviderRegisterRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "providers.manage")
     provider_name = body.name.strip().lower()
     provider = db.scalar(select(Provider).where(Provider.name == provider_name))
     if provider is not None:
-        return {"id": provider.id, "name": provider.name, "status": provider.status, "enabled": provider.enabled, "created": False}
-    provider = Provider(name=provider_name, status="healthy", enabled=True)
+        return {"id": provider.id, "name": provider.name, "status": provider.status, "commercial_status": provider.commercial_status, "enabled": provider.enabled, "created": False}
+    provider = Provider(name=provider_name, protocol=provider_protocol(provider_name), status="unconfigured", enabled=False)
     db.add(provider)
     record_audit_log(db, actor, "provider.registered", f"provider:{provider_name}", {"name": provider_name})
     db.commit()
-    return {"id": provider.id, "name": provider.name, "status": provider.status, "enabled": provider.enabled, "created": True}
+    return {"id": provider.id, "name": provider.name, "status": provider.status, "commercial_status": provider.commercial_status, "enabled": provider.enabled, "created": True}
 
 
 @app.patch("/admin/router/providers/{provider_name}")
 def admin_update_provider_status(provider_name: str, body: ProviderStatusUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "providers.manage")
     provider = db.scalar(select(Provider).where(Provider.name == provider_name))
     if provider is None:
         raise compass_error(404, "provider_not_found", "Provider was not found.")
+    if (body.enabled is True or body.status not in {"disabled", "unavailable"}) and provider.protocol == "unverified":
+        raise compass_error(409, "provider_adapter_unavailable", "This provider has no verified Compass adapter.")
     provider.status = body.status
     if body.enabled is not None:
         provider.enabled = body.enabled
-    record_audit_log(db, actor, "provider.status_updated", f"provider:{provider.name}", {"status": provider.status, "enabled": provider.enabled})
+    if body.commercial_status is not None:
+        provider.commercial_status = body.commercial_status
+    record_audit_log(db, actor, "provider.status_updated", f"provider:{provider.name}", {"status": provider.status, "commercial_status": provider.commercial_status, "enabled": provider.enabled})
     db.commit()
-    return {"name": provider.name, "status": provider.status, "enabled": provider.enabled}
+    return {"name": provider.name, "status": provider.status, "commercial_status": provider.commercial_status, "enabled": provider.enabled}
 
 
 @app.patch("/admin/router/models/{model_id:path}")
 def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "models.manage")
     model = db.get(ModelCatalog, model_id)
     if model is None:
         raise compass_error(404, "model_not_found", "Model was not found.")
@@ -1303,8 +1743,6 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
     requested_published = body.published if body.published is not None else model.published
     if requested_enabled and requested_published:
         provider = model.provider
-        if not provider.enabled or provider.status in {"disabled", "unavailable"}:
-            raise compass_error(409, "model_route_unavailable", "Enable and restore the provider before publishing this model.")
         credential = db.scalar(
             select(ProviderCredential).where(
                 ProviderCredential.provider_id == provider.id,
@@ -1322,6 +1760,13 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
         )
         if not has_usable_credential:
             raise compass_error(409, "provider_credential_required", "Configure a usable provider credential before publishing this model.")
+        if not settings.local_test_mode and provider.commercial_status != "approved":
+            raise compass_error(409, "provider_commercial_approval_required", "Commercial approval is required before publishing this provider model.")
+        if provider.protocol == "unverified":
+            raise compass_error(409, "provider_adapter_unavailable", "This provider has no verified Compass adapter.")
+        if not provider.enabled or provider.status in {"unconfigured", "disabled", "unavailable"}:
+            raise compass_error(409, "model_route_unavailable", "Verify and enable the provider before publishing this model.")
+    previous_policy = {"status": model.status, "enabled": model.enabled, "published": model.published, "input_price_paise_per_1k": model.input_price_paise_per_1k, "output_price_paise_per_1k": model.output_price_paise_per_1k, "fallback_model_id": model.fallback_model_id}
     model.status = body.status
     if body.enabled is not None:
         model.enabled = body.enabled
@@ -1337,13 +1782,17 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
         if body.fallback_model_id is not None and db.get(ModelCatalog, body.fallback_model_id) is None:
             raise compass_error(404, "fallback_model_not_found", "Fallback model was not found.")
         model.fallback_model_id = body.fallback_model_id
-    record_audit_log(db, actor, "model.governance_updated", f"model:{model.id}", {"status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "input_price_paise_per_1k": model.input_price_paise_per_1k, "output_price_paise_per_1k": model.output_price_paise_per_1k})
+    new_policy = {"status": model.status, "enabled": model.enabled, "published": model.published, "input_price_paise_per_1k": model.input_price_paise_per_1k, "output_price_paise_per_1k": model.output_price_paise_per_1k, "fallback_model_id": model.fallback_model_id}
+    if previous_policy["input_price_paise_per_1k"] != new_policy["input_price_paise_per_1k"] or previous_policy["output_price_paise_per_1k"] != new_policy["output_price_paise_per_1k"]:
+        db.add(PricingRevision(model_id=model.id, administrator_id=actor.id, previous_policy_json=json.dumps(previous_policy, sort_keys=True), new_policy_json=json.dumps(new_policy, sort_keys=True), change_reason=body.change_reason.strip() or "Model governance update"))
+    record_audit_log(db, actor, "model.governance_updated", f"model:{model.id}", {**new_policy, "change_reason": body.change_reason.strip()})
     db.commit()
     return {"id": model.id, "status": model.status, "enabled": model.enabled, "published": model.published, "fallback_model_id": model.fallback_model_id, "input_price_paise_per_1k": model.input_price_paise_per_1k, "output_price_paise_per_1k": model.output_price_paise_per_1k, "provider_status": model.provider.status, "provider_enabled": model.provider.enabled}
 
 
 @app.post("/admin/provider-credentials")
 def admin_save_provider_credential(body: ProviderCredentialUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "providers.manage")
     credential = upsert_provider_api_key(db, body.provider, body.api_key)
     record_audit_log(db, actor, "provider.credential_updated", f"provider:{body.provider}", {"last_four": credential.last_four})
     db.commit()
@@ -1358,6 +1807,7 @@ def admin_save_provider_credential(body: ProviderCredentialUpdate, actor: User =
 
 @app.post("/admin/provider-credentials/{provider_name}/test")
 def admin_test_provider_credential(provider_name: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "providers.manage")
     result = test_platform_credential(db, provider_name.strip().lower())
     record_audit_log(db, actor, "provider.credential_tested", f"provider:{result['provider']}", {"status": result["status"]})
     db.commit()
@@ -1366,6 +1816,7 @@ def admin_test_provider_credential(provider_name: str, actor: User = Depends(adm
 
 @app.delete("/admin/provider-credentials/{provider_name}")
 def admin_revoke_provider_credential(provider_name: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "providers.manage")
     provider = db.scalar(select(Provider).where(Provider.name == provider_name.strip().lower()))
     if provider is None:
         raise compass_error(404, "provider_not_found", "Provider was not found.")
@@ -1389,13 +1840,267 @@ def admin_revoke_provider_credential(provider_name: str, actor: User = Depends(a
     return {"provider": provider.name, "credential_status": credential.status, "has_configured_key": False}
 
 
+@app.get("/admin/access")
+def admin_access(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    return {"user_id": actor.id, "email": actor.email, "roles": sorted(platform_roles(db, actor)), "permissions": sorted(platform_permissions(db, actor))}
+
+
+@app.post("/admin/bootstrap")
+def admin_bootstrap(body: PlatformBootstrapRequest, request: Request, db: Session = Depends(get_db)) -> dict:
+    identity = current_clerk_identity(request)
+    return bootstrap_platform_owner(db, str(identity.get("sub", "")), body.confirmation, clerk_mfa_verified(identity))
+
+
+@app.get("/admin/roles")
+def admin_roles(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "settings.view")
+    assignments = db.scalars(select(PlatformRoleAssignment).order_by(PlatformRoleAssignment.created_at.desc())).all()
+    users = {user.id: user for user in db.scalars(select(User).where(User.id.in_([assignment.user_id for assignment in assignments]))).all()} if assignments else {}
+    return [{"id": assignment.id, "user_id": assignment.user_id, "email": users.get(assignment.user_id).email if users.get(assignment.user_id) else None, "role": assignment.role, "status": assignment.status, "reason": assignment.reason, "granted_by": assignment.granted_by, "revoked_by": assignment.revoked_by, "created_at": assignment.created_at.isoformat(), "revoked_at": assignment.revoked_at.isoformat() if assignment.revoked_at else None} for assignment in assignments]
+
+
+@app.post("/admin/roles")
+def admin_grant_role(body: PlatformRoleGrantRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_super_admin(db, actor)
+    return grant_platform_role(db, actor, body.user_id, body.role, body.reason)
+
+
+@app.post("/admin/roles/{assignment_id}/revoke")
+def admin_revoke_role(assignment_id: str, body: PlatformRoleRevokeRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_super_admin(db, actor)
+    return revoke_platform_role(db, actor, assignment_id, body.reason)
+
+
+def _admin_date_filter(value: str | None, field_name: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise compass_error(400, "invalid_date_filter", f"The {field_name} filter must be an ISO-8601 date.") from None
+    return parsed.astimezone(UTC).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def _admin_request_filters(date_from: str | None, date_to: str | None, provider: str | None, model: str | None, organization_id: str | None, project_id: str | None):
+    filters = []
+    parsed_from = _admin_date_filter(date_from, "date_from")
+    parsed_to = _admin_date_filter(date_to, "date_to")
+    if parsed_from:
+        filters.append(LlmRequest.created_at >= parsed_from)
+    if parsed_to:
+        filters.append(LlmRequest.created_at < parsed_to)
+    if provider:
+        filters.append(LlmRequest.provider == provider.strip().lower())
+    if model:
+        filters.append(LlmRequest.resolved_model == model)
+    if organization_id:
+        filters.append(LlmRequest.organization_id == organization_id)
+    if project_id:
+        filters.append(LlmRequest.project_id == project_id)
+    return filters
+
+
+@app.get("/admin/command-center")
+def admin_command_center(
+    actor: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+    date_from: str | None = None,
+    date_to: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    organization_id: str | None = None,
+    project_id: str | None = None,
+) -> dict:
+    require_platform_permission(db, actor, "admin.view")
+    filters = _admin_request_filters(date_from, date_to, provider, model, organization_id, project_id)
+    aggregate = db.execute(
+        select(
+            func.count(LlmRequest.id),
+            func.coalesce(func.sum(LlmRequest.input_tokens), 0),
+            func.coalesce(func.sum(LlmRequest.output_tokens), 0),
+            func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0),
+            func.coalesce(func.sum(LlmRequest.provider_cost_paise), 0),
+            func.coalesce(func.sum(LlmRequest.latency_ms), 0),
+        ).where(*filters)
+    ).one()
+    total_requests = int(aggregate[0] or 0)
+    successful = db.scalar(select(func.count(LlmRequest.id)).where(*filters, LlmRequest.status == "success")) or 0
+    failed = db.scalar(select(func.count(LlmRequest.id)).where(*filters, LlmRequest.status == "error")) or 0
+    active_customers = db.scalar(
+        select(func.count(User.id)).where(
+            User.role == "customer",
+            ~select(UserAccess.id).where(UserAccess.user_id == User.id, UserAccess.status == "suspended").exists(),
+        )
+    ) or 0
+    wallet_liabilities = db.scalar(select(func.coalesce(func.sum(WalletAccount.balance_paise), 0))) or 0
+    failed_settlements = db.scalar(select(func.count(PaymentOrder.id)).where(PaymentOrder.status == "failed")) or 0
+    pending_reconciliation = db.scalar(select(func.count(PaymentEvent.id)).where(PaymentEvent.status != "processed")) or 0
+    security_alerts = db.scalar(select(func.count(AuditLog.id)).where(AuditLog.action.in_(["platform.role_granted", "platform.role_revoked", "provider.credential_updated", "finance.wallet_adjusted", "user.access_updated"]))) or 0
+    average_latency = float(aggregate[5] or 0) / total_requests if total_requests else 0.0
+    gross_margin = int(aggregate[3] or 0) - int(aggregate[4] or 0)
+    return {
+        "filters": {"date_from": date_from, "date_to": date_to, "provider": provider, "model": model, "organization_id": organization_id, "project_id": project_id},
+        "customers": {"total": int(db.scalar(select(func.count(User.id)).where(User.role == "customer")) or 0), "active": int(active_customers)},
+        "organizations": int(db.scalar(select(func.count(Organization.id))) or 0),
+        "active_api_keys": int(db.scalar(select(func.count(ApiKey.id)).where(ApiKey.status == "active")) or 0),
+        "requests": {"total": total_requests, "successful": int(successful), "failed": int(failed), "success_rate": (int(successful) / total_requests if total_requests else None)},
+        "tokens": {"input": int(aggregate[1] or 0), "output": int(aggregate[2] or 0), "total": int(aggregate[1] or 0) + int(aggregate[2] or 0)},
+        "financial": {
+            "customer_charges_paise": int(aggregate[3] or 0),
+            "provider_cost_paise": int(aggregate[4] or 0),
+            "platform_fee_paise": {"value": None, "availability": "not_recorded"},
+            "tax_paise": int(db.scalar(select(func.coalesce(func.sum(BillingInvoice.tax_paise), 0))) or 0),
+            "refunds_paise": int(db.scalar(select(func.coalesce(func.sum(PaymentRefund.amount_paise), 0))) or 0),
+            "payment_processing_cost_paise": {"value": None, "availability": "not_recorded"},
+            "gross_margin_estimate_paise": gross_margin,
+            "wallet_liabilities_paise": int(wallet_liabilities),
+        },
+        "latency_ms": {"average": average_latency, "p50": None, "p95": None, "percentiles": "not_available_without_aggregation"},
+        "provider_health": {"healthy": int(db.scalar(select(func.count(Provider.id)).where(Provider.enabled.is_(True), Provider.status == "healthy")) or 0), "degraded": int(db.scalar(select(func.count(Provider.id)).where(Provider.status == "degraded")) or 0), "disabled": int(db.scalar(select(func.count(Provider.id)).where(Provider.status == "disabled")) or 0)},
+        "failed_settlements": int(failed_settlements),
+        "pending_payment_reconciliation": int(pending_reconciliation),
+        "security_alerts": int(security_alerts),
+        "generated_at": now().isoformat(),
+    }
+
+
+@app.get("/admin/customers")
+def admin_customers(page: int = 1, page_size: int = 50, search: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    filters = [User.role == "customer"]
+    if search:
+        filters.append(func.lower(User.email).contains(search.strip().lower()))
+    total = int(db.scalar(select(func.count(User.id)).where(*filters)) or 0)
+    users = db.scalars(select(User).where(*filters).order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    rows = []
+    for user in users:
+        access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
+        rows.append({"id": user.id, "email": user.email, "clerk_user_id": user.clerk_user_id, "status": access.status if access else "active", "status_reason": access.reason if access else "", "organization_count": int(db.scalar(select(func.count(OrganizationMember.id)).where(OrganizationMember.user_id == user.id)) or 0), "project_count": int(db.scalar(select(func.count(ProjectMember.id)).where(ProjectMember.user_id == user.id)) or 0), "api_key_count": int(db.scalar(select(func.count(ApiKey.id)).where(ApiKey.user_id == user.id)) or 0), "created_at": user.created_at.isoformat()})
+    return {"items": rows, "page": page, "page_size": page_size, "total": total}
+
+
+@app.get("/admin/organizations")
+def admin_organizations(page: int = 1, page_size: int = 50, search: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    filters = [Organization.name != ""]
+    if search:
+        filters.append(func.lower(Organization.name).contains(search.strip().lower()))
+    total = int(db.scalar(select(func.count(Organization.id)).where(*filters)) or 0)
+    organizations = db.scalars(select(Organization).where(*filters).order_by(Organization.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": org.id, "name": org.name, "member_count": int(db.scalar(select(func.count(OrganizationMember.id)).where(OrganizationMember.organization_id == org.id)) or 0), "project_count": int(db.scalar(select(func.count(Project.id)).where(Project.organization_id == org.id)) or 0), "created_at": org.created_at.isoformat()} for org in organizations], "page": page, "page_size": page_size, "total": total}
+
+
+@app.get("/admin/projects")
+def admin_projects(page: int = 1, page_size: int = 50, search: str | None = None, organization_id: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    filters = []
+    if search:
+        filters.append(func.lower(Project.name).contains(search.strip().lower()))
+    if organization_id:
+        filters.append(Project.organization_id == organization_id)
+    total = int(db.scalar(select(func.count(Project.id)).where(*filters)) or 0)
+    projects = db.scalars(select(Project).where(*filters).order_by(Project.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": project.id, "organization_id": project.organization_id, "name": project.name, "slug": project.slug, "is_default": project.is_default, "is_active": project.is_active, "member_count": int(db.scalar(select(func.count(ProjectMember.id)).where(ProjectMember.project_id == project.id)) or 0), "created_at": project.created_at.isoformat()} for project in projects], "page": page, "page_size": page_size, "total": total}
+
+
+@app.get("/admin/api-keys")
+def admin_api_keys(page: int = 1, page_size: int = 50, search: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    filters = []
+    if search:
+        filters.append(func.lower(ApiKey.name).contains(search.strip().lower()))
+    total = int(db.scalar(select(func.count(ApiKey.id)).where(*filters)) or 0)
+    keys = db.scalars(select(ApiKey).where(*filters).order_by(ApiKey.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": key.id, "key_id": key.key_id, "key_prefix": key.key_prefix, "name": key.name, "status": key.status, "user_id": key.user_id, "organization_id": key.organization_id, "project_id": key.project_id, "team_id": key.team_id, "last_used_at": key.last_used_at.isoformat() if key.last_used_at else None, "created_at": key.created_at.isoformat(), "expires_at": key.expires_at.isoformat() if key.expires_at else None} for key in keys], "page": page, "page_size": page_size, "total": total}
+
+
+@app.get("/admin/requests")
+def admin_requests(page: int = 1, page_size: int = 50, date_from: str | None = None, date_to: str | None = None, provider: str | None = None, model: str | None = None, organization_id: str | None = None, project_id: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "operations.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    filters = _admin_request_filters(date_from, date_to, provider, model, organization_id, project_id)
+    total = int(db.scalar(select(func.count(LlmRequest.id)).where(*filters)) or 0)
+    rows = db.scalars(select(LlmRequest).where(*filters).order_by(LlmRequest.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": row.id, "request_id": row.id, "timestamp": row.created_at.isoformat(), "user_id": row.user_id, "organization_id": row.organization_id, "project_id": row.project_id, "model": row.resolved_model, "requested_model": row.requested_model, "provider": row.provider, "status": row.status, "latency_ms": row.latency_ms, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "total_tokens": row.total_tokens, "provider_cost_paise": row.provider_cost_paise, "customer_charge_paise": row.compass_cost_paise, "failure_category": row.error_code, "route": row.route, "credential_mode": row.credential_mode} for row in rows], "page": page, "page_size": page_size, "total": total, "content_policy": "raw prompts and completions are not stored or returned"}
+
+
+@app.get("/admin/financial/wallets")
+def admin_wallets(page: int = 1, page_size: int = 50, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "finance.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    total = int(db.scalar(select(func.count(WalletAccount.id))) or 0)
+    wallets = db.scalars(select(WalletAccount).order_by(WalletAccount.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": wallet.id, "team_id": wallet.team_id, "organization_id": wallet.organization_id, "currency": wallet.currency, "available_balance_paise": wallet.balance_paise, "reserved_balance_paise": 0, "status": wallet.status, "updated_at": wallet.updated_at.isoformat()} for wallet in wallets], "page": page, "page_size": page_size, "total": total}
+
+
+@app.post("/admin/financial/wallet-adjustments")
+def admin_wallet_adjustment(body: AdminWalletAdjustmentRequest, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "finance.adjust")
+    if abs(body.amount_paise) >= settings.admin_financial_confirmation_threshold_paise:
+        if not body.second_approver_user_id or body.second_approver_user_id == actor.id:
+            raise compass_error(409, "second_approval_required", "A separate finance-authorized second approver is required for this adjustment.")
+        second_approver = db.get(User, body.second_approver_user_id)
+        if second_approver is None or not has_platform_permission(db, second_approver, "finance.adjust"):
+            raise compass_error(403, "second_approval_invalid", "The second approver is not authorized for financial adjustments.")
+    return adjust_wallet(db, actor, body.team_id, body.amount_paise, body.currency, body.reason, body.idempotency_key)
+
+
+@app.get("/admin/financial/ledger")
+def admin_financial_ledger(page: int = 1, page_size: int = 100, team_id: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "finance.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    wallet_ids = select(WalletAccount.id)
+    if team_id:
+        wallet_ids = wallet_ids.where(WalletAccount.team_id == team_id)
+    filters = [WalletLedger.wallet_id.in_(wallet_ids)]
+    total = int(db.scalar(select(func.count(WalletLedger.id)).where(*filters)) or 0)
+    rows = db.scalars(select(WalletLedger).where(*filters).order_by(WalletLedger.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": row.id, "wallet_id": row.wallet_id, "type": row.type, "amount_paise": row.amount_paise, "balance_before": row.balance_before, "balance_after": row.balance_after, "reference_type": row.reference_type, "reference_id": row.reference_id, "description": row.description, "idempotency_key": row.idempotency_key, "created_at": row.created_at.isoformat()} for row in rows], "page": page, "page_size": page_size, "total": total}
+
+
+@app.get("/admin/settings")
+def admin_settings(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "settings.view")
+    return {"items": platform_settings_rows(db), "deployment_managed": ["CLERK_SECRET_KEY", "RAZORPAY_KEY_SECRET", "LITELLM_MASTER_KEY", "DATABASE_URL", "REDIS_URL", "SMTP_PASSWORD"]}
+
+
+@app.patch("/admin/settings")
+def admin_update_settings(body: PlatformSettingsUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "settings.manage")
+    return {"items": update_platform_settings(db, actor, body.values)}
+
+
+@app.get("/admin/security/events")
+def admin_security_events(page: int = 1, page_size: int = 100, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "security.view")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    actions = ["platform.role_granted", "platform.role_revoked", "provider.credential_updated", "provider.credential_revoked", "finance.wallet_adjusted", "user.access_updated", "user.sessions_revoked", "api_key.revoked"]
+    total = int(db.scalar(select(func.count(AuditLog.id)).where(AuditLog.action.in_(actions))) or 0)
+    rows = db.scalars(select(AuditLog).where(AuditLog.action.in_(actions)).order_by(AuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": [{"id": row.id, "actor_user_id": row.actor_user_id, "action": row.action, "target": row.target, "request_id": row.request_id, "metadata": json.loads(row.metadata_json or "{}"), "created_at": row.created_at.isoformat()} for row in rows], "page": page, "page_size": page_size, "total": total}
+
+
 @app.get("/admin/overview")
-def admin_overview(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_overview(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "admin.view")
     return {"users": db.query(User).count(), "teams": db.query(Team).count(), "requests": db.query(LlmRequest).count(), "status": "operational"}
 
 
 @app.get("/admin/users")
-def admin_users(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_users(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "customers.view")
     users = db.scalars(select(User).order_by(User.created_at.desc())).all()
     team_counts = dict(
         db.execute(
@@ -1428,6 +2133,7 @@ def admin_users(_: User = Depends(admin_user), db: Session = Depends(get_db)) ->
 
 @app.patch("/admin/users/{user_id}/role")
 def admin_update_user_role(user_id: str, body: UserRoleUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.manage")
     target = db.get(User, user_id)
     if target is None:
         raise compass_error(404, "user_not_found", "User was not found.")
@@ -1445,6 +2151,7 @@ def admin_update_user_role(user_id: str, body: UserRoleUpdate, actor: User = Dep
 
 @app.patch("/admin/users/{user_id}/status")
 def admin_update_user_status(user_id: str, body: UserAccessUpdate, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.manage")
     target = db.get(User, user_id)
     if target is None:
         raise compass_error(404, "user_not_found", "User was not found.")
@@ -1459,6 +2166,8 @@ def admin_update_user_status(user_id: str, body: UserAccessUpdate, actor: User =
     access.updated_by = actor.id
     access.updated_at = now()
     target.session_version += 1
+    if body.status == "suspended":
+        revoke_extension_sessions_for_user(db, target.id)
     record_audit_log(db, actor, "user.access_updated", f"user:{target.id}", {"email": target.email, "status": body.status, "reason": access.reason})
     db.commit()
     return {"id": target.id, "email": target.email, "status": access.status, "reason": access.reason}
@@ -1466,17 +2175,20 @@ def admin_update_user_status(user_id: str, body: UserAccessUpdate, actor: User =
 
 @app.post("/admin/users/{user_id}/revoke-sessions")
 def admin_revoke_user_sessions(user_id: str, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "customers.manage")
     target = db.get(User, user_id)
     if target is None:
         raise compass_error(404, "user_not_found", "User was not found.")
     target.session_version += 1
+    revoke_extension_sessions_for_user(db, target.id)
     record_audit_log(db, actor, "user.sessions_revoked", f"user:{target.id}", {"email": target.email})
     db.commit()
     return {"id": target.id, "email": target.email, "sessions_revoked": True}
 
 
 @app.get("/admin/platform")
-def admin_platform(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+def admin_platform(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "settings.view")
     configured_credentials = db.scalar(select(func.count(ProviderCredential.id)).where(ProviderCredential.status == "active")) or 0
     return {
         "environment": settings.environment,
@@ -1496,7 +2208,8 @@ def admin_platform(_: User = Depends(admin_user), db: Session = Depends(get_db))
 
 
 @app.get("/admin/live-readiness")
-async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+async def admin_live_readiness(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "operations.view")
     credentials = db.scalars(
         select(ProviderCredential).where(
             ProviderCredential.organization_id.is_(None),
@@ -1505,7 +2218,8 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
         )
     ).all()
     usable_credentials = sum(1 for row in credentials if row.secret_reference.startswith(("encrypted:", "gcp-secret:")))
-    enabled_providers = db.scalar(select(func.count(Provider.id)).where(Provider.enabled.is_(True), Provider.status != "disabled")) or 0
+    enabled_providers = db.scalar(select(func.count(Provider.id)).where(Provider.enabled.is_(True), Provider.status.not_in(["disabled", "unavailable", "unconfigured"]))) or 0
+    commercially_approved_providers = db.scalar(select(func.count(Provider.id)).where(Provider.enabled.is_(True), Provider.status.not_in(["disabled", "unavailable", "unconfigured"]), Provider.commercial_status == "approved")) or 0
     published_models = db.scalar(
         select(func.count(ModelCatalog.id))
         .join(Provider, Provider.id == ModelCatalog.provider_id)
@@ -1515,6 +2229,7 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
             ModelCatalog.status == "available",
             Provider.enabled.is_(True),
             Provider.status.not_in(["disabled", "unavailable"]),
+            Provider.commercial_status == "approved" if not settings.local_test_mode else True,
         )
     ) or 0
     blockers: list[str] = []
@@ -1526,6 +2241,7 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
         "secret_manager": settings.secret_manager_enabled,
         "provider_credentials": usable_credentials > 0,
         "enabled_providers": enabled_providers > 0,
+        "commercial_approval": settings.local_test_mode or commercially_approved_providers > 0,
         "published_models": published_models > 0,
     }
     if settings.local_test_mode:
@@ -1538,6 +2254,8 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
         blockers.append("No active provider credential is configured")
     if enabled_providers == 0:
         blockers.append("No enabled provider route is available")
+    if not settings.local_test_mode and commercially_approved_providers == 0:
+        blockers.append("No enabled provider has commercial approval")
     if published_models == 0:
         blockers.append("No published model is available")
     if execution_mode == "direct":
@@ -1555,13 +2273,15 @@ async def admin_live_readiness(_: User = Depends(admin_user), db: Session = Depe
         "checks": checks,
         "configured_provider_credentials": usable_credentials,
         "enabled_providers": int(enabled_providers),
+        "commercially_approved_providers": int(commercially_approved_providers),
         "published_models": int(published_models),
         "generated_at": now().isoformat(),
     }
 
 
 @app.get("/admin/audit")
-def admin_audit(_: User = Depends(admin_user), db: Session = Depends(get_db), limit: int = 100) -> list[dict]:
+def admin_audit(actor: User = Depends(admin_user), db: Session = Depends(get_db), limit: int = 100) -> list[dict]:
+    require_platform_permission(db, actor, "security.view")
     safe_limit = max(1, min(limit, 200))
     rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(safe_limit)).all()
     return [
@@ -1579,18 +2299,22 @@ def admin_audit(_: User = Depends(admin_user), db: Session = Depends(get_db), li
 
 
 @app.get("/admin/operations/metrics")
-def admin_operations_metrics(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
-    requests = db.scalars(select(LlmRequest)).all()
-    attempts = db.scalars(select(ProviderHealthCheck)).all()
+def admin_operations_metrics(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "operations.view")
+    request_count = int(db.scalar(select(func.count(LlmRequest.id))) or 0)
+    successful_count = int(db.scalar(select(func.count(LlmRequest.id)).where(LlmRequest.status == "success")) or 0)
+    failed_count = int(db.scalar(select(func.count(LlmRequest.id)).where(LlmRequest.status == "error")) or 0)
+    attempt_count = int(db.scalar(select(func.count(ProviderHealthCheck.id))) or 0)
+    open_circuits = int(db.scalar(select(func.count(ProviderHealthCheck.id)).where(ProviderHealthCheck.status == "circuit_open")) or 0)
     failed_orders = db.scalar(select(func.count(PaymentOrder.id)).where(PaymentOrder.status == "failed")) or 0
     pending_refunds = db.scalar(select(func.count(PaymentRefund.id)).where(PaymentRefund.status.in_(["requested", "pending"]))) or 0
     return {
         "status": "operational",
-        "requests": {"total": len(requests), "successful": sum(1 for row in requests if row.status == "success"), "failed": sum(1 for row in requests if row.status == "error")},
-        "provider_health": {"checks": len(attempts), "open_circuits": sum(1 for row in attempts if row.status == "circuit_open")},
+        "requests": {"total": request_count, "successful": successful_count, "failed": failed_count},
+        "provider_health": {"checks": attempt_count, "open_circuits": open_circuits},
         "billing": {"failed_orders": int(failed_orders), "pending_refunds": int(pending_refunds)},
         "alerts": [
-            "provider_circuit_open" if any(row.status == "circuit_open" for row in attempts) else None,
+            "provider_circuit_open" if open_circuits else None,
             "payment_failures" if failed_orders else None,
             "refunds_pending" if pending_refunds else None,
         ],
@@ -1599,6 +2323,7 @@ def admin_operations_metrics(_: User = Depends(admin_user), db: Session = Depend
 
 
 @app.get("/admin/operations/events")
-def admin_operations_events(_: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+def admin_operations_events(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "operations.view")
     events = db.scalars(select(OperationalEvent).order_by(OperationalEvent.created_at.desc()).limit(100)).all()
     return [{"id": event.id, "event_type": event.event_type, "severity": event.severity, "service": event.service, "message": event.message, "metadata": json.loads(event.metadata_json or "{}"), "created_at": event.created_at.isoformat()} for event in events]

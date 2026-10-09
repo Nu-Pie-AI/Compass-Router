@@ -48,6 +48,7 @@ htmlcov/
 docker-data/
 tmp/
 *.tar
+.release/
 
 # IDE / OS
 .DS_Store

@@ -7,7 +7,27 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from .config import get_settings
 
 
-_DATABASE_URL = make_url(get_settings().database_url)
+def normalize_database_url(database_url: str):
+    """Normalize PostgreSQL URLs to the installed psycopg SQLAlchemy driver."""
+    raw = database_url.strip()
+    if raw.startswith("postgres://"):
+        raw = "postgresql+psycopg://" + raw[len("postgres://"):]
+    url = make_url(raw)
+    if url.get_backend_name() == "postgresql" and url.drivername != "postgresql+psycopg":
+        url = url.set(drivername="postgresql+psycopg")
+    query = dict(url.query)
+    # These are Prisma/pooler options and are not SQLAlchemy/psycopg options.
+    for key in ("pgbouncer", "connection_limit", "pool_timeout"):
+        query.pop(key, None)
+    return url.set(query=query)
+
+
+def migration_database_url(settings=None):
+    settings = settings or get_settings()
+    return normalize_database_url(settings.direct_database_url or settings.database_url)
+
+
+_DATABASE_URL = normalize_database_url(get_settings().database_url)
 _IS_SQLITE = _DATABASE_URL.get_backend_name() == "sqlite"
 _COMPASS_SCHEMA = None if _IS_SQLITE else "compass"
 
@@ -15,29 +35,6 @@ _COMPASS_SCHEMA = None if _IS_SQLITE else "compass"
 class Base(DeclarativeBase):
     metadata = MetaData(schema=_COMPASS_SCHEMA)
 
-
-
-
-def _database_url():
-    url = _DATABASE_URL
-    query = dict(url.query)
-    # Neon/Prisma URLs may include pooler options that belong to Prisma,
-    # not to libpq/psycopg. Keep supported SSL and timeout parameters intact.
-    for key in ("pgbouncer", "connection_limit", "pool_timeout"):
-        query.pop(key, None)
-    return url.set(query=query)
-
-
-_DATABASE_URL = _database_url()
-
-# Keep Router tables separate when Router and Marketplace share one Neon
-# database. The search path makes the existing unqualified ORM models resolve
-# inside the Router schema without changing Marketplace's public tables.
-_bootstrap_engine = create_engine(_DATABASE_URL, pool_pre_ping=True)
-if _COMPASS_SCHEMA:
-    with _bootstrap_engine.begin() as connection:
-        connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{_COMPASS_SCHEMA}"'))
-_bootstrap_engine.dispose()
 
 engine = create_engine(
     _DATABASE_URL,
@@ -62,8 +59,18 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
+    settings = get_settings()
+    migration_mode = settings.database_migration_mode.strip().lower()
+    if migration_mode == "alembic":
+        return
+    if settings.environment.strip().lower() in {"production", "prod"} or migration_mode != "legacy":
+        raise RuntimeError("Database schema must be managed by Alembic outside explicit development legacy mode.")
+
     from . import models  # noqa: F401
 
+    if _COMPASS_SCHEMA:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{_COMPASS_SCHEMA}"'))
     Base.metadata.create_all(bind=engine)
     # The beta stack uses create_all rather than migrations. Keep existing local
     # databases compatible when the workspace/team relationship is introduced.
@@ -102,6 +109,21 @@ def init_db() -> None:
     if "session_version" not in user_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE users ADD COLUMN session_version INTEGER DEFAULT 0"))
+    additive_columns = {
+        "users": {"email_verified_at": "DATETIME"},
+        "providers": {"commercial_status": "VARCHAR DEFAULT 'unreviewed'"},
+        "teams": {"project_id": "VARCHAR"},
+        "team_members": {"user_id": "VARCHAR"},
+        "api_keys": {"project_id": "VARCHAR", "purpose": "VARCHAR DEFAULT 'workspace'", "scopes_json": "TEXT DEFAULT '[]'"},
+        "llm_requests": {"project_id": "VARCHAR", "device_session_id": "VARCHAR"},
+    }
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        for table_name, migrations in additive_columns.items():
+            existing = {column["name"] for column in inspector.get_columns(table_name, schema=_COMPASS_SCHEMA)}
+            for name, sql_type in migrations.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {sql_type}"))
     # Older beta records were created before teams were attached to workspaces.
     # Link them through the existing member and organization memberships.
     with engine.begin() as connection:

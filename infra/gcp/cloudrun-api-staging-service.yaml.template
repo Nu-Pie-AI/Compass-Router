@@ -1,0 +1,119 @@
+# Neon-backed staging service. Render with deployment-owned values before apply.
+# No secret values belong in this file.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ${API_SERVICE}
+spec:
+  template:
+    spec:
+      serviceAccountName: ${API_SERVICE_ACCOUNT}
+      containers:
+        - image: ${API_IMAGE}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: DATABASE_MIGRATION_MODE
+              value: alembic
+            - name: SECRET_MANAGER_ENABLED
+              value: "true"
+            - name: LOCAL_TEST_MODE
+              value: "false"
+            - name: PUBLIC_SIGNUP_ENABLED
+              value: "true"
+            - name: GCP_PROJECT_ID
+              value: ${GCP_PROJECT_ID}
+            - name: BILLING_PAYMENT_MODE
+              value: razorpay
+            - name: PROVIDER_EXECUTION_MODE
+              value: proxy
+            - name: COMPASS_WEB_ORIGIN
+              value: ${WEB_URL}
+            - name: COMPASS_LITELLM_URL
+              value: ${LITELLM_INTERNAL_URL}
+            - name: REDIS_RATE_LIMIT_ENABLED
+              value: "true"
+            - name: EMAIL_DELIVERY_MODE
+              value: smtp
+            - name: EMAIL_FROM
+              value: ${EMAIL_FROM}
+            - name: SMTP_HOST
+              value: ${SMTP_HOST}
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_USE_TLS
+              value: "true"
+            - name: PLATFORM_SUPER_ADMIN_CLERK_USER_ID
+              value: ${PLATFORM_SUPER_ADMIN_CLERK_USER_ID}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${DATABASE_URL_SECRET}
+                  key: ${DATABASE_URL_SECRET_VERSION}
+            - name: DIRECT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${DIRECT_DATABASE_URL_SECRET}
+                  key: ${DIRECT_DATABASE_URL_SECRET_VERSION}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${REDIS_URL_SECRET}
+                  key: ${REDIS_URL_SECRET_VERSION}
+            - name: APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ${APP_SECRET_SECRET}
+                  key: ${APP_SECRET_SECRET_VERSION}
+            - name: COMPASS_SSO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ${COMPASS_SSO_SECRET}
+                  key: ${COMPASS_SSO_SECRET_VERSION}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${ADMIN_PASSWORD_SECRET}
+                  key: ${ADMIN_PASSWORD_SECRET_VERSION}
+            - name: CLERK_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ${CLERK_SECRET_SECRET}
+                  key: ${CLERK_SECRET_SECRET_VERSION}
+            - name: CLERK_WEBHOOK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ${CLERK_WEBHOOK_SECRET}
+                  key: ${CLERK_WEBHOOK_SECRET_VERSION}
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ${LITELLM_MASTER_KEY_SECRET}
+                  key: ${LITELLM_MASTER_KEY_SECRET_VERSION}
+            - name: RAZORPAY_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ${RAZORPAY_KEY_ID_SECRET}
+                  key: ${RAZORPAY_KEY_ID_SECRET_VERSION}
+            - name: RAZORPAY_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ${RAZORPAY_KEY_SECRET}
+                  key: ${RAZORPAY_KEY_SECRET_VERSION}
+            - name: RAZORPAY_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ${RAZORPAY_WEBHOOK_SECRET}
+                  key: ${RAZORPAY_WEBHOOK_SECRET_VERSION}
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ${SMTP_USERNAME_SECRET}
+                  key: ${SMTP_USERNAME_SECRET_VERSION}
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${SMTP_PASSWORD_SECRET}
+                  key: ${SMTP_PASSWORD_SECRET_VERSION}

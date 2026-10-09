@@ -2,10 +2,13 @@ import os
 import tempfile
 import time
 from datetime import datetime
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 os.environ["DATABASE_URL"] = "sqlite:///" + tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
@@ -19,14 +22,19 @@ os.environ["PROVIDER_EXECUTION_MODE"] = "proxy"
 os.environ["DEFAULT_TEAM_TOKEN_LIMIT_PER_MINUTE"] = "250000"
 os.environ["PUBLIC_SIGNUP_ENABLED"] = "true"
 
+from app.config import get_settings  # noqa: E402
+get_settings.cache_clear()
 from app.db import Base, get_db  # noqa: E402
 from app.config import Settings, validate_runtime_config  # noqa: E402
 from app.errors import compass_error  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
-from app.security import encrypt_secret, hash_api_key  # noqa: E402
+from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
+from app.security import encrypt_secret, hash_api_key, hash_password  # noqa: E402
+from app.recovery import recover_stale_llm_reservations  # noqa: E402
 from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
 import app.services as services  # noqa: E402
+import app.email_worker as email_worker  # noqa: E402
+import app.main as main_module  # noqa: E402
 
 engine = create_engine(os.environ["DATABASE_URL"], connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
@@ -67,6 +75,12 @@ def admin_headers() -> dict:
     return {"Authorization": f"Bearer {response.json()['token']}"}
 
 
+def login_headers(email: str, password: str) -> dict:
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['token']}"}
+
+
 def test_security_headers_and_request_id_are_present():
     response = client.get("/health", headers={"X-Request-ID": "p0-health-check"})
     assert response.status_code == 200
@@ -76,9 +90,221 @@ def test_security_headers_and_request_id_are_present():
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
 
 
+def test_m9_admin_access_is_denied_to_customer_and_exposes_legacy_admin_permissions():
+    customer_email = f"m9-customer-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": customer_email, "password": "M9Customer123!", "organization_name": "M9 Customer Workspace"})
+    assert signup.status_code == 200, signup.text
+    customer_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+    denied = client.get("/admin/access", headers=customer_headers)
+    assert denied.status_code == 403
+    access = client.get("/admin/access", headers=admin_headers())
+    assert access.status_code == 200, access.text
+    assert "PLATFORM_ADMIN" in access.json()["roles"]
+    assert "finance.adjust" in access.json()["permissions"]
+
+
+def test_m9_owner_bootstrap_is_configured_clerk_bound_and_idempotent(monkeypatch):
+    clerk_id = f"user_m9_owner_{time.time_ns()}"
+    email = f"m9-owner-{time.time_ns()}@example.com"
+    db = TestingSessionLocal()
+    owner = User(email=email, clerk_user_id=clerk_id, password_hash=hash_password("M9Owner123!"), role="customer")
+    db.add(owner)
+    db.commit()
+    owner_id = owner.id
+    db.close()
+    monkeypatch.setattr(main_module.settings, "platform_super_admin_clerk_user_id", clerk_id)
+    monkeypatch.setattr(main_module.settings, "platform_super_admin_require_mfa", False)
+    monkeypatch.setattr(main_module, "authenticate_clerk_request", lambda _request: {"sub": clerk_id, "email": email})
+    headers = {"Authorization": "Bearer clerk-owner-session"}
+    first = client.post("/admin/bootstrap", json={"confirmation": "BOOTSTRAP_PLATFORM_OWNER"}, headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "bootstrapped"
+    second = client.post("/admin/bootstrap", json={"confirmation": "BOOTSTRAP_PLATFORM_OWNER"}, headers=headers)
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "already_bootstrapped"
+    db = TestingSessionLocal()
+    try:
+        assert db.scalar(select(PlatformBootstrapState).where(PlatformBootstrapState.owner_user_id == owner_id)).status == "active"
+        assert db.scalar(select(PlatformRoleAssignment).where(PlatformRoleAssignment.user_id == owner_id, PlatformRoleAssignment.role == "PLATFORM_SUPER_ADMIN")).status == "active"
+    finally:
+        db.close()
+
+
+def test_m9_subordinate_platform_role_is_least_privilege():
+    target_email = f"m9-finance-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": target_email, "password": "M9Finance123!", "organization_name": "M9 Finance Workspace"})
+    assert signup.status_code == 200, signup.text
+    super_email = f"m9-super-{time.time_ns()}@example.com"
+    db = TestingSessionLocal()
+    super_user = User(email=super_email, password_hash=hash_password("M9Super123!"), role="super_admin")
+    db.add(super_user)
+    db.commit()
+    db.close()
+    super_headers = login_headers(super_email, "M9Super123!")
+    granted = client.post("/admin/roles", json={"user_id": signup.json()["user_id"], "role": "FINANCE_ADMIN", "reason": "M9 finance operations"}, headers=super_headers)
+    assert granted.status_code == 200, granted.text
+    finance_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+    assert client.get("/admin/financial/wallets", headers=finance_headers).status_code == 200
+    assert client.get("/admin/customers", headers=finance_headers).status_code == 403
+
+
+def test_m9_model_price_change_creates_revision():
+    headers = admin_headers()
+    db = TestingSessionLocal()
+    model = db.get(ModelCatalog, "openai/gpt-5")
+    assert model is not None
+    old_price = model.input_price_paise_per_1k
+    db.close()
+    response = client.patch("/admin/router/models/openai/gpt-5", json={"status": "available", "input_price_paise_per_1k": old_price + 1, "change_reason": "M9 pricing revision test"}, headers=headers)
+    assert response.status_code == 200, response.text
+    db = TestingSessionLocal()
+    try:
+        revision = db.scalar(select(PricingRevision).where(PricingRevision.model_id == "openai/gpt-5").order_by(PricingRevision.created_at.desc()))
+        assert revision is not None
+        assert revision.change_reason == "M9 pricing revision test"
+    finally:
+        db.close()
+
+
+def test_m9_wallet_adjustment_is_atomic_and_idempotent():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    body = {"team_id": team["id"], "amount_paise": 2500, "currency": "INR", "reason": "M9 support credit", "idempotency_key": f"m9-adjust-{time.time_ns()}"}
+    first = client.post("/admin/financial/wallet-adjustments", json=body, headers=headers)
+    assert first.status_code == 200, first.text
+    second = client.post("/admin/financial/wallet-adjustments", json=body, headers=headers)
+    assert second.status_code == 200, second.text
+    assert second.json()["idempotent"] is True
+    assert second.json()["balance_paise"] == first.json()["balance_paise"]
+    large = {**body, "amount_paise": 100_000}
+    requires_approval = client.post("/admin/financial/wallet-adjustments", json=large, headers=headers)
+    assert requires_approval.status_code == 409
+
+
+def test_m9_settings_are_server_validated_and_audited():
+    headers = admin_headers()
+    updated = client.patch("/admin/settings", json={"values": {"maintenance_mode": True, "platform_announcement": "Planned maintenance"}}, headers=headers)
+    assert updated.status_code == 200, updated.text
+    values = {row["key"]: row["value"] for row in updated.json()["items"]}
+    assert values["maintenance_mode"] is True
+    invalid = client.patch("/admin/settings", json={"values": {"DATABASE_URL": "not allowed"}}, headers=headers)
+    assert invalid.status_code == 400
+    db = TestingSessionLocal()
+    try:
+        assert db.get(PlatformSetting, "maintenance_mode") is not None
+    finally:
+        db.close()
+
+
+def test_m9_command_center_returns_real_bounded_metrics():
+    response = client.get("/admin/command-center", headers=admin_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert {"customers", "organizations", "active_api_keys", "requests", "tokens", "financial", "provider_health"}.issubset(payload)
+    assert payload["latency_ms"]["percentiles"] == "not_available_without_aggregation"
+    assert payload["financial"]["platform_fee_paise"]["availability"] == "not_recorded"
+
+
 def test_production_configuration_rejects_development_defaults():
     with pytest.raises(RuntimeError, match="Unsafe production configuration"):
         validate_runtime_config(Settings(environment="production"))
+
+
+def test_production_seed_does_not_create_fixture_models_or_pricing(monkeypatch, tmp_path):
+    runtime = services.get_settings()
+    monkeypatch.setattr(runtime, "environment", "production")
+    monkeypatch.setattr(runtime, "local_test_mode", False)
+    monkeypatch.setattr(runtime, "openai_api_key", None)
+    engine = create_engine(f"sqlite:///{tmp_path / 'production-seed.sqlite'}")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    db = session_factory()
+    try:
+        services.seed_defaults(db)
+        assert db.query(ModelCatalog).count() == 0
+        assert db.query(PricingPolicy).count() == 0
+        assert db.query(ProviderCredential).count() == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_clerk_bootstrap_is_idempotent_and_supports_session_protection(monkeypatch):
+    email = f"clerk-{time.time_ns()}@example.com"
+    clerk_id = f"user_clerk_{time.time_ns()}"
+
+    def fake_clerk_authentication(_request):
+        return {"sub": clerk_id, "email": email}
+
+    monkeypatch.setattr(main_module, "authenticate_clerk_request", fake_clerk_authentication)
+    first = client.post("/auth/clerk/bootstrap", headers={"Authorization": "Bearer clerk-session"})
+    assert first.status_code == 200, first.text
+    second = client.post("/auth/clerk/bootstrap", headers={"Authorization": "Bearer clerk-session"})
+    assert second.status_code == 200, second.text
+    assert first.json()["user_id"] == second.json()["user_id"]
+
+    clerk_me = client.get("/me", headers={"Authorization": "Bearer clerk-session"})
+    assert clerk_me.status_code == 200, clerk_me.text
+    assert clerk_me.json()["email"] == email
+
+    db = TestingSessionLocal()
+    try:
+        user = db.scalar(select(User).where(User.clerk_user_id == clerk_id))
+        assert user is not None
+        assert db.scalar(select(OrganizationMember).where(OrganizationMember.user_id == user.id)) is not None
+    finally:
+        db.close()
+
+
+def test_clerk_does_not_silently_claim_existing_compass_account(monkeypatch):
+    email = f"clerk-link-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": email, "password": "ClerkLink123!", "organization_name": "Existing Workspace"})
+    assert signup.status_code == 200, signup.text
+
+    monkeypatch.setattr(main_module, "authenticate_clerk_request", lambda _request: {"sub": f"user_clerk_{time.time_ns()}", "email": email})
+    response = client.post("/auth/clerk/bootstrap", headers={"Authorization": "Bearer clerk-session"})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["error"]["code"] == "identity_link_required"
+
+
+def test_clerk_webhook_rejects_bad_signature(monkeypatch):
+    monkeypatch.setattr(main_module.settings, "clerk_webhook_signing_secret", "whsec_test")
+    response = client.post("/webhooks/clerk", content=b"{}", headers={"svix-id": "msg-invalid"})
+    assert response.status_code == 401, response.text
+
+
+def test_clerk_webhook_is_idempotent(monkeypatch):
+    monkeypatch.setattr(main_module.settings, "clerk_webhook_signing_secret", "whsec_test")
+
+    class FakeWebhook:
+        def __init__(self, _secret):
+            pass
+
+        def verify(self, _payload, _headers):
+            return {
+                "type": "user.created",
+                "data": {
+                    "id": f"user_webhook_{time.time_ns()}",
+                    "email_addresses": [{"id": "email_1", "email_address": f"webhook-{time.time_ns()}@example.com"}],
+                    "primary_email_address_id": "email_1",
+                },
+            }
+
+    monkeypatch.setattr("svix.webhooks.Webhook", FakeWebhook)
+    event_id = f"msg_{time.time_ns()}"
+    headers = {"svix-id": event_id, "svix-signature": "v1,test", "svix-timestamp": "1"}
+    first = client.post("/webhooks/clerk", content=b"signed", headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["duplicate"] is False
+    second = client.post("/webhooks/clerk", content=b"signed", headers=headers)
+    assert second.status_code == 200, second.text
+    assert second.json()["duplicate"] is True
+
+    db = TestingSessionLocal()
+    try:
+        assert db.scalar(select(ClerkWebhookEvent).where(ClerkWebhookEvent.event_id == event_id)) is not None
+    finally:
+        db.close()
 
 
 def test_live_readiness_reports_external_release_blockers(monkeypatch):
@@ -107,9 +333,10 @@ def create_member_fixture(headers: dict, team_id: str) -> dict:
 
 
 def create_key_fixture(headers: dict, team_id: str, member_id: str | None = None, models: list[str] | None = None) -> dict:
+    default_models = [] if not services.get_settings().local_test_mode else ["openai/gpt-5", "gemini/gemini-3.6-flash"]
     response = client.post(
         "/admin/api-keys",
-        json={"name": "Cline beta key", "team_id": team_id, "member_id": member_id, "allowed_models": models or ["openai/gpt-5", "gemini/gemini-3.6-flash"]},
+        json={"name": "Cline beta key", "team_id": team_id, "member_id": member_id, "allowed_models": default_models if models is None else models},
         headers=headers,
     )
     assert response.status_code == 200, response.text
@@ -271,6 +498,17 @@ def provision_beta_key(amount_paise: int = 1000) -> tuple[dict, dict, dict, str]
     return headers, team, member, key["key"]
 
 
+def mark_openai_fixture_pricing_verified(db) -> None:
+    policy = db.query(PricingPolicy).filter(PricingPolicy.status == "active").order_by(PricingPolicy.effective_at.desc()).first()
+    model = db.get(ModelCatalog, "openai/gpt-5")
+    assert policy is not None and model is not None
+    model.pricing_policy_version = policy.version
+    model.input_price_usd_per_million = Decimal("1")
+    model.output_price_usd_per_million = Decimal("2")
+    model.catalog_source = "litellm"
+    model.last_synced_at = services.now()
+
+
 def test_signup_creates_isolated_customer_workspace_and_login():
     email = f"signup-{time.time_ns()}@example.com"
     password = "NewCustomer123!"
@@ -331,6 +569,41 @@ def test_api_key_creation_shows_secret_once_and_stores_hash_only():
     db.close()
     assert stored.key_hash != created["key"]
     assert grants == 2
+
+
+def test_api_key_rotation_revokes_old_secret_and_preserves_scope():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    member = create_member_fixture(headers, team["id"])
+    created = client.post(
+        "/admin/api-keys",
+        json={"name": "Rotatable key", "team_id": team["id"], "member_id": member["id"], "allowed_models": ["openai/gpt-5"]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    old = created.json()
+
+    rotated = client.post(f"/api-keys/{old['id']}/rotate", headers=headers)
+    assert rotated.status_code == 200, rotated.text
+    replacement = rotated.json()
+    assert replacement["key"] != old["key"]
+    assert replacement["rotated_from"] == old["id"]
+    assert replacement["allowed_models"] == ["openai/gpt-5"]
+
+    old_account = client.get("/v1/account", headers={"Authorization": f"Bearer {old['key']}"})
+    new_account = client.get("/v1/account", headers={"Authorization": f"Bearer {replacement['key']}"})
+    assert old_account.status_code == 401
+    assert old_account.json()["detail"]["error"]["code"] == "revoked_api_key"
+    assert new_account.status_code == 200, new_account.text
+
+    db = TestingSessionLocal()
+    old_row = db.get(ApiKey, old["id"])
+    replacement_row = db.get(ApiKey, replacement["id"])
+    assert old_row.status == "revoked"
+    assert replacement_row.team_id == old_row.team_id
+    assert replacement_row.project_id == old_row.project_id
+    assert db.query(ApiKeyModel).filter(ApiKeyModel.api_key_id == replacement_row.id).count() == 1
+    db.close()
 
 
 def test_api_key_model_access_is_optional_and_editable_after_creation():
@@ -432,6 +705,7 @@ def test_direct_provider_execution_mode_uses_direct_client(monkeypatch):
     original_status = credential.status
     credential.secret_reference = encrypt_secret("direct-test-secret")
     credential.status = "active"
+    mark_openai_fixture_pricing_verified(db)
     db.commit()
     db.close()
     try:
@@ -563,6 +837,34 @@ def test_wallet_creation_credit_and_ledger_entry():
     assert wallet["balance_paise"] == 2500
     assert ledger[0]["type"] == "credit"
     assert ledger[0]["amount_paise"] == 2500
+
+
+def test_stale_inference_reservation_recovery_is_preview_then_idempotent_apply():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    credit(headers, team["id"], 1000, suffix="recovery")
+    db = TestingSessionLocal()
+    reservation_id = f"stale-{time.time_ns()}"
+    reservation = debit_wallet(
+        db,
+        team["id"],
+        250,
+        f"llm-reservation:{reservation_id}",
+        reservation_id,
+        reference_type="llm_reservation",
+        description="test stale reservation",
+    )
+    reservation.created_at = services.now() - services.timedelta(seconds=3600)
+    db.commit()
+    preview = recover_stale_llm_reservations(db, max_age_seconds=900, apply=False)
+    assert preview["mode"] == "preview"
+    assert preview["candidate_count"] == 1
+    applied = recover_stale_llm_reservations(db, max_age_seconds=900, apply=True)
+    assert applied["recovered_count"] == 1
+    repeated = recover_stale_llm_reservations(db, max_age_seconds=900, apply=True)
+    assert repeated["recovered_count"] == 0
+    assert db.query(WalletLedger).filter(WalletLedger.idempotency_key == f"llm-settlement:{reservation_id}:release").count() == 1
+    db.close()
 
 
 def test_insufficient_balance_prevents_provider_call(monkeypatch):
@@ -778,6 +1080,163 @@ def test_streaming_response_format(monkeypatch):
     assert "data: [DONE]" in response.text
 
 
+def test_production_stream_forwards_upstream_chunks_and_records_provider_usage(monkeypatch):
+    class FakeStreamingProvider:
+        async def stream_request(self, endpoint, payload):
+            assert endpoint == "/v1/chat/completions"
+            assert payload["stream"] is True
+            yield 'data: {"id":"stream-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"live"}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}'
+            yield "data: [DONE]"
+
+    monkeypatch.setattr(services.get_settings(), "local_test_mode", False)
+    monkeypatch.setattr(services, "provider_client", lambda _route: FakeStreamingProvider())
+    _, team, _, key = provision_beta_key()
+    db = TestingSessionLocal()
+    credential = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+    original_reference = credential.secret_reference
+    original_status = credential.status
+    credential.secret_reference = encrypt_secret("stream-provider-secret")
+    credential.status = "active"
+    mark_openai_fixture_pricing_verified(db)
+    db.commit()
+    db.close()
+    try:
+        response = chat(key, stream=True)
+        assert response.status_code == 200, response.text
+        assert '"content":"live"' in response.text
+        assert "data: [DONE]" in response.text
+        db = TestingSessionLocal()
+        request = db.query(LlmRequest).filter(LlmRequest.team_id == team["id"]).order_by(LlmRequest.created_at.desc()).first()
+        assert request is not None
+        assert request.status == "success"
+        assert request.usage_source == "provider"
+        assert request.total_tokens == 5
+        db.close()
+    finally:
+        db = TestingSessionLocal()
+        restored = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+        restored.secret_reference = original_reference
+        restored.status = original_status
+        db.commit()
+        db.close()
+
+
+def test_production_responses_stream_forwards_upstream_events_and_records_usage(monkeypatch):
+    class FakeResponsesStreamingProvider:
+        async def stream_request(self, endpoint, payload):
+            assert endpoint == "/v1/responses"
+            assert payload["stream"] is True
+            yield "event: response.output_text.delta"
+            yield 'data: {"type":"response.output_text.delta","delta":"live"}'
+            yield "event: response.completed"
+            yield 'data: {"type":"response.completed","response":{"id":"resp-stream-1","object":"response","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}'
+            yield "data: [DONE]"
+
+    monkeypatch.setattr(services.get_settings(), "local_test_mode", False)
+    monkeypatch.setattr(services, "provider_client", lambda _route: FakeResponsesStreamingProvider())
+    _, team, _, key = provision_beta_key()
+    db = TestingSessionLocal()
+    credential = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+    original_reference = credential.secret_reference
+    original_status = credential.status
+    credential.secret_reference = encrypt_secret("responses-stream-provider-secret")
+    credential.status = "active"
+    mark_openai_fixture_pricing_verified(db)
+    db.commit()
+    db.close()
+    try:
+        response = client.post(
+            "/v1/responses",
+            json={"model": "openai/gpt-5", "input": "Hello", "stream": True},
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert response.status_code == 200, response.text
+        assert "response.output_text.delta" in response.text
+        assert '"delta":"live"' in response.text
+        assert "data: [DONE]" in response.text
+        db = TestingSessionLocal()
+        request = db.query(LlmRequest).filter(LlmRequest.team_id == team["id"]).order_by(LlmRequest.created_at.desc()).first()
+        assert request is not None
+        assert request.status == "success"
+        assert request.usage_source == "provider"
+        assert request.total_tokens == 5
+        db.close()
+    finally:
+        db = TestingSessionLocal()
+        restored = db.query(ProviderCredential).join(Provider).filter(Provider.name == "openai").one()
+        restored.secret_reference = original_reference
+        restored.status = original_status
+        db.commit()
+        db.close()
+
+
+def test_production_route_requires_provider_commercial_approval(monkeypatch):
+    monkeypatch.setattr(services.get_settings(), "local_test_mode", False)
+    _, _, _, key = provision_beta_key()
+    db = TestingSessionLocal()
+    provider = db.query(Provider).filter(Provider.name == "openai").one()
+    credential = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
+    original_commercial_status = provider.commercial_status
+    original_reference = credential.secret_reference
+    original_status = credential.status
+    provider.commercial_status = "unreviewed"
+    credential.secret_reference = encrypt_secret("commercial-gate-secret")
+    credential.status = "active"
+    mark_openai_fixture_pricing_verified(db)
+    db.commit()
+    db.close()
+    try:
+        response = chat(key)
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["error"]["code"] == "provider_commercial_approval_required"
+    finally:
+        db = TestingSessionLocal()
+        provider = db.query(Provider).filter(Provider.name == "openai").one()
+        credential = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
+        provider.commercial_status = original_commercial_status
+        credential.secret_reference = original_reference
+        credential.status = original_status
+        db.commit()
+        db.close()
+
+
+def test_production_stale_catalog_model_is_not_routable(monkeypatch):
+    monkeypatch.setattr(services.get_settings(), "local_test_mode", False)
+    _, _, _, key = provision_beta_key()
+    db = TestingSessionLocal()
+    provider = db.query(Provider).filter(Provider.name == "openai").one()
+    credential = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
+    model = db.get(ModelCatalog, "openai/gpt-5")
+    original_commercial_status = provider.commercial_status
+    original_reference = credential.secret_reference
+    original_status = credential.status
+    original_source = model.catalog_source
+    original_synced_at = model.last_synced_at
+    provider.commercial_status = "approved"
+    credential.secret_reference = encrypt_secret("stale-catalog-secret")
+    credential.status = "active"
+    mark_openai_fixture_pricing_verified(db)
+    model.last_synced_at = services.now() - services.timedelta(seconds=services.get_settings().litellm_catalog_cache_seconds * 3 + 1)
+    db.commit()
+    db.close()
+    try:
+        response = chat(key)
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["error"]["code"] == "model_catalog_stale"
+    finally:
+        db = TestingSessionLocal()
+        provider = db.query(Provider).filter(Provider.name == "openai").one()
+        credential = db.query(ProviderCredential).filter(ProviderCredential.provider_id == provider.id).one()
+        model = db.get(ModelCatalog, "openai/gpt-5")
+        provider.commercial_status = original_commercial_status
+        credential.secret_reference = original_reference
+        credential.status = original_status
+        model.catalog_source = original_source
+        model.last_synced_at = original_synced_at
+        db.commit()
+        db.close()
+
+
 def test_responses_api_uses_chat_capability_and_records_usage(monkeypatch):
     async def fake_json(self, endpoint, payload):  # noqa: ARG001
         assert endpoint == "/v1/responses"
@@ -818,12 +1277,38 @@ def test_model_capability_mismatch_is_rejected_before_provider_call(monkeypatch)
     assert response.json()["detail"]["error"]["code"] == "model_capability_mismatch"
 
 
+def test_route_rejects_capability_without_registered_adapter(monkeypatch):
+    db = TestingSessionLocal()
+    model = db.get(ModelCatalog, "openai/gpt-5")
+    original_capabilities = model.capabilities
+    original_capability_types = model.capability_types
+    original_protocol = model.protocol
+    model.capabilities = "chat,decision"
+    model.capability_types = "chat_completion,decision"
+    model.protocol = "decision_native"
+    db.commit()
+    db.close()
+    try:
+        _, _, _, key = provision_beta_key()
+        response = chat(key, model="openai/gpt-5")
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["error"]["code"] == "provider_capability_unsupported", response.json()
+    finally:
+        db = TestingSessionLocal()
+        model = db.get(ModelCatalog, "openai/gpt-5")
+        model.capabilities = original_capabilities
+        model.capability_types = original_capability_types
+        model.protocol = original_protocol
+        db.commit()
+        db.close()
+
+
 def test_embeddings_api_routes_an_enabled_embedding_model(monkeypatch):
     db = TestingSessionLocal()
     provider = db.query(Provider).filter(Provider.name == "openai").one()
     model_id = "openai/test-embedding"
     if db.get(ModelCatalog, model_id) is None:
-        db.add(ModelCatalog(id=model_id, provider_id=provider.id, provider_model_id="local-test-embedding", display_name="Test Embedding", capabilities="embeddings", context_window=8192, input_price_paise_per_1k=2, output_price_paise_per_1k=0))
+        db.add(ModelCatalog(id=model_id, provider_id=provider.id, provider_model_id="local-test-embedding", display_name="Test Embedding", capabilities="embeddings", context_window=8192, input_price_paise_per_1k=2, output_price_paise_per_1k=0, enabled=True, published=True, status="available", route_readiness_reason="local test fixture", catalog_source="test"))
         db.commit()
     db.close()
 
@@ -850,6 +1335,8 @@ def test_embeddings_api_routes_an_enabled_embedding_model(monkeypatch):
 def test_provider_circuit_breaker_opens_after_three_failures():
     db = TestingSessionLocal()
     provider = db.query(Provider).filter(Provider.name == "openai").one()
+    db.query(ProviderHealthCheck).filter(ProviderHealthCheck.provider_id == provider.id).delete(synchronize_session=False)
+    db.commit()
     for _ in range(3):
         record_provider_health(db, provider, success=False, latency_ms=25, error_code="provider_unavailable")
         db.flush()
@@ -968,6 +1455,7 @@ def test_team_byok_activation_and_routing(monkeypatch):
         models=[{
             "provider": "openai", "provider_model_id": "openai/gpt-byok", "litellm_model_id": "openai/gpt-byok",
             "display_name": "GPT BYOK", "capabilities": ["chat", "tools"], "mode": "chat", "context_window": 32768,
+            "capability_types": ["chat_completion", "responses"],
             "input_cost_per_million_usd": 1.0, "output_cost_per_million_usd": 2.0, "byok_supported": True, "metadata": {},
         }],
         sources=[{"provider": "openai", "status": "available", "count": 1, "error": None}],
@@ -999,10 +1487,55 @@ def test_team_byok_activation_and_routing(monkeypatch):
     db.close()
     assert credential.encrypted_secret.startswith("encrypted:")
     assert raw_secret not in credential.encrypted_secret
-
     deleted = client.delete(f"/byok/credentials/openai?team_id={team['id']}", headers=headers)
     assert deleted.status_code == 200
     assert deleted.json()["status"] == "revoked"
+
+
+def test_unknown_catalog_capability_cannot_be_activated(monkeypatch):
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    saved = client.post("/byok/credentials", json={"team_id": team["id"], "provider": "cohere", "api_key": "sk-cohere-unknown-mode"}, headers=headers)
+    assert saved.status_code == 200, saved.text
+    services._litellm_catalog_cache.update(
+        expires_at=time.monotonic() + 60,
+        models=[{
+            "provider": "cohere", "provider_model_id": "cohere/rerank-test", "litellm_model_id": "cohere/rerank-test",
+            "display_name": "Rerank Test", "capabilities": ["rerank"], "capability_types": [], "mode": "rerank",
+            "context_window": None, "input_cost_per_million_usd": 1.0, "output_cost_per_million_usd": 1.0,
+            "byok_supported": True, "metadata": {},
+        }],
+        sources=[{"provider": "cohere", "status": "available", "count": 1, "error": None}],
+    )
+    blocked = client.post("/models/activate", json={"team_id": team["id"], "model_id": "cohere/rerank-test"}, headers=headers)
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["error"]["code"] == "provider_capability_unsupported"
+    deleted = client.delete(f"/byok/credentials/cohere?team_id={team['id']}", headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "revoked"
+
+
+def test_media_usage_without_provider_usage_is_explicitly_estimated():
+    estimated, source = services._usage_with_source({"id": "media-response"}, 7)
+    assert estimated == {"prompt_tokens": 7, "completion_tokens": 0, "total_tokens": 7}
+    assert source == "estimate"
+    provider, source = services._usage_with_source({"usage": {"input_tokens": 2, "output_tokens": 3}}, 7)
+    assert provider == {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+    assert source == "provider"
+
+
+def test_provider_cost_uses_source_price_and_customer_charge_uses_markup():
+    model = SimpleNamespace(
+        input_price_paise_per_1k=20,
+        output_price_paise_per_1k=40,
+        input_price_usd_per_million=Decimal("1"),
+        output_price_usd_per_million=Decimal("2"),
+    )
+
+    provider_cost, customer_charge = services.calculate_cost_paise(model, {"prompt_tokens": 1000, "completion_tokens": 1000})
+
+    assert provider_cost == 26
+    assert customer_charge == 60
 
 
 def db_count(model) -> int:
@@ -1092,3 +1625,218 @@ def test_model_governance_policies_and_routing_alias(monkeypatch):
     assert db.query(ModelPolicy).filter(ModelPolicy.team_id == team["id"], ModelPolicy.model_id == "openai/gpt-5").count() == 1
     assert db.query(RoutingPolicy).filter(RoutingPolicy.alias == "fast").count() == 1
     db.close()
+
+
+def test_self_serve_otp_signup_creates_others_project_and_scoped_key():
+    email = f"otp-owner-{time.time_ns()}@example.com"
+    requested = client.post("/auth/signup/request-otp", json={"email": email})
+    assert requested.status_code == 200, requested.text
+    payload = requested.json()
+    db = TestingSessionLocal()
+    assert db.query(EmailOutbox).filter(EmailOutbox.recipient == email, EmailOutbox.status == "queued").count() == 1
+    db.close()
+    verified = client.post("/auth/signup/verify-otp", json={"challenge_id": payload["challenge_id"], "email": email, "code": payload["debug_otp"], "organization_name": "OTP Workspace"})
+    assert verified.status_code == 200, verified.text
+    headers = {"Authorization": f"Bearer {verified.json()['token']}"}
+    projects = client.get("/projects", headers=headers)
+    assert projects.status_code == 200, projects.text
+    fallback = next(project for project in projects.json() if project["is_default"])
+    team = client.post("/teams", json={"name": "OTP Team", "slug": f"otp-{time.time_ns()}", "project_id": fallback["id"]}, headers=headers)
+    assert team.status_code == 200, team.text
+    key = client.post("/api-keys", json={"name": "VS Code device", "team_id": team.json()["id"], "project_id": fallback["id"]}, headers=headers)
+    assert key.status_code == 200, key.text
+    assert key.json()["project_id"] == fallback["id"]
+
+
+def test_email_outbox_worker_records_real_transport_success_and_failure(monkeypatch):
+    db = TestingSessionLocal()
+    db.query(EmailOutbox).filter(EmailOutbox.status == "queued").update({EmailOutbox.status: "sent"}, synchronize_session=False)
+    message = services.queue_email(db, "worker-success@example.com", "Subject", "Body")
+    db.commit()
+    sent_messages = []
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def starttls(self):
+            pass
+
+        def login(self, _username, _password):
+            pass
+
+        def send_message(self, email):
+            sent_messages.append(email)
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(services.get_settings(), "smtp_host", "smtp.test")
+    monkeypatch.setattr(email_worker.smtplib, "SMTP", FakeSMTP)
+    result = email_worker.drain_email_outbox(db, limit=1)
+    assert result == {"selected": 1, "sent": 1, "failed": 0}
+    assert db.get(EmailOutbox, message.id).status == "sent"
+    assert sent_messages[0]["To"] == "worker-success@example.com"
+
+    failed_message = services.queue_email(db, "worker-failure@example.com", "Subject", "Body")
+    db.commit()
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("SMTP unavailable")
+
+    monkeypatch.setattr(email_worker.smtplib, "SMTP", unavailable)
+    result = email_worker.drain_email_outbox(db, limit=1)
+    assert result == {"selected": 1, "sent": 0, "failed": 1}
+    stored_failure = db.get(EmailOutbox, failed_message.id)
+    assert stored_failure.status == "failed"
+    assert "SMTP unavailable" in stored_failure.last_error
+    db.close()
+
+
+def test_project_invitation_otp_acceptance_and_member_revocation():
+    owner_email = f"invite-owner-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": owner_email, "password": "InviteOwner123!", "organization_name": "Invite Workspace"})
+    assert signup.status_code == 200, signup.text
+    owner_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+    project = client.post("/projects", json={"name": "Client Project", "description": "Customer delivery"}, headers=owner_headers)
+    assert project.status_code == 200, project.text
+    invite_email = f"invite-member-{time.time_ns()}@example.com"
+    invitation = client.post("/organization/invitations", json={"project_id": project.json()["id"], "email": invite_email}, headers=owner_headers)
+    assert invitation.status_code == 200, invitation.text
+    token = invitation.json()["accept_token"]
+    otp = client.post(f"/auth/invitations/{token}/request-otp")
+    assert otp.status_code == 200, otp.text
+    accepted = client.post(f"/auth/invitations/{token}/accept", json={"challenge_id": otp.json()["challenge_id"], "email": invite_email, "code": otp.json()["debug_otp"], "name": "Invited Member"})
+    assert accepted.status_code == 200, accepted.text
+    member_headers = {"Authorization": f"Bearer {accepted.json()['token']}"}
+    member_projects = client.get("/projects", headers=member_headers)
+    assert member_projects.status_code == 200, member_projects.text
+    assert any(row["id"] == project.json()["id"] for row in member_projects.json())
+    removed = client.delete(f"/organization/members/{accepted.json()['user_id']}", headers=owner_headers)
+    assert removed.status_code == 200, removed.text
+    assert client.get("/projects", headers=member_headers).status_code == 401
+
+
+def test_vscode_device_authorization_scopes_project_and_revokes_with_admin_session_revoke(monkeypatch):
+    owner_email = f"device-owner-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": owner_email, "password": "DeviceOwner123!", "organization_name": "Device Workspace"})
+    assert signup.status_code == 200, signup.text
+    owner_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+    project = client.post("/projects", json={"name": "VS Code Project"}, headers=owner_headers)
+    assert project.status_code == 200, project.text
+    team = client.post("/teams", json={"name": "VS Code Team", "slug": f"device-{time.time_ns()}", "project_id": project.json()["id"]}, headers=owner_headers)
+    assert team.status_code == 200, team.text
+    started = client.post("/auth/extension/device/start", json={"device_name": "VS Code integration test"})
+    assert started.status_code == 200, started.text
+    approved = client.post("/auth/extension/device/approve", json={"user_code": started.json()["user_code"], "project_id": project.json()["id"], "team_id": team.json()["id"]}, headers=owner_headers)
+    assert approved.status_code == 200, approved.text
+    polled = client.post("/auth/extension/device/poll", json={"device_code": started.json()["device_code"]})
+    assert polled.status_code == 200, polled.text
+    device_token = polled.json()["access_token"]
+    account = client.get("/v1/account", headers={"Authorization": f"Bearer {device_token}"})
+    assert account.status_code == 200, account.text
+    assert account.json()["project"]["id"] == project.json()["id"]
+    credit(admin_headers(), team.json()["id"], 5000)
+    monkeypatch.setattr(LiteLLMClient, "chat_completion", fake_provider)
+    completion = client.post("/v1/chat/completions", json={"model": "openai/gpt-5", "messages": [{"role": "user", "content": "device flow"}]}, headers={"Authorization": f"Bearer {device_token}"})
+    assert completion.status_code == 200, completion.text
+    db = TestingSessionLocal()
+    request = db.query(LlmRequest).filter(LlmRequest.api_key_id == account.json()["api_key"]["id"]).order_by(LlmRequest.created_at.desc()).first()
+    assert request is not None and request.project_id == project.json()["id"] and request.device_session_id
+    db.close()
+    revoked = client.post(f"/admin/users/{signup.json()['user_id']}/revoke-sessions", headers=admin_headers())
+    assert revoked.status_code == 200, revoked.text
+    assert client.get("/v1/account", headers={"Authorization": f"Bearer {device_token}"}).status_code == 401
+
+
+def test_api_key_rejects_cross_tenant_project_header():
+    first_email = f"scope-first-{time.time_ns()}@example.com"
+    first = client.post("/auth/signup", json={"email": first_email, "password": "ScopeFirst123!", "organization_name": "Scope First"})
+    assert first.status_code == 200, first.text
+    first_headers = {"Authorization": f"Bearer {first.json()['token']}"}
+    first_team = client.get("/teams", headers=first_headers).json()[0]
+    first_project = client.get("/projects", headers=first_headers).json()[0]
+    created = client.post("/api-keys", json={"name": "Scoped test key", "team_id": first_team["id"], "project_id": first_project["id"]}, headers=first_headers)
+    assert created.status_code == 200, created.text
+
+    second_email = f"scope-second-{time.time_ns()}@example.com"
+    second = client.post("/auth/signup", json={"email": second_email, "password": "ScopeSecond123!", "organization_name": "Scope Second"})
+    assert second.status_code == 200, second.text
+    second_project = client.get("/projects", headers={"Authorization": f"Bearer {second.json()['token']}"}).json()[0]
+    response = client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}", "X-Compass-Project-Id": second_project["id"]},
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["error"]["code"] == "project_access_denied"
+
+
+def test_removing_member_is_scoped_to_the_target_organization():
+    first_email = f"org-first-{time.time_ns()}@example.com"
+    first = client.post("/auth/signup", json={"email": first_email, "password": "OrgFirst123!", "organization_name": "First Organization"})
+    assert first.status_code == 200, first.text
+    first_headers = {"Authorization": f"Bearer {first.json()['token']}"}
+    first_project = client.get("/projects", headers=first_headers).json()[0]
+
+    member_email = f"org-member-{time.time_ns()}@example.com"
+    member = client.post("/auth/signup", json={"email": member_email, "password": "OrgMember123!", "organization_name": "Member Organization"})
+    assert member.status_code == 200, member.text
+    member_headers = {"Authorization": f"Bearer {member.json()['token']}"}
+    member_project = client.get("/projects", headers=member_headers).json()[0]
+
+    invitation = client.post("/organization/invitations", json={"project_id": first_project["id"], "email": member_email}, headers=first_headers)
+    assert invitation.status_code == 200, invitation.text
+    token = invitation.json()["accept_token"]
+    otp = client.post(f"/auth/invitations/{token}/request-otp")
+    accepted = client.post(f"/auth/invitations/{token}/accept", json={"challenge_id": otp.json()["challenge_id"], "email": member_email, "code": otp.json()["debug_otp"], "name": "Shared Member"})
+    assert accepted.status_code == 200, accepted.text
+
+    removed = client.delete(f"/organization/members/{accepted.json()['user_id']}", headers=first_headers)
+    assert removed.status_code == 200, removed.text
+    remaining = client.get("/projects", headers=member_headers)
+    assert remaining.status_code == 200, remaining.text
+    assert [row["id"] for row in remaining.json()] == [member_project["id"]]
+
+
+def test_team_owner_can_manage_team_keys_but_member_cannot():
+    owner_email = f"key-owner-{time.time_ns()}@example.com"
+    owner = client.post("/auth/signup", json={"email": owner_email, "password": "KeyOwner123!", "organization_name": "Key Workspace"})
+    assert owner.status_code == 200, owner.text
+    owner_headers = {"Authorization": f"Bearer {owner.json()['token']}"}
+    team = client.get("/teams", headers=owner_headers).json()[0]
+    project = client.get("/projects", headers=owner_headers).json()[0]
+    member_email = f"key-member-{time.time_ns()}@example.com"
+    member = client.post("/auth/signup", json={"email": member_email, "password": "KeyMember123!", "organization_name": "Other Workspace"})
+    assert member.status_code == 200, member.text
+    member_headers = {"Authorization": f"Bearer {member.json()['token']}"}
+    invitation = client.post("/organization/invitations", json={"project_id": project["id"], "team_id": team["id"], "email": member_email}, headers=owner_headers)
+    assert invitation.status_code == 200, invitation.text
+    token = invitation.json()["accept_token"]
+    otp = client.post(f"/auth/invitations/{token}/request-otp")
+    accepted = client.post(f"/auth/invitations/{token}/accept", json={"challenge_id": otp.json()["challenge_id"], "email": member_email, "code": otp.json()["debug_otp"], "name": "Key Member"})
+    assert accepted.status_code == 200, accepted.text
+    members = client.get(f"/teams/{team['id']}/members", headers=owner_headers).json()
+    member_row = next(row for row in members if row["email"] == member_email)
+    created = client.post("/api-keys", json={"name": "Member-assigned key", "team_id": team["id"], "project_id": project["id"], "member_id": member_row["id"]}, headers=owner_headers)
+    assert created.status_code == 200, created.text
+    listed = client.get("/api-keys", headers=owner_headers)
+    assert any(row["id"] == created.json()["id"] for row in listed.json())
+    denied = client.patch(f"/api-keys/{created.json()['id']}/models", json={"allowed_models": ["openai/gpt-5"]}, headers=member_headers)
+    assert denied.status_code == 403, denied.text
+
+
+def test_production_rate_limiting_fails_closed_when_redis_is_unavailable(monkeypatch):
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    db = TestingSessionLocal()
+    original_environment = services.get_settings().environment
+    monkeypatch.setattr(services.get_settings(), "environment", "production")
+    monkeypatch.setattr(services, "redis_team_rate_limit", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("redis unavailable")))
+    try:
+        with pytest.raises(HTTPException) as error:
+            services.enforce_team_limits(db, team["id"], estimated_tokens=1, estimated_cost_paise=1)
+        assert error.value.status_code == 503
+        assert error.value.detail["error"]["code"] == "rate_limit_unavailable"
+    finally:
+        services.get_settings().environment = original_environment
+        db.close()

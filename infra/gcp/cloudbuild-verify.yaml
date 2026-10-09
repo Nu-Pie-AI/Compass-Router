@@ -1,0 +1,29 @@
+# Cloud Build verification pipeline for Compass Router.
+# This file builds images and runs checks only. Deployment and promotion remain
+# separate owner-approved operations.
+
+steps:
+  - name: python:3.12-slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        pip install --no-cache-dir -r apps/api/requirements.txt
+        python infra/gcp/validate_templates.py
+        PYTHONPATH=apps/api pytest -q
+  - name: node:24-alpine
+    entrypoint: sh
+    args:
+      - -ceu
+      - |
+        cd apps/web
+        npm ci
+        npm run typecheck
+        npm run lint
+        npm run build
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "apps/api/Dockerfile", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "apps/web/Dockerfile", "."]
+options:
+  logging: CLOUD_LOGGING_ONLY

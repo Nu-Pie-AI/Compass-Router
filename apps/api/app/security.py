@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from cryptography.fernet import Fernet
+from clerk_backend_api import AuthenticateRequestOptions, Clerk, authenticate_request
+from fastapi import Request
 from jose import jwt
 from passlib.context import CryptContext
 
@@ -38,6 +40,41 @@ def decode_session_claims(token: str) -> dict:
     if not payload.get("sub"):
         raise ValueError("session subject is missing")
     return payload
+
+
+def authenticate_clerk_request(request: Request) -> dict:
+    """Verify a Clerk session token without exposing token material to callers."""
+    settings = get_settings()
+    if not settings.clerk_secret_key and not settings.clerk_jwt_key:
+        raise ValueError("Clerk is not configured")
+    authorized_parties = [item.strip() for item in settings.clerk_authorized_parties.split(",") if item.strip()]
+    options = AuthenticateRequestOptions(
+        secret_key=settings.clerk_secret_key,
+        jwt_key=settings.clerk_jwt_key,
+        audience=settings.clerk_audience or None,
+        authorized_parties=authorized_parties or None,
+        accepts_token=["session_token"],
+    )
+    state = authenticate_request(request, options)
+    if not state.is_authenticated or not state.payload or not state.payload.get("sub"):
+        raise ValueError(state.reason or "Clerk session is not authenticated")
+    return dict(state.payload)
+
+
+def clerk_user_email(clerk_user_id: str) -> str:
+    """Read the verified primary email from Clerk during first-user provisioning."""
+    settings = get_settings()
+    if not settings.clerk_secret_key:
+        raise ValueError("CLERK_SECRET_KEY is required for identity provisioning")
+    user = Clerk(bearer_auth=settings.clerk_secret_key).users.get(user_id=clerk_user_id)
+    primary_id = getattr(user, "primary_email_address_id", None)
+    addresses = getattr(user, "email_addresses", None) or []
+    selected = next((item for item in addresses if getattr(item, "id", None) == primary_id), None)
+    selected = selected or (addresses[0] if addresses else None)
+    email = getattr(selected, "email_address", None)
+    if not isinstance(email, str) or "@" not in email:
+        raise ValueError("Clerk user has no usable verified email")
+    return email.strip().lower()
 
 
 def decode_marketplace_sso_token(token: str) -> dict:

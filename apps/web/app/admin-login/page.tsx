@@ -24,9 +24,7 @@ export default function AdminLoginPage() {
         method: "POST",
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      if (session.role !== "admin" && session.role !== "super_admin") {
-        throw new Error("This account does not have Compass administrator access.");
-      }
+      await apiFetch("/admin/access", {}, session.token);
       window.localStorage.setItem("compass.local.session", JSON.stringify(session));
       router.replace("/admin");
     } catch (reason) {

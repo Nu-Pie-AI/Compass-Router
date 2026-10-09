@@ -9,6 +9,8 @@ ARG NEXT_PUBLIC_COMPASS_API_URL=http://localhost:28000
 ENV NEXT_PUBLIC_COMPASS_API_URL=$NEXT_PUBLIC_COMPASS_API_URL
 ARG NEXT_PUBLIC_MARKETPLACE_URL=http://localhost:3100
 ENV NEXT_PUBLIC_MARKETPLACE_URL=$NEXT_PUBLIC_MARKETPLACE_URL
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 COPY --from=deps /app/node_modules ./node_modules
 COPY apps/web ./
 RUN npm run build
@@ -18,7 +20,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+USER node
 EXPOSE 3000
 CMD ["node", "server.js"]

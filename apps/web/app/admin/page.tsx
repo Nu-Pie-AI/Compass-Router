@@ -1,5 +1,5 @@
-import { CompassConsole } from "../../components/CompassConsole";
+import { AdminConsole } from "../../components/AdminConsole";
 
 export default function Admin() {
-  return <CompassConsole view="admin" />;
+  return <AdminConsole />;
 }

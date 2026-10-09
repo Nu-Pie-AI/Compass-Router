@@ -1,0 +1,68 @@
+# Compass Router Production Deployment Readiness
+
+## Safe staging preflight - 2026-10-09
+
+Status: PREPARED; DEPLOYMENT REQUIRES OWNER APPROVAL
+
+- Target branch: `staging/safe-deployment-2026-10-09`.
+- Read-only GCP checks passed for project `compass-510017`, billing, existing Cloud Run services, and Artifact Registry repository `compass` in `us-central1`.
+- Focused verification passed: 13 API/infrastructure tests, web lint, web production build, web typecheck, template validation, whitespace validation, and production npm audit.
+- Remote build configuration: `infra/gcp/cloudbuild-staging-images.yaml`.
+- Intended services: `compass-router-api-staging` and `compass-router-web-staging`.
+- No staging resources or existing public services were modified.
+- Neon staging database integration is prepared: pooled runtime `DATABASE_URL`, direct Alembic `DIRECT_DATABASE_URL`, `psycopg` normalization, SSL preservation, and a Cloud SQL-free staging template.
+- Neon connectivity, migration, isolation, concurrency, rollback, and data-provenance checks remain pending because no database URL was available to the workspace.
+- Root `.env` now exists with safe placeholders only; it is ignored and untracked. The verifier was executed and failed closed before any migration because the Neon host is still a placeholder.
+- Approval is still required for resource creation, isolated database/Redis provisioning, Secret Manager writes, and Cloud Build execution.
+
+Status: NOT READY
+
+## Current readiness
+
+| Area | Status | Evidence or gap |
+|---|---|---|
+| Isolated source copy | READY | Target clone, branch, baseline tag, and source status comparison |
+| API unit/integration baseline | READY WITH PENDING STAGING CHECKS | 96 isolated API/catalog/migration/adapter/staging-harness and infrastructure tests passed, including adapter capability gates, M9 governance, provider registry fail-closed behavior, conservative capability normalization, no-capability activation rejection, monotonic provider-health ordering, media usage-source accounting, source/customer pricing separation, production startup seeding safety, API-key rotation, SMTP outbox state handling, Responses SSE forwarding, commercial approval gating, stale-catalog rejection, Cloud Run production-template requirements, and structured log allow-listing |
+| Router web build | READY | Typecheck, lint, production build, production dependency audit, standalone server start, and public-route smoke checks pass; authenticated Clerk/browser workflows remain unverified |
+| Marketplace build | READY WITH WARNINGS | TypeScript/build pass; dependency warnings remain |
+| Database migrations | PARTIAL | Alembic head and SQLite upgrade tests pass; PostgreSQL and populated legacy adoption remain unverified |
+| Clerk authentication | PARTIAL/BLOCKED FOR LIVE | Clerk verifier, bootstrap, webhook ledger, and web integration are coded; real Clerk app, keys, browser flow, and webhook delivery are not verified |
+| Tenant authorization | PARTIAL | M3 centralized organization/project/team/key/BYOK checks and cross-tenant regression tests pass on SQLite; PostgreSQL, Redis, and live Clerk verification remain pending |
+| Dynamic model catalog | PARTIAL/BLOCKED FOR LIVE | Provider-neutral LiteLLM registry, source pricing, readiness, stale handling, commercial approval gating, and optional OpenRouter isolation are coded; live provider discovery is not verified |
+| Genuine streaming | PARTIAL/BLOCKED FOR LIVE | Production chat and Responses SSE paths forward upstream events; live timing, cancellation, provider errors, and backpressure remain unverified |
+| Wallet accounting | PARTIAL | Existing tests, idempotent recovery, and provider commercial gating pass; PostgreSQL concurrency and live settlement remain unverified |
+| Customer/admin workflows | PARTIAL | M9 permission-aware `/admin` control center, metadata explorers, wallet adjustment safety, role governance, settings, pricing/routing revisions, and audit views are locally verified; Clerk-backed browser journeys, fresh-authentication controls, and accessibility remain unverified |
+| Transactional email | PARTIAL/BLOCKED FOR LIVE | Outbox worker claims, sends, retries, and records SMTP failures locally; SMTP credentials, sending domain, deliverability, and live OTP/invitation delivery remain unverified |
+| Cloud operations | PREPARED/BLOCKED | Non-root images, verification Cloud Build, Cloud Run templates, and local template safety validation exist; Docker engine is unavailable and current gcloud resource queries fail with non-interactive reauthentication required |
+| Razorpay payments | BLOCKED | Test credentials and signed webhook tests unavailable |
+| Secret management | PARTIAL/BLOCKED FOR LIVE | Server-side secret references, pinned template versions, and release checks exist; GCP Secret Manager wiring and rotation drills remain unverified |
+| Observability | PARTIAL/BLOCKED FOR LIVE | Structured redaction-safe request logs with request IDs, admin metrics/events, and monitoring guidance exist; Cloud Logging/Monitoring ingestion, tracing, alerts, and production redaction review remain unverified |
+| Cloud Run deployment | BLOCKED | GCP project/IAM/domain access unavailable |
+| Commercial launch | BLOCKED | Provider resale, tax, privacy, and payment approvals unavailable |
+| M9 platform governance | PARTIAL/BLOCKED FOR LIVE | Role/bootstrap/MFA claim checks, metadata-only admin APIs, wallet controls, and admin UI are implemented; real Clerk claims, PostgreSQL/Redis behavior, high-risk reauthentication, and operational staging remain unverified |
+
+## Required release gates
+
+- [ ] M1 migration fresh-install and sanitized-legacy upgrade tests pass.
+- [ ] Clerk signup, login, logout, session rejection, provisioning, and webhook redelivery pass against a real Clerk application.
+- [x] Cross-tenant, project, key, admin, wallet, and provider credential authorization tests pass in isolated API regression coverage.
+- [x] Production startup does not seed fake models, customer prices, or provider availability when local test mode is disabled.
+- [ ] Repeat authorization and limiter verification against PostgreSQL, Redis, and a real Clerk application.
+- [ ] Dynamic LiteLLM/direct-provider catalog sync and stale-data behavior pass with a real staging provider.
+- [ ] Live provider streamed inference starts before upstream completion and handles cancellation.
+- [ ] Usage and wallet settlement are truthful and exactly-once under errors and concurrency.
+- [ ] Razorpay sandbox order, verified webhook, duplicate event, refund, and reconciliation tests pass.
+- [x] Production dependency audit has no unresolved high or critical findings (`npm audit --omit=dev`).
+- [ ] Secret Manager, backups, migrations, alerts, logs, DNS, TLS, rollback, and restore drills pass.
+- [ ] Browser workflows, project tagging, live catalog state, and accessibility checks pass.
+- [ ] SMTP delivery, invitation/OTP receipt, retry behavior, and sending-domain deliverability pass in staging.
+- [ ] Owner signs off on live money movement and production deployment.
+- [x] M9 local governance APIs, migration, UI build, and 96-test regression evidence.
+- [x] Non-destructive staging smoke harness with opt-in real streaming measurement.
+- [ ] M9 live Clerk MFA/bootstrap/session-revocation and high-risk reauthentication verification.
+- [ ] Refresh the owner-controlled gcloud authentication, then perform read-only project/resource checks before any staging plan or deployment approval.
+
+## Current external prerequisites
+
+Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay test credentials; GCP project and IAM; domain/DNS; sanitized database backup; commercial and tax decisions. OpenRouter is optional and is not a release prerequisite.
+

@@ -15,6 +15,62 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class OtpRequest(BaseModel):
+    email: EmailStr
+
+
+class SignupOtpVerify(BaseModel):
+    challenge_id: str = Field(min_length=8, max_length=80)
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+    organization_name: str = Field(min_length=2, max_length=120)
+
+
+class LoginOtpVerify(BaseModel):
+    challenge_id: str = Field(min_length=8, max_length=80)
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class InvitationCreate(BaseModel):
+    project_id: str
+    email: EmailStr
+    role: Literal["admin", "member"] = "member"
+    team_id: str | None = None
+
+
+class InvitationOtpVerify(BaseModel):
+    challenge_id: str = Field(min_length=8, max_length=80)
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ExtensionDeviceStart(BaseModel):
+    device_name: str = Field(default="VS Code", min_length=1, max_length=120)
+
+
+class ExtensionDevicePoll(BaseModel):
+    device_code: str = Field(min_length=16, max_length=256)
+
+
+class ExtensionDeviceApprove(BaseModel):
+    user_code: str = Field(min_length=6, max_length=16)
+    project_id: str
+    team_id: str | None = None
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    slug: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{1,60}$")
+    description: str = Field(default="", max_length=1000)
+
+
+class ProjectUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    description: str = Field(default="", max_length=1000)
+
+
 class UserRoleUpdate(BaseModel):
     role: Literal["customer", "admin", "super_admin"]
 
@@ -22,6 +78,49 @@ class UserRoleUpdate(BaseModel):
 class UserAccessUpdate(BaseModel):
     status: Literal["active", "suspended"]
     reason: str = Field(default="", max_length=240)
+
+
+class PlatformBootstrapRequest(BaseModel):
+    confirmation: Literal["BOOTSTRAP_PLATFORM_OWNER"]
+
+
+class PlatformRoleGrantRequest(BaseModel):
+    user_id: str
+    role: Literal["PLATFORM_ADMIN", "FINANCE_ADMIN", "SUPPORT_ADMIN", "READ_ONLY_AUDITOR"]
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class PlatformRoleRevokeRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class AdminWalletAdjustmentRequest(BaseModel):
+    team_id: str
+    amount_paise: int = Field(ne=0, ge=-5_000_000_000, le=5_000_000_000)
+    currency: Literal["INR"] = "INR"
+    reason: str = Field(min_length=3, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    second_approver_user_id: str | None = None
+
+
+class PlatformSettingsUpdate(BaseModel):
+    values: dict[str, object] = Field(min_length=1, max_length=30)
+
+
+class ModelPricingChange(BaseModel):
+    status: Literal["available", "unavailable", "expired", "deprecated"]
+    enabled: bool | None = None
+    published: bool | None = None
+    fallback_model_id: str | None = Field(default=None, max_length=200)
+    input_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
+    output_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
+    change_reason: str = Field(default="", max_length=500)
+
+
+class AdminRoutingPolicyUpdate(BaseModel):
+    candidate_models: list[str] = Field(min_length=1, max_length=8)
+    enabled: bool = True
+    change_reason: str = Field(default="", max_length=500)
 
 
 class MarketplaceSsoRequest(BaseModel):
@@ -41,6 +140,7 @@ class TeamCreate(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,60}$")
     notes: str = Field(default="", max_length=1000)
     workspace_id: str | None = None
+    project_id: str | None = None
 
 
 class WorkspaceCreate(BaseModel):
@@ -57,6 +157,7 @@ class TeamMemberCreate(BaseModel):
 class ApiKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     team_id: str
+    project_id: str | None = None
     member_id: str | None = None
     allowed_models: list[str] = Field(default_factory=list, max_length=20)
     expires_at: datetime | None = None
@@ -193,6 +294,13 @@ class ModelActivationRequest(BaseModel):
     model_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._:/-]*$", max_length=200)
 
 
+class PricingPolicyCreate(BaseModel):
+    version: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$")
+    markup_bps: int = Field(default=0, ge=0, le=100_000)
+    usd_to_inr_paise_per_usd: int = Field(ge=1, le=10_000_000)
+    effective_at: datetime | None = None
+
+
 class ModelStatusUpdate(BaseModel):
     status: Literal["available", "unavailable", "expired", "deprecated"]
     enabled: bool | None = None
@@ -203,6 +311,7 @@ class ModelGovernanceUpdate(ModelStatusUpdate):
     fallback_model_id: str | None = Field(default=None, max_length=200)
     input_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
     output_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
+    change_reason: str = Field(default="", max_length=500)
 
 
 class ModelPolicyUpdate(BaseModel):
@@ -220,6 +329,7 @@ class RoutingPolicyUpdate(BaseModel):
 class ProviderStatusUpdate(BaseModel):
     status: Literal["healthy", "degraded", "unavailable", "disabled"]
     enabled: bool | None = None
+    commercial_status: Literal["unreviewed", "approved", "rejected"] | None = None
 
 
 class TeamLimitsUpdate(BaseModel):

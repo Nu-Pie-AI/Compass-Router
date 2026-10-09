@@ -68,13 +68,15 @@ $env:PYTHONPATH='apps/api'
 
 Open `http://127.0.0.1:8000/health`.
 
-Three active local accounts are seeded idempotently into the application database on API startup:
+When `LOCAL_TEST_MODE=true`, three active local accounts are seeded idempotently into the application database on API startup:
 
 - Admin: `admin@example.com` / `CompassAdmin123!`
 - Customer 1: `customer@example.com` / `CompassCustomer123!`
 - Customer 2: `customer2@example.com` / `CompassCustomer456!`
 
 The values are configurable with `ADMIN_*`, `LOCAL_TEST_CUSTOMER_*`, and `LOCAL_TEST_CUSTOMER_2_*` in `.env`. These are local development fixtures only. Self-service signup remains enabled in local Compose through `PUBLIC_SIGNUP_ENABLED=true`.
+
+When `LOCAL_TEST_MODE=false`, startup does not create fixture models, provider credentials, provider availability, or customer pricing. Production model rows must come from a verified catalog synchronization, an explicit pricing policy, configured provider credentials, provider enablement, and administrator activation.
 
 Use the dashboard to create a beta team, credit its test wallet, issue a Compass API key, and run requests from the Playground. API keys are shown once and only the hash is stored.
 
@@ -144,11 +146,11 @@ npm.cmd run check
 npm.cmd test
 npm.cmd run build
 npm.cmd run package
-code.cmd --install-extension .\compass-code-0.1.0.vsix --force
+code.cmd --install-extension .\compass-router-0.3.6.vsix --force
 ```
 
 Open the Compass Code activity-bar view and connect it to `http://localhost:28000` with a Compass API key. The extension uses `/v1/models`, `/v1/account`, and `/v1/chat/completions`; provider keys remain server-side.
 
 ## Current Status
 
-The Router includes session revocation and login throttling, Secret Manager/BYOK references, Responses and batch lifecycle endpoints, billing webhooks/refunds/invoices/reconciliation, model governance, provider-health events, and operational metrics. Native provider adapters remain outside this codebase; production OAuth/email delivery, live Razorpay verification, GCP IAM/alert policy configuration, and Cloud Run secret values remain deployment prerequisites.
+The Router includes session revocation and login throttling, Secret Manager/BYOK references, Responses and batch lifecycle endpoints, billing webhooks/refunds/invoices/reconciliation, model governance, provider-health events, operational metrics, and an SMTP-backed transactional email outbox worker. Native provider adapters remain outside this codebase; production OAuth, SMTP credentials and deliverability, live Razorpay verification, GCP IAM/alert policy configuration, and Cloud Run secret values remain deployment prerequisites.

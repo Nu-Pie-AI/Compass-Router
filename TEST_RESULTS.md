@@ -1,0 +1,229 @@
+# Compass Router Production Test Results
+
+## M0 baseline
+
+Date: 2026-10-08
+Environment: isolated copy at C:/Users/tohee/Desktop/Compass-Router-Production
+Fresh dependency install: Router web and marketplace with npm ci
+Source API dependencies: available Python environment
+
+| Check | Command | Result |
+|---|---|---|
+| API tests | python -m pytest -q | PASS: 49 passed in 106.76s |
+| Router web typecheck | npm.cmd run typecheck in apps/web | PASS |
+| Router web lint | npm.cmd run lint in apps/web | PASS with 2 warnings |
+| Router web build | npm.cmd run build in apps/web | PASS |
+| Marketplace TypeScript | npx.cmd tsc --noEmit in marketplace | PASS |
+| Marketplace build | npm.cmd run build in marketplace | PASS |
+| Docker Compose syntax | docker compose -f infra/docker/docker-compose.yml config --quiet | PASS |
+| Router web production audit | npm.cmd audit --omit=dev --json | FAIL gate: 1 critical and 2 high findings |
+
+## Audit findings
+
+The Router web audit identifies Next.js 16.3.4 below the available patched version range, plus transitive sharp and source-map-js findings. These must be reviewed and upgraded in a dedicated dependency-hardening slice. No force upgrade was applied during M0.
+
+## Not run
+
+- Clerk live login, logout, session expiry, JWKS rotation, or webhooks.
+- OpenRouter live catalog sync or inference.
+- Genuine upstream streaming and cancellation.
+- Razorpay sandbox order, signed webhook, refund, or reconciliation.
+- PostgreSQL migration upgrade against a populated sanitized database.
+- Redis rate-limit and concurrency behavior.
+- Cloud Run deployment, DNS, TLS, Secret Manager, logs, alerts, or rollback.
+- Real browser end-to-end customer journey.
+
+## M1 migration verification
+
+| Check | Command | Result |
+|---|---|---|
+| Fresh and downgrade/re-upgrade migration | python -m pytest -q tests/test_migrations.py | PASS: 2 passed in 14.36s |
+| Full API regression after M1 | python -m pytest -q | PASS: 51 passed in 101.33s |
+| Deployment migration entry point | python -m app.migrate | PASS against fresh SQLite from repository root |
+| Alembic drift check | python -m alembic -c alembic.ini check | PASS: no new upgrade operations |
+| PostgreSQL migration runtime | docker run postgres:16-alpine | BLOCKED: Docker Desktop Linux engine unavailable |
+
+## Test policy
+
+No test result in this file represents live production verification. New milestones must append exact commands, environment scope, result, and remaining external prerequisites.
+
+## M2 Clerk identity verification
+
+Environment: isolated target copy; SQLite test database; Clerk verifier and Svix delivery isolated with deterministic test doubles; no live credentials
+
+| Check | Command | Result |
+|---|---|---|
+| Clerk-focused auth/webhook tests | `python -m pytest -q tests/test_api.py -k clerk` | PASS: 4 passed in 5.71 seconds |
+| Full API regression | `python -m pytest -q` | PASS: 55 passed in 108.33 seconds |
+| Migration regression | `python -m pytest -q tests/test_migrations.py` | PASS: 2 passed in 14.89 seconds |
+| Router web typecheck | `npm.cmd run typecheck` in `apps/web` | PASS |
+| Router web lint | `npm.cmd run lint` in `apps/web` | PASS with 2 existing navigation warnings |
+| Router web production build | `npm.cmd run build` in `apps/web` | PASS; Next 16.3.4 proxy generated |
+| PostgreSQL migration runtime | default database URL check | BLOCKED: PostgreSQL/Docker engine unavailable |
+
+Coverage added:
+- Idempotent Clerk bootstrap provisions one Compass customer/workspace and returns the existing mapping on repeat.
+- Existing Compass email accounts cannot be silently linked to a different Clerk identity.
+- Clerk-backed `/me` access is accepted only for a mapped identity.
+- Invalid Clerk webhook signatures are rejected.
+- Repeated `svix-id` webhook deliveries are acknowledged without duplicate provisioning.
+
+Not yet proven:
+- Real Clerk JWT/JWKS verification, Clerk API email lookup, browser redirects, sign-out propagation, webhook signatures, and event retries.
+- PostgreSQL schema/search-path behavior and populated legacy upgrade.
+
+## M3 authorization and API key security verification
+
+Environment: isolated target copy; SQLite test database; provider calls mocked or local-test; no live payments or production deployment
+
+| Check | Command | Result |
+|---|---|---|
+| M3 focused authorization tests | `python -m pytest -q tests/test_api.py -k "cross_tenant_project_header or target_organization or team_owner_can_manage or production_rate_limiting"` | PASS: 4 passed in 5.69 seconds |
+| API-key rotation and production model-assignment gates | `python -m pytest -q tests/test_api.py -k "api_key_rotation or api_key_creation or production_stale_catalog_model or commercial_approval"` | PASS |
+| Full API regression | `python -m pytest -q tests/test_api.py` | PASS: 57 passed in 88.25 seconds |
+| Python compile check | `python -m compileall -q apps/api/app` | PASS |
+| Git whitespace check | `git diff --check` | PASS |
+
+Coverage added:
+- Cross-tenant project headers are rejected for API keys scoped to another organization.
+- Removing a member from one organization does not suspend access to a second organization.
+- Team owners can manage assigned team keys; ordinary members cannot change key model policy.
+- Production rate limiting returns an unavailable response instead of silently falling back when Redis cannot enforce the limit.
+
+Not yet proven:
+- PostgreSQL query behavior and transaction isolation for the authorization paths.
+- Redis limiter behavior under concurrent staging requests.
+- Live Clerk tenant mapping and session authorization.
+
+## M4 provider-neutral catalog verification
+
+Environment: isolated production copy; SQLite migration/test fixtures; no live provider credentials, payments, or deployment
+
+| Check | Command | Result |
+|---|---|---|
+| Catalog normalization, canonical capability matching, and optional-provider metadata | `python -m pytest -q tests/test_catalog.py` | PASS: 6 passed |
+| Fresh migration with provider-neutral catalog columns | `python -m pytest -q tests/test_migrations.py` | PASS |
+| Combined M4 focused tests | `python -m pytest -q tests/test_catalog.py tests/test_migrations.py` | PASS: 8 passed |
+| Provider protocol safety | catalog unit test | PASS: known providers use LiteLLM, OpenRouter is optional, unknown providers are `unverified` |
+| Whitespace validation | `git diff --check` | PASS |
+| Runtime adapter registry and usage normalization | `python -m pytest -q tests/test_provider_adapters.py` | PASS: 4 passed; registered protocols resolve, integrated unknown protocols fail closed, and alternate provider usage fields normalize safely |
+
+M4 implementation evidence:
+- LiteLLM catalog records are normalized into stable provider/model identities with capability types, modalities, context, source pricing, and raw metadata.
+- New discoveries remain unavailable until activation and verified credentials; synchronization does not simulate route availability.
+- Failed refreshes retain the last successful registry snapshot and record the failed sync run.
+- Production route readiness requires a recent verified catalog snapshot; stale LiteLLM/OpenRouter rows are excluded from public catalog output and routing.
+
+M4 not yet proven:
+- Full isolated regression is now passing; live/infrastructure verification remains pending.
+- PostgreSQL migration against a populated sanitized database.
+- Live LiteLLM/provider discovery, direct-provider invocation, usage reconciliation, and staging wallet settlement.
+
+## M5 streaming foundation verification
+
+| Check | Command | Result |
+|---|---|---|
+| Local compatibility streaming | `python -m pytest -q tests/test_api.py -k streaming_response_format` | PASS |
+| Production upstream SSE forwarding and usage source | `python -m pytest -q tests/test_api.py -k production_stream_forwards` | PASS |
+| Focused M4/M5 migration and API checks | `python -m pytest -q tests/test_migrations.py tests/test_catalog.py tests/test_api.py -k "stream or migration or catalog"` | PASS: 14 passed |
+
+M5 not yet proven:
+- Real upstream stream timing, cancellation, backpressure, Responses tool-call events, and provider-specific failures.
+- PostgreSQL transaction behavior and Redis limits under concurrent streamed requests.
+
+Full regression after M5 streaming changes:
+- `python -m pytest -q`: historical run, 66 passed in 146.83s.
+
+## M6-M8 continuation verification
+
+Environment: isolated production copy; SQLite tests; no live provider credentials, payment credentials, Docker engine, or GCP access
+
+| Check | Command | Result |
+|---|---|---|
+| Recovery CLI help does not open the database | `python -m app.recovery --help` | PASS |
+| Catalog sync CLI help does not open the database | `python -m app.catalog_sync --help` | PASS |
+| Stale reservation preview/apply/idempotency | `python -m pytest -q tests/test_api.py -k stale_reservation` | PASS: 3 passed |
+| Production startup does not seed fake catalog/pricing | `python -m pytest -q tests/test_api.py::test_production_seed_does_not_create_fixture_models_or_pricing` | PASS |
+| Non-routable ORM defaults and verified activation paths | focused activation/embedding tests | PASS: 7 passed |
+| Unpriced model defaults and migration compatibility | focused API plus migration checks | PASS: 5 passed |
+| Provider commercial approval migration and route gate | `python -m pytest -q tests/test_migrations.py tests/test_api.py -k "commercial_approval or production_configuration or live_readiness"` | PASS: 3 passed |
+| Email outbox worker success/failure recording | `python -m pytest -q tests/test_api.py -k email_outbox_worker` | PASS |
+| Email worker CLI help is offline | `PYTHONPATH=apps/api python -m app.email_worker --help` | PASS |
+| Cloud Run template safety | `python infra/gcp/validate_templates.py` and `cloudbuild-verify.yaml` validation step | PASS; placeholders and secret references are validated before the verification pipeline runs, without deployment |
+| Release artifact command safety | `python infra/gcp/build_release.py --help` and `--dry-run` | PASS; requires explicit registry/URLs, clean worktree for real builds, and never deploys Cloud Run |
+| Structured request log allow-list and Cloud Run production template requirements | `python -m pytest -q tests/test_infrastructure.py` | PASS: 4 passed; authorization-like extras are excluded from JSON output and production runtime/secret references are required |
+| Full API/catalog/migration regression | `python -m pytest -q` | PASS: 96 passed; includes provider adapter capability gates, staging-harness, conservative capability normalization, no-capability activation rejection, media usage-source accounting, source/customer pricing separation, Cloud Run template safety, and M9 governance coverage plus structured logging |
+| Optional OpenRouter protocol compatibility | `python -m pytest -q tests/test_catalog.py tests/test_provider_adapters.py` | PASS: 10 passed; canonical `openrouter_optional` plus legacy persisted-row alias resolve, while unknown protocols fail closed |
+| Provider capability adapter mappings | `python -m pytest -q tests/test_provider_adapters.py` | PASS; responses, images, batches, speech binary, and transcription multipart paths are explicit; decision capability remains unimplemented and unroutable |
+| Canonical audio route capability labels | `python -m pytest -q tests/test_api.py` | PASS: 72 passed; API imports and routing remain valid after distinct speech/transcription capability wiring |
+| Staging smoke harness safety | `python -m pytest -q tests/test_staging_smoke.py` and `python infra/verify_staging.py --help` | PASS: 3 tests; URL validation, explicit paid-request acknowledgement, model requirement, and CLI loading verified without network calls |
+| Router web typecheck | `npm.cmd run typecheck` in `apps/web` | PASS |
+| Router web lint | `npm.cmd run lint` in `apps/web` | PASS with no warnings |
+| Router web production build | `npm.cmd run build` in `apps/web` | PASS; 23 routes generated |
+| Standalone web server route smoke | `npm.cmd run start` with `PORT=3101`; HTTP GET `/`, `/admin`, `/login`, `/signup`, `/models`, `/playground` | PASS: all returned HTTP 200 with Compass content; server stopped after verification |
+| Router web CI-style install | `npm.cmd ci --ignore-scripts` in `apps/web` | PASS: 413 packages installed; development-only audit findings remain in the Tailwind 3 toolchain |
+| Docker engine availability | `docker version` | BLOCKED: Docker engine unavailable |
+| Production dependency audit | `npm.cmd audit --omit=dev --json` in `apps/web` | PASS: 0 production vulnerabilities after Next.js 16.4.0 and transitive updates |
+
+Release-tool revalidation on 2026-10-09:
+- `python infra/gcp/validate_templates.py`: PASS; 2 Cloud Run templates validated.
+- `python infra/gcp/build_release.py --registry example.invalid/compass-router --web-api-url https://api.example.invalid --marketplace-url https://marketplace.example.invalid --dry-run`: PASS; printed BuildKit commands only and did not push or deploy.
+- `npm.cmd audit --omit=dev` in `apps/web`: PASS; found 0 production vulnerabilities.
+- `docker version`: BLOCKED; Docker Desktop Linux engine is unavailable.
+- Read-only `gcloud projects describe`, Cloud Run, Cloud SQL, Redis, Secret Manager, and Artifact Registry queries: BLOCKED; configured account requires interactive reauthentication and non-interactive execution cannot prompt.
+
+M6-M8 not yet proven:
+- PostgreSQL/Redis runtime behavior, live provider discovery and streaming, live Clerk/browser paths, SMTP transport and deliverability, Razorpay sandbox, Cloud Run/Secret Manager/Cloud Logging/Monitoring/tracing/alerts, and browser accessibility tests.
+
+Dependency note:
+- Full development-tree audit still reports findings in the Tailwind 3 build toolchain; resolving those requires a separate Tailwind 4 migration and was not forced into this production verification slice.
+
+## M9 verification
+
+| Check | Command | Result |
+|---|---|---|
+| M9 governance API and migration coverage | `python -m pytest -q tests/test_api.py -k "m9_" tests/test_migrations.py` | PASS: 7 M9 tests plus migration checks |
+| Full backend regression after capability activation, adapter capability gates, health ordering, media usage, pricing accounting, and Cloud Run template hardening | `python -m pytest -q` | PASS: 96 passed; 1 existing Pydantic deprecation warning |
+| Media usage-source classification | `python -m pytest -q tests/test_api.py -k media_usage_without_provider_usage_is_explicitly_estimated` | PASS; provider usage is used only when returned, otherwise settlement records an estimate |
+| Provider source cost versus customer charge | `python -m pytest -q tests/test_api.py -k provider_cost_uses_source_price_and_customer_charge_uses_markup` | PASS; provider attribution uses source USD rates while customer charge uses marked-up paise rates |
+| Provider health ordering under rapid failures | `python -m pytest -q tests/test_api.py::test_provider_circuit_breaker_opens_after_three_failures` | PASS; monotonic timestamps keep the newest circuit state observable |
+| Python compilation | `python -m compileall -q apps/api/app apps/api/alembic/versions tests` | PASS |
+| Router web lint | `npm.cmd run lint` in `apps/web` | PASS with no warnings |
+| Router web typecheck | `npm.cmd run typecheck` in `apps/web` | PASS |
+| Router web production build | `npm.cmd run build` in `apps/web` | PASS; 23 routes generated, including `/admin` |
+| Diff whitespace check | `git diff --check` | PASS |
+
+M9 live verification remains open for Clerk MFA/session behavior, PostgreSQL/Redis, browser accessibility and authorization journeys, real provider state, SMTP, Razorpay, GCP, monitoring, backups, rollback, DNS/TLS, and production deployment.
+
+Staging harness status:
+- `infra/verify_staging.py` is ready for owner-controlled staging. Its default mode performs health and authenticated `/v1/models` checks. Real streaming is opt-in and requires an explicit model plus `--allow-paid-request`.
+- No live staging request was made in this turn because provider credentials, API key, and refreshed GCP/infrastructure access are not available.
+
+## Safe staging preflight - 2026-10-09
+
+- `python -m pytest -q tests/test_infrastructure.py tests/test_migrations.py tests/test_provider_adapters.py tests/test_staging_smoke.py`: **13 passed**.
+- `npm.cmd run lint` in `apps/web`: **passed**.
+- `npm.cmd run build` in `apps/web`: **passed**; 23 routes generated.
+- `npm.cmd run typecheck` in `apps/web`: **passed**.
+- `npm.cmd audit --omit=dev --audit-level=high`: **0 vulnerabilities**.
+- `python infra/gcp/validate_templates.py`: **passed**.
+- `python -m compileall -q apps/api/app tests infra/gcp`: **passed**.
+- `git diff --check`: **passed**.
+- `python -m pip_audit -r apps/api/requirements.txt`: **not run; `pip_audit` is not installed**.
+- `python -m pytest -q tests/test_api.py`: **76 passed**, 1 existing Pydantic deprecation warning.
+
+## Neon database integration - 2026-10-09
+
+- URL normalization and direct migration selection tests: **2 passed**; included in the 15-test focused suite.
+- Neon pooled/direct connectivity and Alembic checks: **blocked; URLs are not present in the workspace environment**.
+- Neon branch production-data audit: **blocked; requires read-only access to the Neon `staging` branch**.
+- `python infra/verify_neon_staging.py`: **fail-closed as expected; refused to run without `DATABASE_URL`**.
+
+## Root environment setup - 2026-10-09
+
+- Combined API, migration, and database configuration suite: **80 passed**, 1 existing Pydantic deprecation warning.
+- Root `.env` loading from repository root and `apps/api`: **passed**.
+- Explicit environment-variable precedence over root `.env`: **passed**.
+- Secret-prefix scan of `.env.example` and `.env`: **0 matches** for credential prefixes.
+- `.env` Git ignore/tracking check: **ignored and not tracked**.
+- Neon verifier with placeholders: **failed safely before migration/connectivity**, as expected.

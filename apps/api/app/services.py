@@ -1,12 +1,15 @@
 import asyncio
+import hashlib
 import json
 import math
 import re
+import secrets
 import socket
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from urllib.parse import urlparse
 
 import httpx
@@ -17,22 +20,42 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import get_settings
+from .authorization import require_project_access
+from .catalog import (
+    capability_matches,
+    filter_catalog_records,
+    native_model_id,
+    normalize_litellm_cost_map,
+    openrouter_capability_types,
+    provider_protocol,
+    snapshot_revision,
+)
 from .errors import compass_error
 from .models import (
     ApiKey,
     ApiKeyModel,
     AuditLog,
     ByokCredential,
+    CatalogSyncRun,
+    EmailOtpChallenge,
+    EmailOutbox,
+    ExtensionDevice,
+    ExtensionDeviceAuthorization,
+    ExtensionSession,
+    Invitation,
     LlmRequest,
     ModelCatalog,
     ModelPolicy,
     Organization,
     OrganizationMember,
+    Project,
+    ProjectMember,
     OperationalEvent,
     Provider,
     ProviderAttempt,
     ProviderCredential,
     ProviderHealthCheck,
+    PricingPolicy,
     RoutingPolicy,
     Team,
     TeamLimit,
@@ -45,9 +68,12 @@ from .models import (
 )
 from .security import decrypt_secret, encrypt_secret, generate_api_key, hash_api_key, hash_password
 from .secrets import get_secret_manager, secret_reference_value
+from .provider_adapters import ProviderAdapterError, ProviderAdapterRegistry, ProviderRoute, RuntimeProviderAdapter
 
 
 request_id_context: ContextVar[str | None] = ContextVar("compass_request_id", default=None)
+api_project_context: ContextVar[str | None] = ContextVar("compass_api_project", default=None)
+device_session_context: ContextVar[str | None] = ContextVar("compass_device_session", default=None)
 
 
 def _credential_reference(provider_name: str, secret: str, scope: str) -> str:
@@ -98,9 +124,201 @@ def record_audit_log(
 def organization_id_for_user(db: Session, user_id: str) -> str | None:
     return db.scalar(
         select(OrganizationMember.organization_id)
-        .where(OrganizationMember.user_id == user_id)
+        .where(OrganizationMember.user_id == user_id, OrganizationMember.role != "removed")
         .limit(1)
     )
+
+
+def ensure_default_project(db: Session, organization_id: str) -> Project:
+    project = db.scalar(select(Project).where(Project.organization_id == organization_id, Project.is_default.is_(True)))
+    if project is None:
+        organization = db.get(Organization, organization_id)
+        if organization is None:
+            raise compass_error(404, "workspace_not_found", "Workspace not found.")
+        project = Project(organization_id=organization_id, name="Others", slug="others", description="Fallback project for untagged workspaces.", is_default=True)
+        db.add(project)
+        db.flush()
+        db.query(Team).filter(Team.organization_id == organization_id, Team.project_id.is_(None)).update({Team.project_id: project.id}, synchronize_session=False)
+        db.query(ApiKey).filter(ApiKey.organization_id == organization_id, ApiKey.project_id.is_(None)).update({ApiKey.project_id: project.id}, synchronize_session=False)
+    for membership in db.scalars(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id)).all():
+        if db.scalar(select(ProjectMember).where(ProjectMember.project_id == project.id, ProjectMember.user_id == membership.user_id)) is None:
+            db.add(ProjectMember(project_id=project.id, user_id=membership.user_id, role="owner" if membership.role == "owner" else "member"))
+    return project
+
+
+def ensure_projects_for_organizations(db: Session) -> None:
+    for organization_id in db.scalars(select(Organization.id)).all():
+        ensure_default_project(db, organization_id)
+    db.commit()
+
+
+def project_ids_for_user(db: Session, user: User) -> list[str]:
+    if user.role in {"admin", "super_admin"}:
+        return list(db.scalars(select(Project.id)).all())
+    return list(
+        db.scalars(
+            select(Project.id)
+            .join(ProjectMember, ProjectMember.project_id == Project.id)
+            .join(OrganizationMember, OrganizationMember.organization_id == Project.organization_id)
+            .where(
+                ProjectMember.user_id == user.id,
+                ProjectMember.status == "active",
+                OrganizationMember.user_id == user.id,
+                OrganizationMember.role != "removed",
+                Project.is_active.is_(True),
+            )
+        ).all()
+    )
+
+
+def project_rows(db: Session, project_ids: list[str]) -> list[dict]:
+    if not project_ids:
+        return []
+    projects = db.scalars(select(Project).where(Project.id.in_(project_ids)).order_by(Project.is_default.desc(), Project.created_at)).all()
+    return [{"id": row.id, "organization_id": row.organization_id, "name": row.name, "slug": row.slug, "description": row.description, "is_default": row.is_default, "is_active": row.is_active, "created_at": row.created_at.isoformat()} for row in projects]
+
+
+def create_project(db: Session, organization_id: str, name: str, slug: str | None, description: str, owner_id: str) -> Project:
+    normalized_slug = slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "project"
+    if db.scalar(select(Project).where(Project.organization_id == organization_id, Project.slug == normalized_slug)) is not None:
+        raise compass_error(409, "project_exists", "A project already exists with this slug.")
+    project = Project(organization_id=organization_id, name=name.strip(), slug=normalized_slug, description=description.strip())
+    db.add(project)
+    db.flush()
+    db.add(ProjectMember(project_id=project.id, user_id=owner_id, role="owner"))
+    db.commit()
+    return project
+
+
+def _otp_hash(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def queue_email(db: Session, recipient: str, subject: str, body: str) -> EmailOutbox:
+    message = EmailOutbox(recipient=recipient.strip().lower(), subject=subject, body=body, status="queued")
+    db.add(message)
+    return message
+
+
+def create_otp_challenge(db: Session, email: str, purpose: str) -> tuple[EmailOtpChallenge, str]:
+    settings = get_settings()
+    if not settings.otp_enabled:
+        raise compass_error(503, "otp_disabled", "Email verification is not enabled for this environment.")
+    normalized = email.strip().lower()
+    db.query(EmailOtpChallenge).filter(EmailOtpChallenge.email == normalized, EmailOtpChallenge.purpose == purpose, EmailOtpChallenge.consumed.is_(False)).update({EmailOtpChallenge.consumed: True}, synchronize_session=False)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    challenge = EmailOtpChallenge(email=normalized, purpose=purpose, code_hash=_otp_hash(code), expires_at=now() + timedelta(seconds=settings.otp_ttl_seconds))
+    db.add(challenge)
+    queue_email(db, normalized, "Your Compass Router verification code", f"Your Compass Router verification code is {code}. It expires in {max(1, settings.otp_ttl_seconds // 60)} minutes.")
+    db.commit()
+    return challenge, code
+
+
+def verify_otp_challenge(db: Session, challenge_id: str, email: str, code: str, purpose: str) -> EmailOtpChallenge:
+    settings = get_settings()
+    challenge = db.get(EmailOtpChallenge, challenge_id)
+    if challenge is None or challenge.email != email.strip().lower() or challenge.purpose != purpose or challenge.consumed or challenge.expires_at < now():
+        raise compass_error(401, "otp_invalid", "The verification code is invalid or expired.")
+    if challenge.attempts >= settings.otp_max_attempts:
+        raise compass_error(429, "otp_rate_limited", "Too many verification attempts. Request a new code.")
+    challenge.attempts += 1
+    if not secrets.compare_digest(challenge.code_hash, _otp_hash(code)):
+        db.commit()
+        raise compass_error(401, "otp_invalid", "The verification code is invalid or expired.")
+    challenge.consumed = True
+    db.commit()
+    return challenge
+
+
+def create_invitation(db: Session, actor: User, project: Project, email: str, role: str, team_id: str | None = None) -> tuple[Invitation, str]:
+    normalized = email.strip().lower()
+    if team_id is not None:
+        team = db.get(Team, team_id)
+        if team is None or team.organization_id != project.organization_id or (team.project_id and team.project_id != project.id):
+            raise compass_error(400, "team_project_mismatch", "The selected team does not belong to this project.")
+    token = secrets.token_urlsafe(32)
+    invitation = Invitation(organization_id=project.organization_id, project_id=project.id, team_id=team_id, email=normalized, role=role, token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(), invited_by=actor.id, expires_at=now() + timedelta(days=7))
+    db.add(invitation)
+    origin = get_settings().compass_web_origin.split(",", 1)[0].strip().rstrip("/")
+    queue_email(db, normalized, f"You have been invited to {project.name}", f"You have been invited to join project {project.name} in Compass Router. Open {origin}/invitations/{token} to verify your email and accept the invitation. After accepting, install the Compass Router VS Code extension and connect with your workspace account.")
+    db.commit()
+    return invitation, token
+
+
+def start_extension_device_authorization(db: Session, device_name: str) -> dict:
+    device_code = "cmp_device_code_" + secrets.token_urlsafe(32)
+    user_code = f"{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
+    expires_at = now() + timedelta(minutes=10)
+    authorization = ExtensionDeviceAuthorization(device_code_hash=hashlib.sha256(device_code.encode("utf-8")).hexdigest(), user_code=user_code, device_name=device_name.strip() or "VS Code", expires_at=expires_at)
+    db.add(authorization)
+    db.commit()
+    origin = get_settings().compass_web_origin.split(",", 1)[0].strip().rstrip("/")
+    return {"device_code": device_code, "user_code": user_code, "verification_uri": f"{origin}/extension/authorize", "expires_at": expires_at.isoformat(), "interval": 3}
+
+
+def approve_extension_device(db: Session, actor: User, user_code: str, project_id: str, team_id: str | None = None) -> dict:
+    authorization = db.scalar(select(ExtensionDeviceAuthorization).where(ExtensionDeviceAuthorization.user_code == user_code.upper().strip()))
+    if authorization is None or authorization.status != "pending" or authorization.expires_at < now():
+        raise compass_error(400, "device_code_invalid", "This VS Code authorization code is invalid or expired.")
+    project = require_project_access(db, actor, project_id)
+    organization_membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == project.organization_id, OrganizationMember.user_id == actor.id, OrganizationMember.role != "removed"))
+    if actor.role not in {"admin", "super_admin"} and organization_membership is None:
+        raise compass_error(403, "project_access_denied", "You do not have access to this project.")
+    if team_id is None:
+        team_id = db.scalar(select(Team.id).where(Team.project_id == project.id, Team.is_active.is_(True)).order_by(Team.created_at).limit(1))
+    team = db.get(Team, team_id) if team_id else None
+    if team is None or team.organization_id != project.organization_id or (team.project_id and team.project_id != project.id) or not team.is_active:
+        raise compass_error(400, "team_required", "Select an active team in this project before authorizing VS Code.")
+    if actor.role not in {"admin", "super_admin"}:
+        team_member = db.scalar(select(TeamMember).where(TeamMember.team_id == team.id, TeamMember.user_id == actor.id, TeamMember.is_active.is_(True)))
+        if team_member is None:
+            team_member = db.scalar(select(TeamMember).where(TeamMember.team_id == team.id, func.lower(TeamMember.email) == actor.email.lower(), TeamMember.is_active.is_(True)))
+        if team_member is None:
+            raise compass_error(403, "team_access_denied", "You do not have access to the selected team.")
+    key_result = create_api_key(db, actor.id, team.id, None, f"VS Code · {authorization.device_name}", [], None, project.id, "extension-device")
+    device = ExtensionDevice(user_id=actor.id, organization_id=project.organization_id, project_id=project.id, device_name=authorization.device_name, status="active", last_seen_at=now())
+    db.add(device)
+    db.flush()
+    token = "cmp_device_" + secrets.token_urlsafe(40)
+    session = ExtensionSession(device_id=device.id, api_key_id=key_result["id"], token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(), expires_at=now() + timedelta(days=30))
+    db.add(session)
+    db.flush()
+    authorization.status = "approved"
+    authorization.user_id = actor.id
+    authorization.organization_id = project.organization_id
+    authorization.project_id = project.id
+    authorization.team_id = team.id
+    authorization.device_id = device.id
+    authorization.session_id = session.id
+    authorization.session_token_encrypted = encrypt_secret(token)
+    authorization.approved_at = now()
+    db.commit()
+    return {"status": "approved", "project": {"id": project.id, "name": project.name, "slug": project.slug, "is_default": project.is_default}, "team": {"id": team.id, "name": team.name, "slug": team.slug}}
+
+
+def poll_extension_device_authorization(db: Session, device_code: str) -> dict:
+    authorization = db.scalar(select(ExtensionDeviceAuthorization).where(ExtensionDeviceAuthorization.device_code_hash == hashlib.sha256(device_code.encode("utf-8")).hexdigest()))
+    if authorization is None:
+        raise compass_error(400, "device_code_invalid", "This VS Code device code is invalid.")
+    if authorization.status == "pending" and authorization.expires_at < now():
+        authorization.status = "expired"
+        db.commit()
+    if authorization.status != "approved":
+        return {"status": authorization.status, "expires_at": authorization.expires_at.isoformat()}
+    session = db.get(ExtensionSession, authorization.session_id) if authorization.session_id else None
+    if session is None or session.revoked_at is not None or session.expires_at < now():
+        return {"status": "expired", "expires_at": authorization.expires_at.isoformat()}
+    return {"status": "authorized", "access_token": decrypt_secret(authorization.session_token_encrypted), "token_type": "Bearer", "expires_at": session.expires_at.isoformat(), "project_id": authorization.project_id, "team_id": authorization.team_id}
+
+
+def revoke_extension_sessions_for_user(db: Session, user_id: str, organization_id: str | None = None) -> None:
+    device_query = select(ExtensionDevice.id).where(ExtensionDevice.user_id == user_id)
+    if organization_id is not None:
+        device_query = device_query.where(ExtensionDevice.organization_id == organization_id)
+    device_ids = list(db.scalars(device_query).all())
+    if device_ids:
+        db.query(ExtensionSession).filter(ExtensionSession.device_id.in_(device_ids), ExtensionSession.revoked_at.is_(None)).update({ExtensionSession.revoked_at: now()}, synchronize_session=False)
+        db.query(ExtensionDevice).filter(ExtensionDevice.id.in_(device_ids)).update({ExtensionDevice.status: "revoked"}, synchronize_session=False)
 
 
 def register_customer(db: Session, email: str, password: str, organization_name: str) -> tuple[User, Organization, Team]:
@@ -121,13 +339,19 @@ def register_customer(db: Session, email: str, password: str, organization_name:
         team = Team(organization_id=organization.id, name=workspace_name, slug=team_slug, notes="Customer workspace created during signup")
         db.add(team)
         db.flush()
+        project = Project(organization_id=organization.id, name="Others", slug="others", description="Fallback project for untagged workspaces.", is_default=True)
+        db.add(project)
+        db.flush()
+        team.project_id = project.id
         db.add_all(
             [
                 OrganizationMember(user_id=user.id, organization_id=organization.id, role="owner"),
+                ProjectMember(project_id=project.id, user_id=user.id, role="owner"),
                 TeamMember(
                     team_id=team.id,
                     name=normalized_email.split("@", 1)[0][:120],
                     email=normalized_email,
+                    user_id=user.id,
                     role="owner",
                 ),
                 TeamLimit(
@@ -146,6 +370,37 @@ def register_customer(db: Session, email: str, password: str, organization_name:
         raise compass_error(409, "account_exists", "An account or workspace already exists for these details.") from exc
 
     return user, organization, team
+
+
+def provision_clerk_customer(db: Session, clerk_user_id: str, email: str) -> tuple[User, Organization | None, bool]:
+    """Idempotently map a Clerk identity to a Compass customer.
+
+    Existing email accounts are never silently linked to a different Clerk identity.
+    That requires an explicit support/admin linking flow so ownership cannot transfer
+    through a mutable email address.
+    """
+    normalized_email = email.strip().lower()
+    mapped = db.scalar(select(User).where(User.clerk_user_id == clerk_user_id))
+    if mapped is not None:
+        if mapped.email != normalized_email:
+            collision = db.scalar(select(User).where(User.email == normalized_email, User.id != mapped.id))
+            if collision is not None:
+                raise compass_error(409, "identity_email_conflict", "The verified Clerk email belongs to another Compass account.")
+            mapped.email = normalized_email
+            mapped.email_verified_at = mapped.email_verified_at or now()
+            db.commit()
+        return mapped, db.scalar(select(Organization).join(OrganizationMember, OrganizationMember.organization_id == Organization.id).where(OrganizationMember.user_id == mapped.id).limit(1)), False
+
+    existing = db.scalar(select(User).where(User.email == normalized_email))
+    if existing is not None:
+        raise compass_error(409, "identity_link_required", "This email already has a Compass account. Sign in with the existing account before linking Clerk.")
+
+    workspace_name = f"{normalized_email.split('@', 1)[0][:80]} Workspace"
+    user, organization, _ = register_customer(db, normalized_email, f"clerk-only:{secrets.token_urlsafe(32)}", workspace_name)
+    user.clerk_user_id = clerk_user_id
+    user.email_verified_at = now()
+    db.commit()
+    return user, organization, True
 
 
 def upsert_marketplace_user(db: Session, email: str, marketplace_role: str, display_name: str | None = None) -> User:
@@ -257,9 +512,18 @@ def bootstrap_local_customers(db: Session) -> None:
 def ensure_provider(db: Session, name: str) -> Provider:
     provider = db.scalar(select(Provider).where(Provider.name == name))
     if provider is None:
-        provider = Provider(name=name, enabled=True, status="healthy")
+        provider = Provider(
+            name=name,
+            protocol=provider_protocol(name),
+            catalog_source="configuration",
+            commercial_status="unreviewed",
+            enabled=False,
+            status="unconfigured",
+        )
         db.add(provider)
         db.flush()
+    elif not provider.protocol:
+        provider.protocol = provider_protocol(name)
     return provider
 
 
@@ -350,19 +614,34 @@ def upsert_model(
     input_price_paise_per_1k: int,
     output_price_paise_per_1k: int,
     fallback_model_id: str | None = None,
+    protocol: str | None = None,
+    capability_types: str | None = None,
+    input_modalities: list[str] | None = None,
+    output_modalities: list[str] | None = None,
+    max_output_tokens: int | None = None,
 ) -> None:
     model = db.get(ModelCatalog, model_id)
     if model is None:
+        local_fixture = get_settings().local_test_mode
         db.add(
             ModelCatalog(
                 id=model_id,
                 provider_id=provider.id,
                 provider_model_id=provider_model_id,
                 display_name=display_name,
+                protocol=protocol or provider.protocol,
                 capabilities=capabilities,
+                capability_types="chat_completion,responses" if capability_types is None else capability_types,
+                input_modalities=json.dumps(input_modalities or []),
+                output_modalities=json.dumps(output_modalities or []),
                 context_window=context_window,
+                max_output_tokens=max_output_tokens,
                 input_price_paise_per_1k=input_price_paise_per_1k,
                 output_price_paise_per_1k=output_price_paise_per_1k,
+                enabled=local_fixture,
+                published=local_fixture,
+                status="available" if local_fixture else "unavailable",
+                route_readiness_reason="local test fixture" if local_fixture else "verified catalog activation required",
                 fallback_model_id=fallback_model_id,
             )
         )
@@ -370,94 +649,117 @@ def upsert_model(
     model.provider_id = provider.id
     model.provider_model_id = provider_model_id
     model.display_name = display_name
+    model.protocol = protocol or provider.protocol
     model.capabilities = capabilities
+    if capability_types is not None:
+        model.capability_types = capability_types
+    if input_modalities is not None:
+        model.input_modalities = json.dumps(input_modalities)
+    if output_modalities is not None:
+        model.output_modalities = json.dumps(output_modalities)
+    model.max_output_tokens = max_output_tokens
     model.context_window = context_window
     model.input_price_paise_per_1k = input_price_paise_per_1k
     model.output_price_paise_per_1k = output_price_paise_per_1k
-    model.enabled = True
-    model.published = True
+    if get_settings().local_test_mode:
+        model.enabled = True
+        model.published = True
+        model.status = "available"
+        model.route_readiness_reason = "local test fixture"
     model.supports_streaming = True
     model.fallback_model_id = fallback_model_id
 
 
 def seed_defaults(db: Session) -> None:
     settings = get_settings()
-    providers = {name: ensure_provider(db, name) for name in ("openai", "gemini", "ollama_cloud")}
+    providers = {name: ensure_provider(db, name) for name in ("openai", "gemini", "ollama_cloud")} if settings.local_test_mode else {}
     for provider in providers.values():
+        provider.enabled = True
+        provider.status = "healthy"
+        provider.commercial_status = "approved"
         ensure_platform_credential(db, provider)
     sync_env_provider_credentials(db)
-    proxy_mode = settings.provider_execution_mode.strip().lower() == "proxy"
-    provider_model = "local-test-chat" if settings.local_test_mode else ("openai-gpt-4o-mini-smoke" if proxy_mode else "gpt-5")
-    gemini_credential = db.scalar(
-        select(ProviderCredential).where(
-            ProviderCredential.provider_id == providers["gemini"].id,
-            ProviderCredential.organization_id.is_(None),
-            ProviderCredential.credential_mode == "platform",
-            ProviderCredential.status == "active",
+    if settings.local_test_mode:
+        proxy_mode = settings.provider_execution_mode.strip().lower() == "proxy"
+        provider_model = "local-test-chat" if settings.local_test_mode else ("openai-gpt-4o-mini-smoke" if proxy_mode else "gpt-5")
+        gemini_credential = db.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.provider_id == providers["gemini"].id,
+                ProviderCredential.organization_id.is_(None),
+                ProviderCredential.credential_mode == "platform",
+                ProviderCredential.status == "active",
+            )
         )
-    )
-    gemini_provider_model = "gemini-flash-real" if settings.local_test_mode and gemini_credential and gemini_credential.secret_reference.startswith("encrypted:") else (provider_model if settings.local_test_mode else ("gemini-flash-real" if proxy_mode else "gemini-3.6-flash"))
-    ollama_credential = db.scalar(
-        select(ProviderCredential).where(
-            ProviderCredential.provider_id == providers["ollama_cloud"].id,
-            ProviderCredential.organization_id.is_(None),
-            ProviderCredential.credential_mode == "platform",
-            ProviderCredential.status == "active",
+        gemini_provider_model = "gemini-flash-real" if gemini_credential and gemini_credential.secret_reference.startswith("encrypted:") else provider_model
+        ollama_credential = db.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.provider_id == providers["ollama_cloud"].id,
+                ProviderCredential.organization_id.is_(None),
+                ProviderCredential.credential_mode == "platform",
+                ProviderCredential.status == "active",
+            )
         )
-    )
-    ollama_provider_model = "ollama-cloud-gpt-oss-20b-real" if settings.local_test_mode and ollama_credential and ollama_credential.secret_reference.startswith("encrypted:") else (provider_model if settings.local_test_mode else ("ollama-cloud-gpt-oss-20b-real" if proxy_mode else "gpt-oss:20b"))
-    upsert_model(
-        db,
-        model_id="openai/gpt-5",
-        provider=providers["openai"],
-        provider_model_id=provider_model,
-        display_name="GPT-5",
-        capabilities="chat,reasoning",
-        context_window=128000,
-        input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
-        output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
-        fallback_model_id="gemini/gemini-3.6-flash",
-    )
-    upsert_model(
-        db,
-        model_id="gemini/gemini-3.6-flash",
-        provider=providers["gemini"],
-        provider_model_id=gemini_provider_model,
-        display_name="Gemini 3.6 Flash",
-        capabilities="chat,fast",
-        context_window=1000000,
-        input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
-        output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
-        fallback_model_id="ollama_cloud/gpt-oss:20b",
-    )
-    upsert_model(
-        db,
-        model_id="ollama_cloud/gpt-oss:20b",
-        provider=providers["ollama_cloud"],
-        provider_model_id=ollama_provider_model,
-        display_name="GPT-OSS 20B on Ollama Cloud",
-        capabilities="chat,open-weights",
-        context_window=128000,
-        input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
-        output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
-    )
-    db.flush()
-    legacy_ids = {
-        "compass/gpt-5": "openai/gpt-5",
-        "compass/gemini-flash": "gemini/gemini-3.6-flash",
-        "compass/llama": "ollama_cloud/gpt-oss:20b",
-    }
-    for legacy_id, native_id in legacy_ids.items():
-        legacy = db.get(ModelCatalog, legacy_id)
-        if legacy is None:
-            continue
-        for grant in db.scalars(select(ApiKeyModel).where(ApiKeyModel.model_id == legacy_id)).all():
-            exists = db.scalar(select(ApiKeyModel).where(ApiKeyModel.api_key_id == grant.api_key_id, ApiKeyModel.model_id == native_id))
-            if exists is None:
-                db.add(ApiKeyModel(api_key_id=grant.api_key_id, model_id=native_id))
-            db.delete(grant)
-        legacy.enabled = False
-        legacy.published = False
+        ollama_provider_model = "ollama-cloud-gpt-oss-20b-real" if ollama_credential and ollama_credential.secret_reference.startswith("encrypted:") else provider_model
+        upsert_model(
+            db,
+            model_id="openai/gpt-5",
+            provider=providers["openai"],
+            provider_model_id=provider_model,
+            display_name="GPT-5",
+            capabilities="chat,reasoning",
+            context_window=128000,
+            input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
+            output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
+            fallback_model_id="gemini/gemini-3.6-flash",
+        )
+        upsert_model(
+            db,
+            model_id="gemini/gemini-3.6-flash",
+            provider=providers["gemini"],
+            provider_model_id=gemini_provider_model,
+            display_name="Gemini 3.6 Flash",
+            capabilities="chat,fast",
+            context_window=1000000,
+            input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
+            output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
+            fallback_model_id="ollama_cloud/gpt-oss:20b",
+        )
+        upsert_model(
+            db,
+            model_id="ollama_cloud/gpt-oss:20b",
+            provider=providers["ollama_cloud"],
+            provider_model_id=ollama_provider_model,
+            display_name="GPT-OSS 20B on Ollama Cloud",
+            capabilities="chat,open-weights",
+            context_window=128000,
+            input_price_paise_per_1k=settings.local_test_input_price_paise_per_1k,
+            output_price_paise_per_1k=settings.local_test_output_price_paise_per_1k,
+        )
+        db.flush()
+        legacy_ids = {
+            "compass/gpt-5": "openai/gpt-5",
+            "compass/gemini-flash": "gemini/gemini-3.6-flash",
+            "compass/llama": "ollama_cloud/gpt-oss:20b",
+        }
+        for legacy_id, native_id in legacy_ids.items():
+            legacy = db.get(ModelCatalog, legacy_id)
+            if legacy is None:
+                continue
+            for grant in db.scalars(select(ApiKeyModel).where(ApiKeyModel.model_id == legacy_id)).all():
+                exists = db.scalar(select(ApiKeyModel).where(ApiKeyModel.api_key_id == grant.api_key_id, ApiKeyModel.model_id == native_id))
+                if exists is None:
+                    db.add(ApiKeyModel(api_key_id=grant.api_key_id, model_id=native_id))
+                db.delete(grant)
+            legacy.enabled = False
+            legacy.published = False
+    else:
+        # Existing rows from older beta bootstraps remain for historical usage,
+        # but cannot advertise or route until a real catalog sync and activation.
+        for model in db.scalars(select(ModelCatalog).where(ModelCatalog.catalog_source == "seeded")).all():
+            model.enabled = False
+            model.published = False
+            model.status = "unavailable"
+            model.route_readiness_reason = "production catalog sync and activation required"
     if settings.local_test_mode:
         for limit in db.scalars(select(TeamLimit)).all():
             if limit.tokens_per_minute < settings.default_team_token_limit_per_minute:
@@ -465,6 +767,9 @@ def seed_defaults(db: Session) -> None:
     bootstrap_admin(db)
     if settings.local_test_mode:
         bootstrap_local_customers(db)
+    ensure_projects_for_organizations(db)
+    if settings.local_test_mode:
+        ensure_default_pricing_policy(db)
     db.commit()
 
 
@@ -766,8 +1071,7 @@ _litellm_catalog_cache: dict = {"expires_at": 0.0, "models": [], "sources": []}
 
 
 def _native_model_id(provider: str, raw_model_id: str) -> str:
-    prefix = f"{provider}/"
-    return raw_model_id if raw_model_id.startswith(prefix) else f"{prefix}{raw_model_id}"
+    return native_model_id(provider, raw_model_id)
 
 
 def _catalog_capabilities(row: dict) -> list[str]:
@@ -789,6 +1093,326 @@ def _as_number(value) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+OPENROUTER_CATALOG_SOURCE = "openrouter"
+
+
+def _decimal_value(value: object) -> Decimal:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
+    return parsed if parsed.is_finite() and parsed >= 0 else Decimal("0")
+
+
+def _openrouter_capabilities(row: dict) -> tuple[list[str], list[str], list[str]]:
+    architecture = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
+    inputs = sorted({str(value).lower() for value in architecture.get("input_modalities", []) if isinstance(value, str)})
+    outputs = sorted({str(value).lower() for value in architecture.get("output_modalities", []) if isinstance(value, str)})
+    supported = sorted({str(value) for value in row.get("supported_parameters", []) if isinstance(value, str)})
+    capabilities = {"chat"}
+    if "image" in inputs:
+        capabilities.add("vision")
+    if "audio" in inputs or "audio" in outputs:
+        capabilities.add("audio")
+    if "image" in outputs:
+        capabilities.add("images")
+    if "tools" in supported or "tool_choice" in supported or "structured_outputs" in supported:
+        capabilities.add("tools")
+    if "reasoning" in supported or "reasoning" in row:
+        capabilities.add("reasoning")
+    if "embedding" in str(row.get("id", "")).lower():
+        capabilities.discard("chat")
+        capabilities.add("embeddings")
+    return sorted(capabilities), inputs, outputs
+
+
+def _active_pricing_policy(db: Session) -> PricingPolicy:
+    policy = db.scalar(
+        select(PricingPolicy)
+        .where(PricingPolicy.status == "active", PricingPolicy.effective_at <= now())
+        .order_by(PricingPolicy.effective_at.desc(), PricingPolicy.created_at.desc())
+        .limit(1)
+    )
+    if policy is None:
+        if get_settings().environment.strip().lower() in {"production", "prod"}:
+            raise compass_error(503, "pricing_policy_unavailable", "An active customer pricing policy must be configured before catalog synchronization or activation.")
+        policy = PricingPolicy(
+            version="development-v1",
+            markup_bps=get_settings().model_pricing_markup_bps,
+            usd_to_inr_paise_per_usd=get_settings().usd_to_inr_paise_per_usd,
+            status="active",
+            effective_at=now(),
+        )
+        db.add(policy)
+        db.flush()
+    return policy
+
+
+def ensure_default_pricing_policy(db: Session) -> PricingPolicy:
+    return _active_pricing_policy(db)
+
+
+def _customer_price_from_usd_per_token(raw_per_token: object, policy: PricingPolicy) -> int:
+    usd_per_token = _decimal_value(raw_per_token)
+    markup = Decimal(10_000 + policy.markup_bps) / Decimal(10_000)
+    paise_per_1k = usd_per_token * Decimal(1_000) * Decimal(policy.usd_to_inr_paise_per_usd) * markup
+    return max(0, int(paise_per_1k.to_integral_value(rounding=ROUND_CEILING)))
+
+
+def _openrouter_customer_price(raw_per_token: object, policy: PricingPolicy) -> int:
+    return _customer_price_from_usd_per_token(raw_per_token, policy)
+
+
+def _source_created_at(value: object) -> datetime | None:
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value, UTC).replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _openrouter_model_values(raw: dict, policy: PricingPolicy, synced_at: datetime) -> dict:
+    upstream_id = raw.get("id")
+    if not isinstance(upstream_id, str) or not upstream_id.strip():
+        raise ValueError("OpenRouter model is missing id")
+    model_id = _native_model_id(OPENROUTER_CATALOG_SOURCE, upstream_id.strip())
+    capabilities, input_modalities, output_modalities = _openrouter_capabilities(raw)
+    capability_types = openrouter_capability_types(capabilities, input_modalities, output_modalities)
+    architecture = raw.get("architecture") if isinstance(raw.get("architecture"), dict) else {}
+    pricing = raw.get("pricing") if isinstance(raw.get("pricing"), dict) else {}
+    context_window = raw.get("context_length")
+    if not isinstance(context_window, int) or context_window < 1:
+        context_window = 128_000
+    raw_metadata = {
+        "description": raw.get("description") if isinstance(raw.get("description"), str) else "",
+        "canonical_slug": raw.get("canonical_slug") if isinstance(raw.get("canonical_slug"), str) else upstream_id,
+        "architecture": architecture,
+        "supported_parameters": raw.get("supported_parameters") if isinstance(raw.get("supported_parameters"), list) else [],
+        "input_modalities": input_modalities,
+        "output_modalities": output_modalities,
+        "pricing": pricing,
+        "top_provider": raw.get("top_provider") if isinstance(raw.get("top_provider"), dict) else {},
+        "per_request_limits": raw.get("per_request_limits"),
+    }
+    return {
+        "id": model_id,
+        "provider_model_id": upstream_id,
+        "display_name": raw.get("name") if isinstance(raw.get("name"), str) and raw["name"].strip() else upstream_id,
+        "protocol": "openrouter_optional",
+        "capabilities": ",".join(capabilities),
+        "capability_types": capability_types,
+        "input_modalities": input_modalities,
+        "output_modalities": output_modalities,
+        "context_window": context_window,
+        "input_price_usd_per_million": _decimal_value(pricing.get("prompt")) * Decimal(1_000_000),
+        "output_price_usd_per_million": _decimal_value(pricing.get("completion")) * Decimal(1_000_000),
+        "input_price_paise_per_1k": _openrouter_customer_price(pricing.get("prompt"), policy),
+        "output_price_paise_per_1k": _openrouter_customer_price(pricing.get("completion"), policy),
+        "raw_metadata_json": json.dumps(raw_metadata, sort_keys=True, separators=(",", ":")),
+        "source_created_at": _source_created_at(raw.get("created")),
+        "last_synced_at": synced_at,
+        "pricing_policy_version": policy.version,
+    }
+
+
+async def _fetch_openrouter_catalog(settings, etag: str | None = None) -> tuple[int, dict | None, str | None]:
+    headers = {"Accept": "application/json"}
+    if settings.openrouter_api_key:
+        headers["Authorization"] = f"Bearer {settings.openrouter_api_key}"
+    if etag:
+        headers["If-None-Match"] = etag
+    async with httpx.AsyncClient(timeout=settings.openrouter_timeout_seconds) as client:
+        response = await client.get(f"{settings.openrouter_base_url.rstrip('/')}/models", headers=headers)
+    if response.status_code == 304:
+        return 304, None, response.headers.get("etag") or etag
+    if response.status_code == 429 or response.status_code >= 500:
+        raise httpx.HTTPStatusError("OpenRouter catalog request can be retried", request=response.request, response=response)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("OpenRouter catalog response did not contain a data list")
+    return response.status_code, payload, response.headers.get("etag")
+
+
+def catalog_sync_status(db: Session, source: str, stale_after_seconds: int) -> dict:
+    runs = db.scalars(select(CatalogSyncRun).where(CatalogSyncRun.source == source).order_by(CatalogSyncRun.started_at.desc()).limit(20)).all()
+    latest = runs[0] if runs else None
+    last_success = next((run for run in runs if run.status in {"success", "not_modified"}), None)
+    stale = last_success is None or last_success.stale_after_at is None or last_success.stale_after_at < now()
+    return {
+        "source": source,
+        "status": latest.status if latest else "never_synced",
+        "last_attempt_at": latest.started_at.isoformat() if latest else None,
+        "last_success_at": last_success.completed_at.isoformat() if last_success and last_success.completed_at else None,
+        "source_revision": last_success.source_revision if last_success else None,
+        "model_count": last_success.model_count if last_success else 0,
+        "stale": stale,
+        "error": latest.error_message if latest and latest.status == "failed" else None,
+    }
+
+
+def openrouter_catalog_rows(db: Session) -> list[dict]:
+    return [row for row in model_catalog_rows(db, include_unpublished=True) if row["catalog_source"] == OPENROUTER_CATALOG_SOURCE]
+
+
+def openrouter_catalog_response(db: Session) -> dict:
+    status = catalog_sync_status(db, OPENROUTER_CATALOG_SOURCE, get_settings().openrouter_catalog_stale_after_seconds)
+    return {
+        "source": OPENROUTER_CATALOG_SOURCE,
+        "models": openrouter_catalog_rows(db),
+        "total": len(openrouter_catalog_rows(db)),
+        "sync": status,
+        "stale": status["stale"],
+        "pricing_policy": pricing_policy_row(_active_pricing_policy(db)),
+    }
+
+
+def pricing_policy_row(policy: PricingPolicy) -> dict:
+    return {
+        "id": policy.id,
+        "version": policy.version,
+        "markup_bps": policy.markup_bps,
+        "usd_to_inr_paise_per_usd": policy.usd_to_inr_paise_per_usd,
+        "status": policy.status,
+        "effective_at": policy.effective_at.isoformat(),
+    }
+
+
+async def sync_openrouter_catalog(db: Session, *, force: bool = False) -> dict:
+    settings = get_settings()
+    latest_success = db.scalar(
+        select(CatalogSyncRun)
+        .where(CatalogSyncRun.source == OPENROUTER_CATALOG_SOURCE, CatalogSyncRun.status.in_(["success", "not_modified"]))
+        .order_by(CatalogSyncRun.started_at.desc())
+        .limit(1)
+    )
+    if not force and latest_success and latest_success.completed_at and latest_success.completed_at >= now() - timedelta(seconds=settings.openrouter_catalog_cache_seconds):
+        return openrouter_catalog_response(db)
+    started_at = now()
+    run = CatalogSyncRun(source=OPENROUTER_CATALOG_SOURCE, status="running", started_at=started_at, raw_snapshot_json="{}")
+    db.add(run)
+    db.commit()
+    payload = None
+    response_etag = latest_success.etag if latest_success else None
+    last_error = ""
+    attempts = max(1, min(settings.openrouter_catalog_sync_max_attempts, 5))
+    for attempt in range(attempts):
+        try:
+            status_code, payload, response_etag = await _fetch_openrouter_catalog(settings, latest_success.etag if latest_success else None)
+            if status_code == 304:
+                run.status = "not_modified"
+                run.source_revision = latest_success.source_revision if latest_success else None
+                run.etag = response_etag
+                run.model_count = latest_success.model_count if latest_success else 0
+                run.raw_snapshot_json = latest_success.raw_snapshot_json if latest_success else "{}"
+                run.completed_at = now()
+                run.stale_after_at = run.completed_at + timedelta(seconds=settings.openrouter_catalog_stale_after_seconds)
+                db.commit()
+                return openrouter_catalog_response(db)
+            break
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            last_error = str(exc)[:500]
+            if attempt + 1 < attempts:
+                await asyncio.sleep(max(0.0, settings.openrouter_catalog_backoff_seconds) * (2**attempt))
+    if payload is None:
+        run.status = "failed"
+        run.error_message = last_error or "OpenRouter catalog request failed"
+        run.completed_at = now()
+        db.commit()
+        if latest_success:
+            return openrouter_catalog_response(db)
+        raise compass_error(503, "openrouter_catalog_unavailable", "OpenRouter catalog is unavailable and no previous snapshot exists.") from None
+
+    policy = _active_pricing_policy(db)
+    raw_models = payload["data"]
+    synced_at = now()
+    normalized: list[dict] = []
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            normalized.append(_openrouter_model_values(raw, policy, synced_at))
+        except ValueError:
+            continue
+    if not normalized:
+        run.status = "failed"
+        run.error_message = "OpenRouter catalog contained no valid model records"
+        run.completed_at = now()
+        db.commit()
+        if latest_success:
+            return openrouter_catalog_response(db)
+        raise compass_error(503, "openrouter_catalog_invalid", "OpenRouter catalog contained no valid model records.") from None
+
+    provider = ensure_provider(db, OPENROUTER_CATALOG_SOURCE)
+    provider.protocol = "openrouter_optional"
+    provider.catalog_source = OPENROUTER_CATALOG_SOURCE
+    seen_ids = set()
+    for values in normalized:
+        seen_ids.add(values["id"])
+        model = db.get(ModelCatalog, values["id"])
+        if model is None:
+            model = ModelCatalog(
+                id=values["id"],
+                provider_id=provider.id,
+                provider_model_id=values["provider_model_id"],
+                display_name=values["display_name"],
+                protocol=values["protocol"],
+                capabilities=values["capabilities"],
+                capability_types=",".join(values["capability_types"]),
+                input_modalities=json.dumps(values["input_modalities"]),
+                output_modalities=json.dumps(values["output_modalities"]),
+                context_window=values["context_window"],
+                input_price_paise_per_1k=values["input_price_paise_per_1k"],
+                output_price_paise_per_1k=values["output_price_paise_per_1k"],
+                enabled=False,
+                published=False,
+                status="unavailable",
+            )
+            db.add(model)
+        model.provider_id = provider.id
+        model.provider_model_id = values["provider_model_id"]
+        model.display_name = values["display_name"]
+        model.protocol = values["protocol"]
+        model.capabilities = values["capabilities"]
+        model.capability_types = ",".join(values["capability_types"])
+        model.input_modalities = json.dumps(values["input_modalities"])
+        model.output_modalities = json.dumps(values["output_modalities"])
+        model.context_window = values["context_window"]
+        model.input_price_paise_per_1k = values["input_price_paise_per_1k"]
+        model.output_price_paise_per_1k = values["output_price_paise_per_1k"]
+        model.input_price_usd_per_million = values["input_price_usd_per_million"]
+        model.output_price_usd_per_million = values["output_price_usd_per_million"]
+        model.raw_metadata_json = values["raw_metadata_json"]
+        model.catalog_source = OPENROUTER_CATALOG_SOURCE
+        model.pricing_policy_version = values["pricing_policy_version"]
+        model.source_created_at = values["source_created_at"]
+        model.last_synced_at = values["last_synced_at"]
+        model.supports_tools = "tools" in values["capabilities"]
+        model.supports_reasoning = "reasoning" in values["capabilities"]
+        model.supports_vision = "vision" in values["capabilities"]
+        if model.enabled and model.published:
+            model.status = "available"
+        else:
+            model.status = "unavailable"
+    for model in db.scalars(select(ModelCatalog).where(ModelCatalog.catalog_source == OPENROUTER_CATALOG_SOURCE)).all():
+        if model.id not in seen_ids:
+            model.enabled = False
+            model.published = False
+            model.status = "unavailable"
+
+    snapshot = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    run.status = "success"
+    run.source_revision = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+    run.etag = response_etag
+    run.model_count = len(normalized)
+    run.raw_snapshot_json = snapshot
+    run.completed_at = now()
+    run.stale_after_at = run.completed_at + timedelta(seconds=settings.openrouter_catalog_stale_after_seconds)
+    db.commit()
+    return openrouter_catalog_response(db)
+
+
 async def litellm_model_catalog(db: Session, *, force: bool = False) -> dict:
     settings = get_settings()
     current_time = time.monotonic()
@@ -807,37 +1431,10 @@ async def litellm_model_catalog(db: Session, *, force: bool = False) -> dict:
         if not isinstance(raw_catalog, dict):
             raise compass_error(503, "model_catalog_unavailable", "The controlled LiteLLM model registry is invalid.")
 
-        normalized: dict[str, dict] = {}
+        cached_models = normalize_litellm_cost_map(raw_catalog)
         provider_counts: dict[str, int] = {}
-        for raw_model_id, metadata in raw_catalog.items():
-            if raw_model_id == "sample_spec" or not isinstance(raw_model_id, str) or not isinstance(metadata, dict):
-                continue
-            provider = metadata.get("litellm_provider")
-            if not isinstance(provider, str) or not provider or provider.startswith("one of "):
-                continue
-            model_id = _native_model_id(provider, raw_model_id)
-            context_window = metadata.get("max_input_tokens") or metadata.get("max_tokens")
-            if not isinstance(context_window, int):
-                context_window = None
-            display_tail = raw_model_id.rsplit("/", 1)[-1]
-            normalized[model_id] = {
-                "provider": provider,
-                "provider_model_id": model_id,
-                "litellm_model_id": model_id,
-                "display_name": display_tail.replace("-", " ").replace("_", " ").strip().title(),
-                "capabilities": _catalog_capabilities(metadata),
-                "mode": metadata.get("mode") or "unknown",
-                "context_window": context_window,
-                "input_cost_per_million_usd": (_as_number(metadata.get("input_cost_per_token")) or 0) * 1_000_000,
-                "output_cost_per_million_usd": (_as_number(metadata.get("output_cost_per_token")) or 0) * 1_000_000,
-                "byok_supported": provider in BYOK_SINGLE_KEY_PROVIDERS,
-                "metadata": {
-                    "deprecation_date": metadata.get("deprecation_date"),
-                    "max_output_tokens": metadata.get("max_output_tokens"),
-                },
-            }
-            provider_counts[provider] = provider_counts.get(provider, 0) + 1
-        cached_models = sorted(normalized.values(), key=lambda row: (row["provider"], row["provider_model_id"]))
+        for row in cached_models:
+            provider_counts[row["provider"]] = provider_counts.get(row["provider"], 0) + 1
         cached_sources = [
             {"provider": provider, "status": "available", "count": count, "error": None}
             for provider, count in sorted(provider_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -858,6 +1455,142 @@ async def litellm_model_catalog(db: Session, *, force: bool = False) -> dict:
         "catalog_source": "controlled-litellm-runtime",
         "scope_note": "LiteLLM-maintained provider registry; not a claim that every model on the internet is callable.",
     }
+
+
+def provider_catalog_response(db: Session, *, provider: str | None = None) -> dict:
+    rows = model_catalog_rows(db, include_unpublished=True)
+    if provider:
+        rows = [row for row in rows if row["provider"] == provider]
+    grouped: dict[str, int] = {}
+    for row in rows:
+        grouped[row["provider"]] = grouped.get(row["provider"], 0) + 1
+    providers = {row.name: row for row in db.scalars(select(Provider)).all()}
+    sources = []
+    for name, count in sorted(grouped.items()):
+        provider_row = providers.get(name)
+        if provider_row is None:
+            status = "unconfigured"
+        elif provider_row.enabled and provider_row.status not in {"disabled", "unavailable", "unconfigured"}:
+            status = "available" if provider_row.commercial_status == "approved" or get_settings().local_test_mode else "commercial_unapproved"
+        else:
+            status = provider_row.status
+        sources.append({"provider": name, "status": status, "commercial_status": provider_row.commercial_status if provider_row else "unreviewed", "count": count, "error": None})
+    return {
+        "models": rows,
+        "sources": sources,
+        "total": len(rows),
+        "refreshed_at": now().isoformat(),
+        "catalog_source": "compass-registry",
+        "scope_note": "Compass-owned registry; route availability is based on verified provider credentials and policies.",
+    }
+
+
+async def sync_litellm_catalog(db: Session, *, force: bool = False) -> dict:
+    """Persist the controlled LiteLLM discovery snapshot into the shared registry."""
+
+    settings = get_settings()
+    latest = db.scalar(
+        select(CatalogSyncRun)
+        .where(CatalogSyncRun.source == "litellm")
+        .order_by(CatalogSyncRun.started_at.desc())
+        .limit(1)
+    )
+    if not force and latest and latest.status in {"success", "not_modified"} and latest.completed_at and latest.completed_at >= now() - timedelta(seconds=settings.litellm_catalog_cache_seconds):
+        return provider_catalog_response(db, provider=None)
+
+    run = CatalogSyncRun(source="litellm", status="running", started_at=now(), raw_snapshot_json="{}")
+    db.add(run)
+    db.commit()
+    try:
+        catalog = await litellm_model_catalog(db, force=force)
+    except HTTPException as exc:
+        run.status = "failed"
+        run.error_message = str(exc.detail)
+        run.completed_at = now()
+        db.commit()
+        if latest and latest.status in {"success", "not_modified"}:
+            return provider_catalog_response(db)
+        raise
+
+    policy = _active_pricing_policy(db)
+    records = catalog["models"]
+    snapshot = {"models": records, "source": "litellm"}
+    run.source_revision = snapshot_revision(snapshot)
+    run.raw_snapshot_json = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+    run.model_count = len(records)
+    run.status = "success"
+    run.completed_at = now()
+    run.stale_after_at = run.completed_at + timedelta(seconds=settings.litellm_catalog_cache_seconds * 3)
+    seen_ids: set[str] = set()
+    verified_at = now()
+
+    for record in records:
+        model_id = record["provider_model_id"]
+        seen_ids.add(model_id)
+        provider = ensure_provider(db, record["provider"])
+        provider.protocol = record.get("protocol") or provider_protocol(record["provider"])
+        provider.catalog_source = "litellm"
+        provider.last_verified_at = verified_at
+        model = db.get(ModelCatalog, model_id)
+        if model is None:
+            model = ModelCatalog(
+                id=model_id,
+                provider_id=provider.id,
+                provider_model_id=record["provider_model_id"],
+                display_name=record["display_name"],
+                protocol=provider.protocol,
+                capabilities=",".join(record["capabilities"]),
+                capability_types=",".join(record["capability_types"]),
+                input_modalities=json.dumps(record["input_modalities"]),
+                output_modalities=json.dumps(record["output_modalities"]),
+                context_window=record["context_window"] or 0,
+                max_output_tokens=record["max_output_tokens"],
+                enabled=False,
+                published=False,
+                status="unavailable",
+                route_readiness_reason="discovered; activation and credentials required",
+                catalog_source="litellm",
+            )
+            db.add(model)
+        model.provider_id = provider.id
+        model.provider_model_id = record["provider_model_id"]
+        model.display_name = record["display_name"]
+        model.protocol = provider.protocol
+        model.capabilities = ",".join(record["capabilities"])
+        model.capability_types = ",".join(record["capability_types"])
+        model.input_modalities = json.dumps(record["input_modalities"])
+        model.output_modalities = json.dumps(record["output_modalities"])
+        model.context_window = record["context_window"] or 0
+        model.max_output_tokens = record["max_output_tokens"]
+        model.input_price_usd_per_million = record["input_cost_per_million_usd"]
+        model.output_price_usd_per_million = record["output_cost_per_million_usd"]
+        model.input_price_paise_per_1k = _customer_price_from_usd_per_token(record["input_cost_per_token"], policy) if record["input_cost_per_token"] is not None else 0
+        model.output_price_paise_per_1k = _customer_price_from_usd_per_token(record["output_cost_per_token"], policy) if record["output_cost_per_token"] is not None else 0
+        model.raw_metadata_json = json.dumps(record["metadata"], sort_keys=True, separators=(",", ":"), default=str)
+        model.catalog_source = "litellm"
+        model.pricing_policy_version = policy.version
+        model.last_synced_at = verified_at
+        model.supports_tools = "tools" in record["capabilities"]
+        model.supports_reasoning = "reasoning" in record["capabilities"]
+        model.supports_vision = "vision" in record["capabilities"]
+        if not record["input_cost_per_token"] and not record["output_cost_per_token"]:
+            model.status = "unavailable"
+            model.route_readiness_reason = "provider did not publish billable pricing"
+        elif not model.enabled or not model.published:
+            model.status = "unavailable"
+            model.route_readiness_reason = "discovered; activation and credentials required"
+        else:
+            model.status = "available"
+            model.route_readiness_reason = "activated catalog route"
+
+    for model in db.scalars(select(ModelCatalog).where(ModelCatalog.catalog_source == "litellm")).all():
+        if model.id not in seen_ids:
+            model.enabled = False
+            model.published = False
+            model.status = "retired"
+            model.route_readiness_reason = "not present in the latest provider snapshot"
+    db.commit()
+    return provider_catalog_response(db)
 
 
 def credential_provider_names(db: Session, team_id: str) -> set[str]:
@@ -887,17 +1620,74 @@ def credential_provider_names(db: Session, team_id: str) -> set[str]:
 
 
 async def activate_catalog_model(db: Session, team_id: str, model_id: str) -> dict:
-    catalog = await litellm_model_catalog(db)
-    row = next((item for item in catalog["models"] if item["provider_model_id"] == model_id), None)
+    persisted = db.get(ModelCatalog, model_id)
+    row = None
+    if persisted is not None and persisted.catalog_source in {OPENROUTER_CATALOG_SOURCE, "litellm"}:
+        row = {
+            "provider": persisted.provider.name,
+            "provider_model_id": persisted.provider_model_id,
+            "display_name": persisted.display_name,
+            "protocol": persisted.protocol,
+            "capabilities": [item for item in persisted.capabilities.split(",") if item],
+            "capability_types": [item for item in persisted.capability_types.split(",") if item],
+            "context_window": persisted.context_window,
+        }
+    else:
+        catalog = await litellm_model_catalog(db)
+        row = next((item for item in catalog["models"] if item["provider_model_id"] == model_id), None)
     if row is None:
         raise compass_error(404, "model_not_found", "Model is not present in the controlled LiteLLM registry.")
+    capability_types = row.get("capability_types")
+    if not isinstance(capability_types, (list, tuple, set)) or not capability_types:
+        raise compass_error(409, "provider_capability_unsupported", "The provider catalog did not publish a verified Compass capability for this model.")
+    if provider_protocol(row["provider"]) == "unverified":
+        raise compass_error(409, "provider_adapter_unavailable", "This provider has no verified Compass adapter.")
+    adapter_protocol = row.get("protocol") or provider_protocol(row["provider"])
+    unsupported_capabilities = [
+        capability
+        for capability in capability_types
+        if not _provider_adapter_registry.supports_capability(adapter_protocol, str(capability))
+    ]
+    if unsupported_capabilities:
+        raise compass_error(409, "provider_capability_unsupported", "The registered provider adapter cannot execute: " + ", ".join(sorted(map(str, unsupported_capabilities))))
     if row["provider"] not in credential_provider_names(db, team_id):
         raise compass_error(409, "provider_credential_required", "Configure a platform or team provider credential before enabling the model.")
 
     provider = ensure_provider(db, row["provider"])
-    fx = get_settings().usd_to_inr_paise_per_usd
-    input_paise = math.ceil((row["input_cost_per_million_usd"] / 1000) * fx)
-    output_paise = math.ceil((row["output_cost_per_million_usd"] / 1000) * fx)
+    if not provider.enabled or provider.status in {"unconfigured", "disabled", "unavailable"}:
+        raise compass_error(409, "provider_route_unavailable", "Verify and enable the provider before activating this model.")
+    if not get_settings().local_test_mode and provider.commercial_status != "approved":
+        raise compass_error(409, "provider_commercial_approval_required", "Commercial approval is required before enabling this provider route.")
+    if persisted is not None and persisted.catalog_source in {OPENROUTER_CATALOG_SOURCE, "litellm"}:
+        if not get_settings().local_test_mode:
+            policy = _active_pricing_policy(db)
+            if (
+                not persisted.pricing_policy_version
+                or persisted.pricing_policy_version != policy.version
+                or persisted.input_price_usd_per_million is None
+                or persisted.output_price_usd_per_million is None
+            ):
+                raise compass_error(409, "model_pricing_unavailable", "Refresh the provider catalog and apply an active customer pricing policy before enabling this model.")
+        persisted.enabled = True
+        persisted.published = True
+        persisted.status = "available"
+        persisted.route_readiness_reason = "activated with verified provider credential"
+        persisted.supports_tools = "tools" in persisted.capabilities
+        persisted.supports_reasoning = "reasoning" in persisted.capabilities
+        persisted.supports_vision = "vision" in persisted.capabilities
+        db.commit()
+        return next(item for item in model_catalog_rows(db) if item["id"] == model_id)
+    policy = _active_pricing_policy(db)
+    input_cost = row.get("input_cost_per_token")
+    output_cost = row.get("output_cost_per_token")
+    if input_cost is None and row.get("input_cost_per_million_usd") is not None:
+        input_cost = Decimal(str(row["input_cost_per_million_usd"])) / Decimal(1_000_000)
+    if output_cost is None and row.get("output_cost_per_million_usd") is not None:
+        output_cost = Decimal(str(row["output_cost_per_million_usd"])) / Decimal(1_000_000)
+    if input_cost is None or output_cost is None:
+        raise compass_error(409, "model_pricing_unavailable", "The provider did not publish billable pricing for this model.")
+    input_paise = _customer_price_from_usd_per_token(input_cost, policy)
+    output_paise = _customer_price_from_usd_per_token(output_cost, policy)
     upsert_model(
         db,
         model_id=model_id,
@@ -908,9 +1698,23 @@ async def activate_catalog_model(db: Session, team_id: str, model_id: str) -> di
         context_window=row["context_window"] or 128000,
         input_price_paise_per_1k=input_paise,
         output_price_paise_per_1k=output_paise,
+        protocol=row.get("protocol"),
+        capability_types=",".join(row.get("capability_types") or []),
+        input_modalities=row.get("input_modalities") or [],
+        output_modalities=row.get("output_modalities") or [],
+        max_output_tokens=row.get("max_output_tokens"),
     )
     db.flush()
     model = db.get(ModelCatalog, model_id)
+    model.enabled = True
+    model.published = True
+    model.status = "available"
+    model.route_readiness_reason = "activated with verified provider credential"
+    model.catalog_source = "litellm"
+    model.input_price_usd_per_million = row.get("input_cost_per_million_usd")
+    model.output_price_usd_per_million = row.get("output_cost_per_million_usd")
+    model.pricing_policy_version = policy.version
+    model.last_synced_at = now()
     model.supports_tools = "tools" in row["capabilities"]
     model.supports_reasoning = "reasoning" in row["capabilities"]
     model.supports_vision = "vision" in row["capabilities"]
@@ -918,10 +1722,12 @@ async def activate_catalog_model(db: Session, team_id: str, model_id: str) -> di
     return next(item for item in model_catalog_rows(db) if item["id"] == model_id)
 
 
-def create_team(db: Session, name: str, slug: str, notes: str = "", organization_id: str | None = None) -> Team:
+def create_team(db: Session, name: str, slug: str, notes: str = "", organization_id: str | None = None, project_id: str | None = None) -> Team:
     if db.scalar(select(Team).where(Team.slug == slug)):
         raise compass_error(409, "team_exists", "A team already exists for this slug.")
-    team = Team(organization_id=organization_id, name=name, slug=slug, notes=notes)
+    if organization_id and project_id is None:
+        project_id = ensure_default_project(db, organization_id).id
+    team = Team(organization_id=organization_id, project_id=project_id, name=name, slug=slug, notes=notes)
     db.add(team)
     db.flush()
     settings = get_settings()
@@ -951,10 +1757,17 @@ def create_team_member(db: Session, team_id: str, name: str, email: str, role: s
     return member
 
 
-def create_api_key(db: Session, user_id: str, team_id: str, member_id: str | None, name: str, allowed_models: list[str], expires_at=None) -> dict:
+def create_api_key(db: Session, user_id: str, team_id: str, member_id: str | None, name: str, allowed_models: list[str], expires_at=None, project_id: str | None = None, purpose: str = "workspace") -> dict:
     team = db.get(Team, team_id)
     if team is None or not team.is_active:
         raise compass_error(404, "team_not_found", "Team not found.")
+    project_id = project_id or team.project_id
+    if team.organization_id and project_id is None:
+        project_id = ensure_default_project(db, team.organization_id).id
+    if project_id is not None:
+        project = db.get(Project, project_id)
+        if project is None or project.organization_id != team.organization_id or not project.is_active:
+            raise compass_error(400, "project_team_mismatch", "The selected project does not belong to this team.")
     if member_id is not None:
         member = db.get(TeamMember, member_id)
         if member is None or member.team_id != team_id or not member.is_active:
@@ -969,19 +1782,21 @@ def create_api_key(db: Session, user_id: str, team_id: str, member_id: str | Non
             or model.status != "available"
             or not model.provider.enabled
             or model.provider.status in {"disabled", "unavailable"}
+            or (not get_settings().local_test_mode and model.provider.commercial_status != "approved")
+            or not _catalog_model_is_fresh(model)
         ):
             raise compass_error(404, "model_not_found", f"Model is not available: {model_id}")
     secret, key_id, key_prefix, key_hash = generate_api_key()
     if expires_at is not None and expires_at.tzinfo is not None:
         expires_at = expires_at.astimezone(UTC).replace(tzinfo=None)
-    key = ApiKey(key_id=key_id, key_prefix=key_prefix, key_hash=key_hash, user_id=user_id, team_id=team_id, member_id=member_id, name=name, expires_at=expires_at)
+    key = ApiKey(key_id=key_id, key_prefix=key_prefix, key_hash=key_hash, user_id=user_id, organization_id=team.organization_id, project_id=project_id, team_id=team_id, member_id=member_id, name=name, purpose=purpose, expires_at=expires_at)
     db.add(key)
     db.flush()
     for model_id in unique_models:
         db.add(ApiKeyModel(api_key_id=key.id, model_id=model_id))
     db.commit()
     effective_models = allowed_model_ids(db, key.id)
-    return {"id": key.id, "key": secret, "key_id": key_id, "key_prefix": key_prefix, "name": name, "allowed_models": sorted(effective_models), "models_restricted": bool(unique_models)}
+    return {"id": key.id, "key": secret, "key_id": key_id, "key_prefix": key_prefix, "name": name, "purpose": purpose, "project_id": project_id, "allowed_models": sorted(effective_models), "models_restricted": bool(unique_models)}
 
 
 def revoke_api_key(db: Session, api_key_id: str) -> ApiKey:
@@ -994,11 +1809,72 @@ def revoke_api_key(db: Session, api_key_id: str) -> ApiKey:
     return key
 
 
-def authenticate_api_key(db: Session, bearer: str | None) -> ApiKey:
+def rotate_api_key(db: Session, api_key_id: str, actor_user_id: str) -> dict:
+    """Atomically revoke a key and issue a replacement with the same scope."""
+
+    key = db.scalar(select(ApiKey).where(ApiKey.id == api_key_id).with_for_update())
+    if key is None:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    if key.status != "active":
+        raise compass_error(409, "api_key_not_active", "Only an active API key can be rotated.")
+
+    secret, key_id, key_prefix, key_hash = generate_api_key()
+    replacement = ApiKey(
+        key_id=key_id,
+        key_prefix=key_prefix,
+        key_hash=key_hash,
+        user_id=key.user_id or actor_user_id,
+        organization_id=key.organization_id,
+        project_id=key.project_id,
+        team_id=key.team_id,
+        member_id=key.member_id,
+        name=key.name,
+        purpose=key.purpose,
+        scopes_json=key.scopes_json,
+        expires_at=key.expires_at,
+        daily_limit=key.daily_limit,
+        monthly_limit=key.monthly_limit,
+        rate_limit=key.rate_limit,
+    )
+    db.add(replacement)
+    db.flush()
+    grants = db.scalars(select(ApiKeyModel.model_id).where(ApiKeyModel.api_key_id == key.id)).all()
+    for model_id in grants:
+        db.add(ApiKeyModel(api_key_id=replacement.id, model_id=model_id))
+    key.status = "revoked"
+    key.revoked_at = now()
+    db.commit()
+    return {
+        "id": replacement.id,
+        "key": secret,
+        "key_id": replacement.key_id,
+        "key_prefix": replacement.key_prefix,
+        "name": replacement.name,
+        "purpose": replacement.purpose,
+        "project_id": replacement.project_id,
+        "allowed_models": sorted(grants),
+        "models_restricted": bool(grants),
+        "rotated_from": key.id,
+    }
+
+
+def authenticate_api_key(db: Session, bearer: str | None, project_id: str | None = None) -> ApiKey:
     if not bearer or not bearer.startswith("Bearer "):
         raise compass_error(401, "missing_api_key", "Missing Compass API key.")
     secret = bearer.removeprefix("Bearer ").strip()
-    key = db.scalar(select(ApiKey).where(ApiKey.key_hash == hash_api_key(secret)))
+    device_session = None
+    if secret.startswith("cmp_device_"):
+        device_session = db.scalar(select(ExtensionSession).where(ExtensionSession.token_hash == hash_api_key(secret)))
+        if device_session is None or device_session.revoked_at is not None or device_session.expires_at < now():
+            raise compass_error(401, "invalid_device_session", "The VS Code device session has expired or been revoked.")
+        device = db.get(ExtensionDevice, device_session.device_id)
+        if device is None or device.status != "active":
+            raise compass_error(401, "invalid_device_session", "The VS Code device has been revoked.")
+        device.last_seen_at = now()
+        key = db.get(ApiKey, device_session.api_key_id)
+        device_session_context.set(device_session.id)
+    else:
+        key = db.scalar(select(ApiKey).where(ApiKey.key_hash == hash_api_key(secret)))
     if key is None:
         raise compass_error(401, "invalid_api_key", "Invalid Compass API key.")
     if key.status != "active":
@@ -1010,6 +1886,17 @@ def authenticate_api_key(db: Session, bearer: str | None) -> ApiKey:
     team = db.get(Team, key.team_id)
     if team is None or not team.is_active:
         raise compass_error(401, "team_disabled", "Compass team is disabled.")
+    if key.organization_id and team.organization_id != key.organization_id:
+        raise compass_error(401, "invalid_api_key", "Compass API key organization scope is invalid.")
+    project_id = project_id or api_project_context.get()
+    if project_id:
+        project = db.get(Project, project_id)
+        if project is None or not project.is_active or project.organization_id != team.organization_id:
+            raise compass_error(403, "project_access_denied", "This API key cannot access the selected project.")
+        if team.project_id and team.project_id != project_id:
+            raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
+        if key.project_id and project_id != key.project_id:
+            raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
     key.last_used_at = now()
     db.commit()
     return key
@@ -1019,19 +1906,7 @@ def allowed_model_ids(db: Session, api_key_id: str) -> set[str]:
     explicit = set(db.scalars(select(ApiKeyModel.model_id).where(ApiKeyModel.api_key_id == api_key_id)).all())
     if explicit:
         return explicit
-    return set(
-        db.scalars(
-            select(ModelCatalog.id)
-            .join(Provider, Provider.id == ModelCatalog.provider_id)
-            .where(
-                ModelCatalog.enabled.is_(True),
-                ModelCatalog.published.is_(True),
-                ModelCatalog.status == "available",
-                Provider.enabled.is_(True),
-                Provider.status.not_in(["disabled", "unavailable"]),
-            )
-        ).all()
-    )
+    return {row["id"] for row in model_catalog_rows(db)}
 
 
 def api_key_models_restricted(db: Session, api_key_id: str) -> bool:
@@ -1052,6 +1927,8 @@ def update_api_key_models(db: Session, api_key_id: str, allowed_models: list[str
             or model.status != "available"
             or not model.provider.enabled
             or model.provider.status in {"disabled", "unavailable"}
+            or (not get_settings().local_test_mode and model.provider.commercial_status != "approved")
+            or not _catalog_model_is_fresh(model)
         ):
             raise compass_error(404, "model_not_found", f"Model is not available: {model_id}")
     db.query(ApiKeyModel).filter(ApiKeyModel.api_key_id == api_key_id).delete(synchronize_session=False)
@@ -1128,31 +2005,34 @@ def settle_wallet_reservation(db: Session, team_id: str, reservation_id: str, ac
     if reservation is None:
         raise compass_error(409, "wallet_reservation_missing", "The in-flight wallet reservation could not be found.")
     settlement_key = f"llm-settlement:{reservation_id}"
+    release_key = f"{settlement_key}:release"
     existing = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == settlement_key))
     if existing is not None:
         return existing
 
     reserved_paise = max(0, -reservation.amount_paise)
     actual_paise = max(0, actual_cost_paise)
-    before_release = wallet.balance_paise
-    wallet.balance_paise += reserved_paise
-    wallet.updated_at = now()
-    db.add(
-        WalletLedger(
-            wallet_id=wallet.id,
-            type="credit",
-            amount_paise=reserved_paise,
-            balance_before=before_release,
-            balance_after=wallet.balance_paise,
-            reference_type="llm_reservation_release",
-            reference_id=reservation_id,
-            description="Released unused Compass API reservation",
-            idempotency_key=f"{settlement_key}:release",
+    existing_release = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == release_key))
+    if existing_release is None:
+        before_release = wallet.balance_paise
+        wallet.balance_paise += reserved_paise
+        wallet.updated_at = now()
+        db.add(
+            WalletLedger(
+                wallet_id=wallet.id,
+                type="credit",
+                amount_paise=reserved_paise,
+                balance_before=before_release,
+                balance_after=wallet.balance_paise,
+                reference_type="llm_reservation_release",
+                reference_id=reservation_id,
+                description="Released unused Compass API reservation",
+                idempotency_key=release_key,
+            )
         )
-    )
     if actual_paise == 0:
         db.commit()
-        return None
+        return existing_release
     if wallet.balance_paise < actual_paise:
         db.rollback()
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient for the final provider charge.")
@@ -1197,17 +2077,25 @@ def _circuit_is_open(db: Session, provider_id: str) -> bool:
 
 
 def record_provider_health(db: Session, provider: Provider, *, success: bool, latency_ms: int, error_code: str | None = None) -> None:
+    # Include the immediately preceding attempt when callers are composing
+    # several health updates in one transaction, including SQLite tests.
+    db.flush()
     recent = db.scalars(
         select(ProviderHealthCheck)
         .where(ProviderHealthCheck.provider_id == provider.id)
         .order_by(ProviderHealthCheck.last_checked_at.desc())
         .limit(2)
     ).all()
+    checked_at = now()
+    if recent and recent[0].last_checked_at is not None and recent[0].last_checked_at >= checked_at:
+        # Preserve deterministic newest-first ordering when a database clock
+        # has coarser precision than the request rate.
+        checked_at = recent[0].last_checked_at + timedelta(microseconds=1)
     consecutive_failures = 0 if success else 1
     if not success:
         consecutive_failures += sum(1 for row in recent if row.status != "healthy")
     status = "healthy" if success else ("circuit_open" if consecutive_failures >= 3 else "degraded")
-    db.add(ProviderHealthCheck(provider_id=provider.id, status=status, latency_ms=latency_ms, error_rate=0 if success else 100))
+    db.add(ProviderHealthCheck(provider_id=provider.id, status=status, latency_ms=latency_ms, error_rate=0 if success else 100, last_checked_at=checked_at))
     if status == "circuit_open":
         db.add(OperationalEvent(event_type="provider_circuit_open", severity="critical", service="compass-router", message=f"Provider circuit opened for {provider.name}", metadata_json=json.dumps({"provider": provider.name, "error_code": error_code, "latency_ms": latency_ms})))
     if provider.status not in {"disabled", "unavailable"}:
@@ -1215,18 +2103,8 @@ def record_provider_health(db: Session, provider: Provider, *, success: bool, la
 
 
 def _model_supports(model: ModelCatalog, capability: str | None) -> bool:
-    if capability is None:
-        return True
-    capabilities = {item.strip().lower() for item in model.capabilities.split(",") if item.strip()}
-    aliases = {
-        "responses": {"responses", "chat"},
-        "chat": {"chat"},
-        "embeddings": {"embeddings", "embedding"},
-        "images": {"images", "image", "image_generation"},
-        "audio": {"audio", "audio-input", "audio-output", "audio_transcription", "audio_speech"},
-        "batch": {"batch", "chat", "embeddings"},
-    }
-    return bool(capabilities & aliases.get(capability, {capability}))
+    requested = capability or "chat_completion"
+    return capability_matches(requested, model.capability_types, model.capabilities)
 
 
 def resolve_route(db: Session, api_key: ApiKey, requested_model: str, capability: str | None = None) -> ResolvedRoute:
@@ -1237,16 +2115,30 @@ def resolve_route(db: Session, api_key: ApiKey, requested_model: str, capability
         raise compass_error(410, "model_expired", "Requested model has expired or been deprecated.")
     if model.status != "available":
         raise compass_error(503, "model_unavailable", "Requested model is temporarily unavailable.")
+    if not _catalog_model_is_fresh(model):
+        raise compass_error(503, "model_catalog_stale", "The model catalog is stale; refresh provider discovery before routing.")
+    if not get_settings().local_test_mode and (
+        not model.pricing_policy_version
+        or model.input_price_usd_per_million is None
+        or model.output_price_usd_per_million is None
+    ):
+        raise compass_error(503, "model_pricing_unavailable", "The model has no verified provider pricing and cannot be routed.")
     if not _model_supports(model, capability):
         raise compass_error(400, "model_capability_mismatch", f"Model does not support the {capability} API.")
+    provider = model.provider
+    requested_capability = capability or "chat_completion"
+    protocol = model.protocol or provider.protocol or "unverified"
+    if not _provider_adapter_registry.supports_capability(protocol, requested_capability):
+        raise compass_error(503, "provider_capability_unsupported", "No verified provider adapter can execute the requested capability.")
+    if not provider.enabled or provider.status in {"disabled", "unavailable"}:
+        raise compass_error(503, "provider_unavailable", "Resolved provider is disabled.")
+    if not get_settings().local_test_mode and provider.commercial_status != "approved":
+        raise compass_error(503, "provider_commercial_approval_required", "The provider is not commercially approved for customer traffic.")
     if requested_model not in allowed_model_ids(db, api_key.id):
         raise compass_error(403, "model_not_allowed", "This Compass API key is not allowed to use the requested model.")
     policy = db.scalar(select(ModelPolicy).where(ModelPolicy.team_id == api_key.team_id, ModelPolicy.model_id == model.id))
     if policy is not None and not policy.enabled:
         raise compass_error(403, "model_disabled_for_team", "This model is disabled for the team.")
-    provider = model.provider
-    if not provider.enabled or provider.status in {"disabled", "unavailable"}:
-        raise compass_error(503, "provider_unavailable", "Resolved provider is disabled.")
     if _circuit_is_open(db, provider.id):
         raise compass_error(503, "provider_circuit_open", "Provider circuit breaker is open; retry after the cooldown.")
     settings = get_settings()
@@ -1371,8 +2263,22 @@ return {reason, requests, tokens}
 def calculate_cost_paise(model: ModelCatalog, usage: dict) -> tuple[int, int]:
     input_tokens = int(usage.get("prompt_tokens", 0))
     output_tokens = int(usage.get("completion_tokens", 0))
-    provider_cost = ((input_tokens * model.input_price_paise_per_1k) + (output_tokens * model.output_price_paise_per_1k) + 999) // 1000
-    return provider_cost, max(provider_cost, 1)
+    customer_cost = ((input_tokens * model.input_price_paise_per_1k) + (output_tokens * model.output_price_paise_per_1k) + 999) // 1000
+
+    # Catalog source prices are stored as USD per million tokens. Use them for
+    # provider-cost attribution, while the paise-per-1k fields remain the
+    # versioned customer charge after markup. Local fixtures have no source
+    # price and intentionally fall back to their explicit test rates.
+    source_input = model.input_price_usd_per_million
+    source_output = model.output_price_usd_per_million
+    if source_input is None or source_output is None:
+        provider_cost = customer_cost
+    else:
+        conversion = Decimal(str(get_settings().usd_to_inr_paise_per_usd))
+        source_input_paise_per_1k = (Decimal(str(source_input)) * conversion * Decimal("0.001")).to_integral_value(rounding=ROUND_CEILING)
+        source_output_paise_per_1k = (Decimal(str(source_output)) * conversion * Decimal("0.001")).to_integral_value(rounding=ROUND_CEILING)
+        provider_cost = int((Decimal(input_tokens) * source_input_paise_per_1k + Decimal(output_tokens) * source_output_paise_per_1k) / Decimal(1000))
+    return provider_cost, max(customer_cost, 1)
 
 
 def estimate_prompt_tokens(body: dict) -> int:
@@ -1383,7 +2289,7 @@ def estimate_max_cost_paise(model: ModelCatalog, body: dict) -> int:
     return calculate_cost_paise(model, {"prompt_tokens": estimate_prompt_tokens(body), "completion_tokens": int(body.get("max_tokens") or 256)})[1]
 
 
-def enforce_team_limits(db: Session, team_id: str, estimated_tokens: int) -> None:
+def enforce_team_limits(db: Session, team_id: str, estimated_tokens: int, estimated_cost_paise: int = 0) -> None:
     limits = db.scalar(select(TeamLimit).where(TeamLimit.team_id == team_id))
     if limits is None:
         return
@@ -1400,8 +2306,8 @@ def enforce_team_limits(db: Session, team_id: str, estimated_tokens: int) -> Non
         except HTTPException:
             raise
         except (OSError, RuntimeError, ValueError):
-            # Local development may not have Redis; retain the database fallback.
-            pass
+            if settings.environment.strip().lower() in {"production", "prod"}:
+                raise compass_error(503, "rate_limit_unavailable", "Distributed rate limiting is unavailable.") from None
     if not redis_enforced:
         since = now() - timedelta(minutes=1)
         minute_requests = db.scalar(select(func.count(LlmRequest.id)).where(LlmRequest.team_id == team_id, LlmRequest.created_at >= since)) or 0
@@ -1413,10 +2319,11 @@ def enforce_team_limits(db: Session, team_id: str, estimated_tokens: int) -> Non
     day_start = now().replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = day_start.replace(day=1)
     daily_spend = db.scalar(select(func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0)).where(LlmRequest.team_id == team_id, LlmRequest.created_at >= day_start, LlmRequest.status == "success")) or 0
-    if limits.daily_spend_limit_paise > 0 and daily_spend >= limits.daily_spend_limit_paise:
+    estimated_cost = max(0, estimated_cost_paise)
+    if limits.daily_spend_limit_paise > 0 and daily_spend + estimated_cost > limits.daily_spend_limit_paise:
         raise compass_error(429, "team_daily_spend_limit_exceeded", "Team daily spending limit exceeded.")
     monthly_spend = db.scalar(select(func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0)).where(LlmRequest.team_id == team_id, LlmRequest.created_at >= month_start, LlmRequest.status == "success")) or 0
-    if limits.monthly_spend_limit_paise > 0 and monthly_spend >= limits.monthly_spend_limit_paise:
+    if limits.monthly_spend_limit_paise > 0 and monthly_spend + estimated_cost > limits.monthly_spend_limit_paise:
         raise compass_error(429, "team_monthly_spend_limit_exceeded", "Team monthly spending limit exceeded.")
 
 
@@ -1479,6 +2386,29 @@ class LiteLLMClient:
         if not isinstance(data, dict):
             raise compass_error(502, "malformed_provider_response", "Provider returned an invalid response.")
         return data
+
+    async def stream_request(self, endpoint: str, payload: dict):
+        """Yield upstream SSE lines without buffering the provider response."""
+        async with httpx.AsyncClient(timeout=self.settings.litellm_timeout_seconds) as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}{endpoint}",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.settings.litellm_master_key}"},
+                ) as response:
+                    if response.status_code == 429:
+                        raise compass_error(429, "provider_rate_limited", "Provider rate limit exceeded.")
+                    if response.status_code >= 500:
+                        raise compass_error(503, "provider_unavailable", "Provider is unavailable.")
+                    if response.status_code >= 400:
+                        raise compass_error(400, "provider_error", "Provider rejected the request.")
+                    async for line in response.aiter_lines():
+                        yield line
+            except httpx.TimeoutException:
+                raise compass_error(504, "provider_timeout", "Provider request timed out.") from None
+            except httpx.RequestError:
+                raise compass_error(503, "provider_unavailable", "Provider is unavailable.") from None
 
     async def request_bytes(self, endpoint: str, payload: dict) -> tuple[bytes, str]:
         async with httpx.AsyncClient(timeout=self.settings.litellm_timeout_seconds) as client:
@@ -1697,6 +2627,28 @@ class DirectProviderClient:
             raise compass_error(502, "malformed_provider_response", "Provider returned an invalid response.")
         return response_model(data)
 
+    async def stream_request(self, endpoint: str, payload: dict):
+        if self.provider_name == "gemini" or not self.base_url:
+            raise compass_error(400, "provider_capability_unsupported", f"Streaming is not configured for provider {self.provider_name}.")
+        request_payload = payload | {"model": self.model_id, "stream": True}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                async with client.stream("POST", f"{self.base_url}{endpoint}", json=request_payload, headers=self._headers()) as response:
+                    if response.status_code == 429:
+                        raise compass_error(429, "provider_rate_limited", "Provider rate limit exceeded.")
+                    if response.status_code in {401, 403}:
+                        raise compass_error(502, "provider_auth_failed", "Provider rejected the configured credential.")
+                    if response.status_code >= 500:
+                        raise compass_error(503, "provider_unavailable", "Provider is unavailable.")
+                    if response.status_code >= 400:
+                        raise compass_error(400, "provider_error", "Provider rejected the request.")
+                    async for line in response.aiter_lines():
+                        yield line
+            except httpx.TimeoutException:
+                raise compass_error(504, "provider_timeout", "Provider request timed out.") from None
+            except httpx.RequestError:
+                raise compass_error(503, "provider_unavailable", "Provider is unavailable.") from None
+
     async def chat_completion(self, payload: dict) -> dict:
         data = await self.request_json("/v1/chat/completions", payload)
         validate_openai_response(data)
@@ -1749,18 +2701,39 @@ class DirectProviderClient:
         return payload
 
 
+_provider_adapter_registry = ProviderAdapterRegistry()
+_provider_adapter_registry.register("litellm", lambda adapter_route, client: RuntimeProviderAdapter(adapter_route, client))
+_provider_adapter_registry.register("openrouter_optional", lambda adapter_route, client: RuntimeProviderAdapter(adapter_route, client))
+# Preserve rows created by the earlier interrupted M4 spelling during rollout.
+_provider_adapter_registry.register("optional_openrouter", lambda adapter_route, client: RuntimeProviderAdapter(adapter_route, client))
+
+
 def provider_client(route: ResolvedRoute):
     settings = get_settings()
     mode = settings.provider_execution_mode.strip().lower()
     if mode == "proxy" or (mode == "auto" and settings.local_test_mode):
-        return LiteLLMClient()
-    if mode not in {"auto", "direct"}:
+        runtime_client = LiteLLMClient()
+    elif mode in {"auto", "direct"}:
+        runtime_client = DirectProviderClient(route.provider.name, route.secret_reference, route.resolved_model_id)
+    else:
         raise compass_error(503, "provider_execution_unavailable", "Provider execution mode is invalid.")
-    return DirectProviderClient(route.provider.name, route.secret_reference, route.resolved_model_id)
+    protocol = route.model.protocol or route.provider.protocol or "unverified"
+    adapter_route = ProviderRoute(
+        provider=route.provider.name,
+        protocol=protocol,
+        model_id=route.resolved_model_id,
+        credential_mode=route.credential_mode,
+        secret_reference=route.secret_reference,
+    )
+    try:
+        return _provider_adapter_registry.resolve(adapter_route, runtime_client)
+    except ProviderAdapterError as exc:
+        raise compass_error(503, "provider_adapter_unavailable", str(exc)) from None
 
 
 def create_request_record(db: Session, api_key: ApiKey, route: ResolvedRoute, requested_model: str, status: str, latency_ms: int, error_code: str | None = None, attempts: list[dict] | None = None) -> LlmRequest:
-    record = LlmRequest(user_id=api_key.user_id, organization_id=api_key.organization_id, team_id=api_key.team_id, member_id=api_key.member_id, api_key_id=api_key.id, requested_model=requested_model, resolved_model=route.resolved_model_id, provider=route.provider.name, credential_mode=route.credential_mode, status=status, error_code=error_code, latency_ms=latency_ms)
+    effective_project_id = api_project_context.get() or api_key.project_id
+    record = LlmRequest(user_id=api_key.user_id, organization_id=api_key.organization_id, project_id=effective_project_id, team_id=api_key.team_id, member_id=api_key.member_id, api_key_id=api_key.id, device_session_id=device_session_context.get(), requested_model=requested_model, resolved_model=route.resolved_model_id, provider=route.provider.name, credential_mode=route.credential_mode, status=status, error_code=error_code, latency_ms=latency_ms)
     db.add(record)
     db.flush()
     attempt_rows = attempts or [{"provider": route.provider.name, "provider_model_id": route.resolved_model_id, "status": status, "error_code": error_code, "latency_ms": latency_ms}]
@@ -1774,9 +2747,9 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     routes = route_candidates(db, api_key, body["model"])
     route = routes[0]
     estimated_tokens = estimate_prompt_tokens(body) + int(body.get("max_tokens") or 256)
-    enforce_team_limits(db, api_key.team_id, estimated_tokens)
-    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     estimated_cost = max(estimate_max_cost_paise(candidate.model, body) for candidate in routes)
+    enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
@@ -1841,12 +2814,269 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     return response
 
 
+async def stream_chat(db: Session, api_key: ApiKey, body: dict):
+    """Prepare a real upstream stream and settle the wallet when it ends.
+
+    The local-test path intentionally remains on the existing deterministic
+    response helper. Production and staging paths consume provider SSE lines
+    incrementally and never manufacture chunks from a buffered response.
+    """
+    routes = route_candidates(db, api_key, body["model"])
+    estimated_tokens = estimate_prompt_tokens(body) + int(body.get("max_tokens") or 256)
+    estimated_cost = max(estimate_max_cost_paise(candidate.model, body) for candidate in routes)
+    enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
+    enforce_api_key_limits(db, api_key, estimated_cost)
+    enforce_model_policy(db, api_key, routes[0].model.id, estimated_cost)
+    if wallet is None or wallet.balance_paise < estimated_cost:
+        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+
+    reservation_id = new_id()
+    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+
+    async def events():
+        started = time.perf_counter()
+        selected = routes[0]
+        attempt_rows: list[dict] = []
+        usage: dict | None = None
+        usage_source = "provider"
+        emitted = False
+        completed = False
+        last_error: HTTPException | None = None
+        retryable = {"provider_timeout", "provider_unavailable", "provider_rate_limited", "provider_error"}
+        max_attempts = max(1, min(get_settings().provider_max_attempts, 5))
+
+        try:
+            for candidate in routes:
+                selected = candidate
+                for attempt_number in range(max_attempts):
+                    attempt_started = time.perf_counter()
+                    candidate_emitted = False
+                    try:
+                        provider_payload = body | {"model": candidate.resolved_model_id, "stream": True}
+                        if candidate.secret_reference.startswith(("encrypted:", "gcp-secret:")):
+                            provider_payload["api_key"] = _credential_value(candidate.secret_reference)
+                        async for line in provider_client(candidate).stream_request("/v1/chat/completions", provider_payload):
+                            if not line:
+                                continue
+                            candidate_emitted = True
+                            emitted = True
+                            if line.startswith("data:"):
+                                raw = line[5:].strip()
+                                if raw and raw != "[DONE]":
+                                    try:
+                                        chunk = json.loads(raw)
+                                    except (TypeError, ValueError):
+                                        chunk = None
+                                    if isinstance(chunk, dict) and isinstance(chunk.get("usage"), dict):
+                                        usage = _generic_usage(chunk)
+                            yield f"{line}\n\n"
+                        completed = True
+                        latency_ms = int((time.perf_counter() - attempt_started) * 1000)
+                        record_provider_health(db, candidate.provider, success=True, latency_ms=latency_ms)
+                        attempt_rows.append({"provider": candidate.provider.name, "provider_model_id": candidate.resolved_model_id, "status": "success", "error_code": None, "latency_ms": latency_ms})
+                        break
+                    except HTTPException as exc:
+                        last_error = exc
+                        error_code = "provider_error"
+                        if isinstance(exc.detail, dict):
+                            error_code = exc.detail.get("error", {}).get("code", error_code)
+                        latency_ms = int((time.perf_counter() - attempt_started) * 1000)
+                        record_provider_health(db, candidate.provider, success=False, latency_ms=latency_ms, error_code=error_code)
+                        attempt_rows.append({"provider": candidate.provider.name, "provider_model_id": candidate.resolved_model_id, "status": "error", "error_code": error_code, "latency_ms": latency_ms})
+                        if candidate_emitted or emitted or error_code not in retryable or attempt_number + 1 >= max_attempts:
+                            break
+                        await asyncio.sleep(get_settings().provider_retry_backoff_seconds * (2**attempt_number))
+                if completed or emitted:
+                    break
+
+            if not completed:
+                error_code = "provider_error"
+                if last_error is not None and isinstance(last_error.detail, dict):
+                    error_code = last_error.detail.get("error", {}).get("code", error_code)
+                error_message = "No provider route succeeded."
+                if last_error is not None and isinstance(last_error.detail, dict):
+                    error_message = last_error.detail.get("error", {}).get("message", error_message)
+                yield f"data: {json.dumps({'error': {'code': error_code, 'message': error_message}})}\n\n"
+                yield "data: [DONE]\n\n"
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                record = create_request_record(db, api_key, selected, body["model"], "error", latency_ms, error_code, attempt_rows)
+                record.usage_source = "none"
+                settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+                return
+
+            if usage is None:
+                usage = {"prompt_tokens": estimate_prompt_tokens(body), "completion_tokens": 0, "total_tokens": estimate_prompt_tokens(body)}
+                usage_source = "estimate"
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            provider_cost, compass_cost = calculate_cost_paise(selected.model, usage)
+            record = create_request_record(db, api_key, selected, body["model"], "success", latency_ms, attempts=attempt_rows)
+            record.input_tokens = int(usage.get("prompt_tokens", 0))
+            record.output_tokens = int(usage.get("completion_tokens", 0))
+            record.total_tokens = int(usage.get("total_tokens", 0))
+            record.usage_source = usage_source
+            record.provider_cost_paise = provider_cost
+            record.compass_cost_paise = compass_cost
+            db.flush()
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+        except asyncio.CancelledError:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            record = create_request_record(db, api_key, selected, body["model"], "cancelled", latency_ms, "client_disconnected", attempt_rows)
+            record.usage_source = "none"
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+            raise
+
+    return events()
+
+
 def _generic_usage(response: dict) -> dict:
     usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
     input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
     output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
     total_tokens = int(usage.get("total_tokens", input_tokens + output_tokens) or 0)
     return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens, "total_tokens": total_tokens}
+
+
+def _usage_with_source(response: dict, estimated_tokens: int) -> tuple[dict, str]:
+    """Use provider usage only when the provider actually returned it."""
+
+    if isinstance(response.get("usage"), dict):
+        return _generic_usage(response), "provider"
+    estimated = max(0, int(estimated_tokens))
+    return {"prompt_tokens": estimated, "completion_tokens": 0, "total_tokens": estimated}, "estimate"
+
+
+def _stream_usage(line: str) -> dict | None:
+    """Extract usage from OpenAI-compatible or Responses SSE payloads."""
+
+    if not line.startswith("data:"):
+        return None
+    raw = line[5:].strip()
+    if not raw or raw == "[DONE]":
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    candidates = [payload]
+    if isinstance(payload, dict) and isinstance(payload.get("response"), dict):
+        candidates.append(payload["response"])
+    for candidate in candidates:
+        if isinstance(candidate, dict) and isinstance(candidate.get("usage"), dict):
+            return _generic_usage(candidate)
+    return None
+
+
+async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: str, capability: str):
+    """Forward a provider SSE stream for non-chat OpenAI-compatible APIs."""
+
+    routes = route_candidates(db, api_key, body["model"], capability)
+    requested_max_tokens = int(body.get("max_tokens") or body.get("max_output_tokens") or 256)
+    estimated_tokens = _estimate_generic_tokens(body) + requested_max_tokens
+    estimated_cost = max(
+        estimate_max_cost_paise(
+            candidate.model,
+            {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": requested_max_tokens},
+        )
+        for candidate in routes
+    )
+    enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
+    enforce_api_key_limits(db, api_key, estimated_cost)
+    enforce_model_policy(db, api_key, routes[0].model.id, estimated_cost)
+    if wallet is None or wallet.balance_paise < estimated_cost:
+        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+
+    reservation_id = new_id()
+    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+
+    async def events():
+        started = time.perf_counter()
+        selected = routes[0]
+        attempt_rows: list[dict] = []
+        usage: dict | None = None
+        emitted = False
+        completed = False
+        last_error: HTTPException | None = None
+        retryable = {"provider_timeout", "provider_unavailable", "provider_rate_limited", "provider_error"}
+        max_attempts = max(1, min(get_settings().provider_max_attempts, 5))
+
+        try:
+            for candidate in routes:
+                selected = candidate
+                for attempt_number in range(max_attempts):
+                    attempt_started = time.perf_counter()
+                    candidate_emitted = False
+                    try:
+                        provider_payload = body | {"model": candidate.resolved_model_id, "stream": True}
+                        if candidate.secret_reference.startswith(("encrypted:", "gcp-secret:")):
+                            provider_payload["api_key"] = _credential_value(candidate.secret_reference)
+                        async for line in provider_client(candidate).stream_request(endpoint, provider_payload):
+                            if not line:
+                                continue
+                            candidate_emitted = True
+                            emitted = True
+                            streamed_usage = _stream_usage(line)
+                            if streamed_usage is not None:
+                                usage = streamed_usage
+                            yield f"{line}\n\n"
+                        completed = True
+                        latency_ms = int((time.perf_counter() - attempt_started) * 1000)
+                        record_provider_health(db, candidate.provider, success=True, latency_ms=latency_ms)
+                        attempt_rows.append({"provider": candidate.provider.name, "provider_model_id": candidate.resolved_model_id, "status": "success", "error_code": None, "latency_ms": latency_ms})
+                        break
+                    except HTTPException as exc:
+                        last_error = exc
+                        error_code = "provider_error"
+                        if isinstance(exc.detail, dict):
+                            error_code = exc.detail.get("error", {}).get("code", error_code)
+                        latency_ms = int((time.perf_counter() - attempt_started) * 1000)
+                        record_provider_health(db, candidate.provider, success=False, latency_ms=latency_ms, error_code=error_code)
+                        attempt_rows.append({"provider": candidate.provider.name, "provider_model_id": candidate.resolved_model_id, "status": "error", "error_code": error_code, "latency_ms": latency_ms})
+                        if candidate_emitted or emitted or error_code not in retryable or attempt_number + 1 >= max_attempts:
+                            break
+                        await asyncio.sleep(get_settings().provider_retry_backoff_seconds * (2**attempt_number))
+                if completed or emitted:
+                    break
+
+            if not completed:
+                error_code = "provider_error"
+                if last_error is not None and isinstance(last_error.detail, dict):
+                    error_code = last_error.detail.get("error", {}).get("code", error_code)
+                error_message = "No provider route succeeded."
+                if last_error is not None and isinstance(last_error.detail, dict):
+                    error_message = last_error.detail.get("error", {}).get("message", error_message)
+                yield f"data: {json.dumps({'error': {'code': error_code, 'message': error_message}})}\n\n"
+                yield "data: [DONE]\n\n"
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                record = create_request_record(db, api_key, selected, body["model"], "error", latency_ms, error_code, attempt_rows)
+                record.usage_source = "none"
+                settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+                return
+
+            usage_source = "provider"
+            if usage is None:
+                usage = {"prompt_tokens": _estimate_generic_tokens(body), "completion_tokens": 0, "total_tokens": _estimate_generic_tokens(body)}
+                usage_source = "estimate"
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            provider_cost, compass_cost = calculate_cost_paise(selected.model, usage)
+            record = create_request_record(db, api_key, selected, body["model"], "success", latency_ms, attempts=attempt_rows)
+            record.input_tokens = usage["prompt_tokens"]
+            record.output_tokens = usage["completion_tokens"]
+            record.total_tokens = usage["total_tokens"]
+            record.usage_source = usage_source
+            record.provider_cost_paise = provider_cost
+            record.compass_cost_paise = compass_cost
+            db.flush()
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+        except asyncio.CancelledError:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            record = create_request_record(db, api_key, selected, body["model"], "cancelled", latency_ms, "client_disconnected", attempt_rows)
+            record.usage_source = "none"
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+            raise
+
+    return events()
 
 
 def _estimate_generic_tokens(body: dict) -> int:
@@ -1864,9 +3094,9 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
     route = routes[0]
     requested_max_tokens = int(body.get("max_tokens") or body.get("max_output_tokens") or 256)
     estimated_tokens = _estimate_generic_tokens(body) + requested_max_tokens
-    enforce_team_limits(db, api_key.team_id, estimated_tokens)
-    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": requested_max_tokens}) for candidate in routes)
+    enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
@@ -1936,9 +3166,9 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
     routes = route_candidates(db, api_key, body["model"], capability)
     route = routes[0]
     estimated_tokens = _estimate_generic_tokens(body)
-    enforce_team_limits(db, api_key.team_id, estimated_tokens)
-    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or "")}], "max_tokens": 256}) for candidate in routes)
+    enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
@@ -1979,12 +3209,17 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
         settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
-        create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
+        record = create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
+        record.usage_source = "none"
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     record = create_request_record(db, api_key, route, body["model"], "success", latency_ms, attempts=attempt_rows)
+    record.input_tokens = estimated_tokens
+    record.total_tokens = estimated_tokens
+    record.usage_source = "estimate"
+    record.provider_cost_paise = 0
     record.compass_cost_paise = estimated_cost
     db.flush()
     settle_wallet_reservation(db, api_key.team_id, reservation_id, estimated_cost, record.id)
@@ -1995,9 +3230,9 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
     routes = route_candidates(db, api_key, model_id, capability)
     route = routes[0]
     estimated_tokens = max(1, len(file[1]) // 4_000)
-    enforce_team_limits(db, api_key.team_id, estimated_tokens)
-    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": "audio transcription"}], "max_tokens": 256}) for candidate in routes)
+    enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if wallet is None or wallet.balance_paise < estimated_cost:
@@ -2035,16 +3270,18 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
     latency_ms = int((time.perf_counter() - started) * 1000)
     if response is None:
         settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
-        create_request_record(db, api_key, route, model_id, "error", latency_ms, "provider_error", attempt_rows)
+        record = create_request_record(db, api_key, route, model_id, "error", latency_ms, "provider_error", attempt_rows)
+        record.usage_source = "none"
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
 
-    usage = _generic_usage(response)
+    usage, usage_source = _usage_with_source(response, estimated_tokens)
     provider_cost, compass_cost = calculate_cost_paise(route.model, usage)
     record = create_request_record(db, api_key, route, model_id, "success", latency_ms, attempts=attempt_rows)
     record.input_tokens = usage["prompt_tokens"]
     record.output_tokens = usage["completion_tokens"]
     record.total_tokens = usage["total_tokens"]
+    record.usage_source = usage_source
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
@@ -2103,6 +3340,21 @@ def stream_openai_chunks(full_response: dict):
     yield "data: [DONE]\n\n"
 
 
+def _catalog_model_is_fresh(model: ModelCatalog) -> bool:
+    """A production route must come from a recent verified catalog snapshot."""
+
+    settings = get_settings()
+    if settings.local_test_mode:
+        return True
+    if model.catalog_source == "openrouter":
+        max_age = settings.openrouter_catalog_stale_after_seconds
+    elif model.catalog_source == "litellm":
+        max_age = settings.litellm_catalog_cache_seconds * 3
+    else:
+        return False
+    return model.last_synced_at is not None and model.last_synced_at >= now() - timedelta(seconds=max(60, max_age))
+
+
 def model_catalog_rows(db: Session, include_unpublished: bool = False) -> list[dict]:
     stmt = select(ModelCatalog).order_by(ModelCatalog.id)
     if not include_unpublished:
@@ -2113,8 +3365,64 @@ def model_catalog_rows(db: Session, include_unpublished: bool = False) -> list[d
             Provider.enabled.is_(True),
             Provider.status.not_in(["disabled", "unavailable"]),
         )
+        if not get_settings().local_test_mode:
+            stmt = stmt.where(Provider.commercial_status == "approved")
     rows = db.scalars(stmt).all()
-    return [{"id": row.id, "display_name": row.display_name, "provider": row.provider.name, "provider_model_id": row.provider_model_id, "capabilities": row.capabilities.split(","), "context_window": row.context_window, "input_price_paise_per_1k": row.input_price_paise_per_1k, "output_price_paise_per_1k": row.output_price_paise_per_1k, "supports_streaming": row.supports_streaming, "supports_tools": row.supports_tools, "supports_reasoning": row.supports_reasoning, "supports_vision": row.supports_vision, "fallback_model_id": row.fallback_model_id, "enabled": row.enabled, "published": row.published, "status": row.status, "provider_status": row.provider.status, "provider_enabled": row.provider.enabled} for row in rows]
+    result = []
+    for row in rows:
+        try:
+            metadata = json.loads(row.raw_metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        try:
+            input_modalities = json.loads(row.input_modalities or "[]")
+        except (TypeError, ValueError):
+            input_modalities = metadata.get("input_modalities", [])
+        try:
+            output_modalities = json.loads(row.output_modalities or "[]")
+        except (TypeError, ValueError):
+            output_modalities = metadata.get("output_modalities", [])
+        result.append(
+            {
+                "id": row.id,
+                "display_name": row.display_name,
+                "provider": row.provider.name,
+                "provider_model_id": row.provider_model_id,
+                "protocol": row.protocol,
+                "capabilities": [item for item in row.capabilities.split(",") if item],
+                "capability_types": [item for item in row.capability_types.split(",") if item],
+                "max_output_tokens": row.max_output_tokens,
+                "context_window": row.context_window,
+                "input_price_paise_per_1k": row.input_price_paise_per_1k,
+                "output_price_paise_per_1k": row.output_price_paise_per_1k,
+                "input_price_usd_per_million": str(row.input_price_usd_per_million) if row.input_price_usd_per_million is not None else None,
+                "output_price_usd_per_million": str(row.output_price_usd_per_million) if row.output_price_usd_per_million is not None else None,
+                "supports_streaming": row.supports_streaming,
+                "supports_tools": row.supports_tools,
+                "supports_reasoning": row.supports_reasoning,
+                "supports_vision": row.supports_vision,
+                "fallback_model_id": row.fallback_model_id,
+                "enabled": row.enabled,
+                "published": row.published,
+                "status": row.status,
+                "route_readiness_reason": row.route_readiness_reason,
+                "route_ready": row.enabled and row.published and row.status == "available" and row.provider.enabled and row.provider.status not in {"disabled", "unavailable"} and (get_settings().local_test_mode or row.provider.commercial_status == "approved") and _catalog_model_is_fresh(row),
+                "provider_status": row.provider.status,
+                "provider_commercial_status": row.provider.commercial_status,
+                "provider_enabled": row.provider.enabled,
+                "catalog_source": row.catalog_source,
+                "pricing_policy_version": row.pricing_policy_version,
+                "source_created_at": row.source_created_at.isoformat() if row.source_created_at else None,
+                "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+                "description": metadata.get("description", ""),
+                "input_modalities": input_modalities,
+                "output_modalities": output_modalities,
+                "supported_parameters": metadata.get("supported_parameters", []),
+            }
+        )
+    if not include_unpublished:
+        result = [row for row in result if row["route_ready"]]
+    return result
 
 
 def model_policy_rows(db: Session, team_id: str) -> list[dict]:
@@ -2131,6 +3439,12 @@ def model_policy_rows(db: Session, team_id: str) -> list[dict]:
         )
         .order_by(ModelCatalog.id)
     ).all()
+    if not get_settings().local_test_mode:
+        models = [
+            model
+            for model in models
+            if model.provider.commercial_status == "approved" and _catalog_model_is_fresh(model)
+        ]
     return [{"id": policies.get(model.id).id if model.id in policies else None, "team_id": team_id, "model_id": model.id, "enabled": policies[model.id].enabled if model.id in policies else True, "requests_per_minute": policies[model.id].requests_per_minute if model.id in policies else 0, "daily_spend_limit_paise": policies[model.id].daily_spend_limit_paise if model.id in policies else 0, "monthly_spend_limit_paise": policies[model.id].monthly_spend_limit_paise if model.id in policies else 0, "updated_at": policies[model.id].updated_at.isoformat() if model.id in policies else None} for model in models]
 
 
@@ -2182,11 +3496,11 @@ def list_api_keys(db: Session, team_id: str | None = None, team_ids: list[str] |
         .group_by(LlmRequest.api_key_id)
     ).all()
     usage = {row[0]: {"requests": row[1], "tokens": row[2], "spend_paise": row[3]} for row in usage_rows}
-    return [{"id": key.id, "team_id": key.team_id, "member_id": key.member_id, "name": key.name, "key": f"{key.key_prefix}...", "status": key.status, "created_at": key.created_at.isoformat(), "last_used_at": key.last_used_at.isoformat() if key.last_used_at else None, "expires_at": key.expires_at.isoformat() if key.expires_at else None, "allowed_models": sorted(allowed_model_ids(db, key.id)), "models_restricted": api_key_models_restricted(db, key.id), "rate_limit": key.rate_limit, "daily_limit_paise": key.daily_limit, "monthly_limit_paise": key.monthly_limit, "usage": usage.get(key.id, {"requests": 0, "tokens": 0, "spend_paise": 0})} for key in keys]
+    return [{"id": key.id, "team_id": key.team_id, "project_id": key.project_id, "member_id": key.member_id, "name": key.name, "purpose": key.purpose, "key": f"{key.key_prefix}...", "status": key.status, "created_at": key.created_at.isoformat(), "last_used_at": key.last_used_at.isoformat() if key.last_used_at else None, "expires_at": key.expires_at.isoformat() if key.expires_at else None, "allowed_models": sorted(allowed_model_ids(db, key.id)), "models_restricted": api_key_models_restricted(db, key.id), "rate_limit": key.rate_limit, "daily_limit_paise": key.daily_limit, "monthly_limit_paise": key.monthly_limit, "usage": usage.get(key.id, {"requests": 0, "tokens": 0, "spend_paise": 0})} for key in keys]
 
 
 def request_rows(rows: list[LlmRequest]) -> list[dict]:
-    return [{"id": row.id, "team_id": row.team_id, "member_id": row.member_id, "api_key_id": row.api_key_id, "status": row.status, "error_code": row.error_code, "model": row.requested_model, "provider": row.provider, "tokens": row.total_tokens, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "cost_paise": row.compass_cost_paise, "latency_ms": row.latency_ms, "created_at": row.created_at.isoformat()} for row in rows]
+    return [{"id": row.id, "project_id": row.project_id, "team_id": row.team_id, "member_id": row.member_id, "api_key_id": row.api_key_id, "status": row.status, "error_code": row.error_code, "model": row.requested_model, "provider": row.provider, "tokens": row.total_tokens, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "usage_source": row.usage_source, "cost_paise": row.compass_cost_paise, "latency_ms": row.latency_ms, "created_at": row.created_at.isoformat()} for row in rows]
 
 
 def dashboard_summary(db: Session, team_ids: list[str] | None = None, user_id: str | None = None, workspace_ids: list[str] | None = None) -> dict:

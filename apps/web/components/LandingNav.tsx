@@ -2,8 +2,9 @@
 
 import { ArrowRight, LogIn, LogOut, Route, Store, UserPlus } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, signOutClerkSession } from "../lib/api";
 
 const sessionKey = "compass.local.session";
 
@@ -14,6 +15,7 @@ function marketplaceUrl(path: string): string {
 
 export function LandingNav() {
   const [signedIn, setSignedIn] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     let active = true;
@@ -60,8 +62,9 @@ export function LandingNav() {
         if (session.token) await apiFetch("/auth/logout", { method: "POST" }, session.token);
       } catch { /* local cleanup still signs the browser out */ }
     }
+    try { await signOutClerkSession(); } catch { /* local cleanup still signs the browser out */ }
     window.localStorage.removeItem(sessionKey);
-    window.location.assign(marketplaceUrl("/compass/logout"));
+    router.push("/");
   }
 
   return (
@@ -87,8 +90,8 @@ export function LandingNav() {
           </>
         ) : (
           <>
-            <a className="button button-quiet" href={marketplaceUrl("/login?callbackUrl=/compass")}><LogIn aria-hidden="true" />Log in</a>
-            <a className="button button-primary" href={marketplaceUrl("/signup?callbackUrl=/compass")}><UserPlus aria-hidden="true" />Sign up</a>
+            <Link className="button button-quiet" href="/login"><LogIn aria-hidden="true" />Log in</Link>
+            <Link className="button button-primary" href="/signup"><UserPlus aria-hidden="true" />Sign up</Link>
           </>
         )}
       </div>

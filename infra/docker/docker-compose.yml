@@ -63,6 +63,8 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       APP_SECRET: ${APP_SECRET:-dev-compose-secret-change-me}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://compass:compass@postgres:5432/compass}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+      DATABASE_MIGRATION_MODE: ${DATABASE_MIGRATION_MODE:-legacy}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       COMPASS_WEB_ORIGIN: ${COMPASS_WEB_ORIGIN:-http://localhost:3000}
       COMPASS_LITELLM_URL: ${COMPASS_LITELLM_URL:-http://litellm:4000}

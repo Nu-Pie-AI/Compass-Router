@@ -1,0 +1,44 @@
+# Build-only staging pipeline. It pushes immutable images and never applies Cloud Run.
+# Configure this as a Cloud Build trigger on the staging branch.
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: compass
+  _WEB_API_URL: https://api-staging.example.invalid
+  _MARKETPLACE_URL: https://marketplace-staging.example.invalid
+  _CLERK_PUBLISHABLE_KEY: ""
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - apps/api/Dockerfile
+      - --tag
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/compass-router-api:${COMMIT_SHA}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/compass-router-api:${COMMIT_SHA}
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - apps/web/Dockerfile
+      - --build-arg
+      - NEXT_PUBLIC_COMPASS_API_URL=${_WEB_API_URL}
+      - --build-arg
+      - NEXT_PUBLIC_MARKETPLACE_URL=${_MARKETPLACE_URL}
+      - --build-arg
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${_CLERK_PUBLISHABLE_KEY}
+      - --tag
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/compass-router-web:${COMMIT_SHA}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/compass-router-web:${COMMIT_SHA}
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/compass-router-api:${COMMIT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/compass-router-web:${COMMIT_SHA}
+options:
+  logging: CLOUD_LOGGING_ONLY

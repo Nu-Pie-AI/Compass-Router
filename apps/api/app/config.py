@@ -1,12 +1,23 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
     environment: str = "development"
     app_secret: str = "dev-only-change-me"
     database_url: str = "postgresql+psycopg://compass:compass@localhost:5432/compass"
+    direct_database_url: str | None = None
+    database_migration_mode: str = "legacy"
+    clerk_secret_key: str | None = None
+    clerk_jwt_key: str | None = None
+    clerk_authorized_parties: str = ""
+    clerk_audience: str | None = None
+    clerk_webhook_signing_secret: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     compass_web_origin: str = "http://localhost:23000"
     compass_sso_secret: str = "dev-compass-sso-secret-change-me"
@@ -34,6 +45,13 @@ class Settings(BaseSettings):
     xai_api_key: str | None = None
     cohere_api_key: str | None = None
     openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_timeout_seconds: float = 20.0
+    openrouter_catalog_cache_seconds: int = 300
+    openrouter_catalog_stale_after_seconds: int = 3600
+    openrouter_catalog_sync_max_attempts: int = 3
+    openrouter_catalog_backoff_seconds: float = 0.5
+    model_pricing_markup_bps: int = 0
     together_api_key: str | None = None
     fireworks_api_key: str | None = None
     perplexity_api_key: str | None = None
@@ -51,9 +69,25 @@ class Settings(BaseSettings):
     usd_to_inr_paise_per_usd: int = 8500
     local_test_mode: bool = False
     public_signup_enabled: bool = False
+    otp_enabled: bool = True
+    otp_ttl_seconds: int = 600
+    otp_max_attempts: int = 5
+    email_delivery_mode: str = "outbox"
+    email_from: str = "no-reply@compass-router.local"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    smtp_timeout_seconds: float = 15.0
+    email_max_attempts: int = 5
+    observability_log_level: str = "INFO"
     admin_email: str = "admin@example.com"
     admin_password: str = "CompassAdmin123!"
     admin_name: str = "Compass Operator"
+    platform_super_admin_clerk_user_id: str | None = None
+    platform_super_admin_require_mfa: bool = True
+    admin_financial_confirmation_threshold_paise: int = 100_000
     local_test_customer_email: str = "customer@example.com"
     local_test_customer_password: str = "CompassCustomer123!"
     local_test_customer_name: str = "Compass Customer"
@@ -73,7 +107,10 @@ class Settings(BaseSettings):
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None
 
-    model_config = SettingsConfigDict(env_file=(".env", ".env.providers"), extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(PROJECT_ROOT / ".env", PROJECT_ROOT / ".env.providers"),
+        extra="ignore",
+    )
 
 
 def validate_runtime_config(settings: Settings) -> None:
@@ -93,10 +130,24 @@ def validate_runtime_config(settings: Settings) -> None:
         problems.append("BILLING_PAYMENT_MODE must be razorpay")
     if not settings.secret_manager_enabled:
         problems.append("SECRET_MANAGER_ENABLED must be true")
+    if settings.database_migration_mode.strip().lower() != "alembic":
+        problems.append("DATABASE_MIGRATION_MODE must be alembic")
     if not settings.gcp_project_id:
         problems.append("GCP_PROJECT_ID must be configured")
+    if settings.admin_password in {"CompassAdmin123!", "replace-with-local-admin-password"}:
+        problems.append("ADMIN_PASSWORD must be replaced")
     if not settings.razorpay_key_id or not settings.razorpay_key_secret or not settings.razorpay_webhook_secret:
         problems.append("Razorpay credentials and webhook secret must be configured")
+    if not settings.clerk_secret_key:
+        problems.append("CLERK_SECRET_KEY must be configured")
+    if not settings.platform_super_admin_clerk_user_id:
+        problems.append("PLATFORM_SUPER_ADMIN_CLERK_USER_ID must be configured")
+    if not settings.clerk_webhook_signing_secret:
+        problems.append("CLERK_WEBHOOK_SIGNING_SECRET must be configured")
+    if not settings.smtp_host:
+        problems.append("SMTP_HOST must be configured for transactional email delivery")
+    if settings.smtp_username and not settings.smtp_password:
+        problems.append("SMTP_PASSWORD must be configured when SMTP_USERNAME is set")
     if problems:
         raise RuntimeError("Unsafe production configuration: " + "; ".join(problems))
 

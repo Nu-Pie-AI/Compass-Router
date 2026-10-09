@@ -20,7 +20,7 @@ Read this file first when continuing Compass Router development in a new chat.
 - `apps/web/`: web console.
 - `compass-code/`: VS Code extension.
 - The product name shown in the extension is **Compass Router**.
-- Marketplace identity must remain `name: compass-code` and `publisher: nu-pie`. The visible display name and Marketplace identity are separate.
+- Marketplace identity is `name: compass-router` and `publisher: nu-pie`; internal `compassCode.*` command/config IDs remain unchanged for compatibility.
 
 ## VS Code extension status
 
@@ -54,12 +54,12 @@ The current extension includes:
 
 Current packaged extension:
 
-`C:\Users\tohee\Desktop\Compass-Litellm-Router\compass-code\compass-code-0.3.5.vsix`
+`C:\Users\tohee\Desktop\Compass-Litellm-Router\compass-code\compass-router-0.3.6.vsix`
 
 Install locally from the repository root:
 
 ```powershell
-code --install-extension .\compass-code\compass-code-0.3.5.vsix
+code --install-extension .\compass-code\compass-router-0.3.6.vsix
 ```
 
 Then run `Developer: Reload Window` in VS Code.
@@ -116,7 +116,7 @@ From the repository root:
 python -m pytest -q
 ```
 
-The last recorded result was `46 passed`.
+The last recorded result was `48 passed`.
 
 From `compass-code/` use `npm.cmd` on Windows:
 
@@ -158,7 +158,7 @@ After deployment, verify readiness and run a real authenticated streamed request
 - Playwright UI tests use a mocked VS Code bridge.
 - The live HTTP/provider path must be smoke-tested separately.
 - After major extension-host changes, test the installed VSIX in a real VS Code window as well as running automated UI tests.
-- Several old `.vsix` artifacts may be untracked. Use the current highest version, currently `0.3.5`.
+- Several old `.vsix` artifacts may be untracked. Use the current highest version, currently `0.3.6`.
 - The readiness audit identified billing and Secret Manager production blockers that are separate from the verified live provider chat path. Review those before production launch.
 
 ## Working rules for the next chat
@@ -169,4 +169,34 @@ After deployment, verify readiness and run a real authenticated streamed request
 4. Keep application defaults in live mode and use explicit test flags only inside tests.
 5. Run focused tests during development and the relevant full checks before claiming completion.
 6. For deployment work, verify the GCP project, billing, Artifact Registry image, Cloud Run revision, readiness, and a real authenticated response.
+
+## Organized customer workflow implemented on 2026-10-08
+
+The current branch keeps the saved baseline and adds the first customer-access slice additively:
+
+- `projects` and `project_members` tables. Existing organizations receive a default `Others` project and existing teams/keys are attached to it without destructive migration.
+- `POST /auth/signup/request-otp` and `POST /auth/signup/verify-otp` provide self-service OTP signup while the existing password signup/login endpoints remain supported.
+- `POST /auth/login/request-otp` and `POST /auth/login/verify-otp` provide OTP login for verified accounts.
+- `/projects`, `/organization/members`, `/organization/invitations`, and `/invitations/{token}` provide customer project/member/invitation administration. Invitation acceptance verifies the email by OTP and revokes access by incrementing the user session version.
+- API keys now carry nullable `project_id`, `purpose`, and `scopes_json` fields. Existing unscoped keys remain valid. New usage records inherit the key project.
+- `/v1/account` exposes the key project. The VS Code extension displays the active project, warns when it is the default `Others` project, and sends `X-Compass-Project-Id`; the API validates that header against a scoped key.
+- Browser/device authorization is now live in the codebase: `/auth/extension/device/start`, `/auth/extension/device/approve`, and `/auth/extension/device/poll` create a project/team-scoped device session. VS Code opens `/extension/authorize`, polls the session, stores the device token in SecretStorage, and sends it through the same OpenAI-compatible `/v1` contract. Admin/member session revocation also revokes device sessions.
+- The web console now includes `/signup`, `/login`, `/extension/authorize`, and a Projects, Teams, and Members manager under `/workspaces`.
+- Local tests expose `debug_otp` only when `LOCAL_TEST_MODE=true`; production responses never return the OTP. Email delivery is represented by the configured delivery mode and still needs a production email provider/outbox worker before launch.
+
+Focused verification after this slice:
+
+- API OTP/invitation/device tests: 3 passed.
+- Full API suite: 49 passed.
+- Extension TypeScript check: passed.
+- Extension unit tests: 10 passed.
+- Extension Playwright UI tests: 11 passed.
+
+Next planned slice: replace the extension's manual API-key connection with a browser/device authorization flow backed by `extension_devices` and `extension_sessions`, then add customer-console screens for project/member/key management. Do not remove the current API-key flow until the device flow has a live end-to-end smoke test.
+
+## Production milestone handoff - M3 complete (2026-10-09)
+
+The active production implementation is the isolated repository at `C:/Users/tohee/Desktop/Compass-Router-Production`. M0, M1, M2, and M3 are complete for isolated verification. M3 added centralized organization/project/team authorization, scoped organization removal, API-key project and model-policy enforcement, team-owner key administration, BYOK ownership checks, estimated team spend enforcement, and production Redis fail-closed behavior.
+
+Verification: `python -m pytest -q tests/test_api.py` passed with 57 tests; `python -m compileall -q apps/api/app` passed; `git diff --check` passed. Do not start M4 until the user approves the next milestone. Remaining M3 release blockers are PostgreSQL/Redis staging verification and live Clerk credentials.
 
