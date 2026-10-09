@@ -93,3 +93,9 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - The web app now loads the root ignored environment during Next startup, so configured Clerk is selected instead of the legacy login fallback.
 - Local `/login` and `/signup` route checks pass after restart, and frontend lint/typecheck pass.
 - Live Clerk sign-in, session persistence, logout, MFA, webhook, and Cloud Run verification remain outstanding.
+
+## Clerk local runtime correction - 2026-10-10
+
+- Local web startup now uses the project-local ignored environment required by Clerk edge middleware; server-only `CLERK_SECRET_KEY` is not exposed as a public variable.
+- Auth route selection defaults to Clerk, with legacy forms available only through explicit `LEGACY_AUTH_MODE=true`.
+- Route-level HTTP checks pass for login, signup, and admin-login. This is not a substitute for live identity-provider authentication evidence.

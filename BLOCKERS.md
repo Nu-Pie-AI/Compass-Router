@@ -112,3 +112,9 @@ M4 implementation blockers:
 - The legacy login appeared because Next.js did not load the repository-root `.env` when launched from `apps/web`; the Clerk public-key check was false.
 - This is fixed locally with startup-time root environment loading in `apps/web/next.config.js`, and the Next server was restarted.
 - Interactive Clerk authentication is still an external/user-action gate: complete a real development-instance sign-in at `http://localhost:3100/login` and verify dashboard, refresh, logout, and protected-route behavior.
+
+## Clerk middleware follow-up - 2026-10-10
+
+- The local Next process required an ignored `apps/web/.env.local` because Clerk edge middleware did not receive the parent-directory root `.env` through Next config injection.
+- The local file was populated from the existing root values without printing them. It must never be committed or copied into a client bundle beyond the intended public publishable key.
+- The browser must still complete a real Clerk development-instance sign-in to verify session bootstrap, dashboard access, logout, and FastAPI token validation.

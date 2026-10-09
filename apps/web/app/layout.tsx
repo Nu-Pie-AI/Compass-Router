@@ -1,6 +1,7 @@
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import ClerkSessionBridge from "../components/ClerkSessionBridge";
+import { clerkPublishableKey } from "../lib/server-config";
 
 export const metadata = {
   title: "Compass AI Router",
@@ -8,7 +9,7 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const clerkKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  const clerkKey = clerkPublishableKey;
   return (
     <html lang="en">
       <body>{clerkKey ? <ClerkProvider publishableKey={clerkKey}><ClerkSessionBridge />{children}</ClerkProvider> : children}</body>

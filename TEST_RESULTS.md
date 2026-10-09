@@ -280,3 +280,17 @@ No Clerk secret values were printed or committed.
 | Frontend typecheck | PASS |
 | Real interactive Clerk sign-in | NOT RUN; requires user completion in the Clerk development instance |
 | Authenticated dashboard, refresh, logout, and session revocation | NOT RUN |
+
+## Clerk route correction - 2026-10-10
+
+| Check | Result |
+|---|---|
+| Local web `.env.local` | PASS; contains the public publishable key and ignored server-only Clerk secret, with no committed values |
+| `/login` route | PASS; HTTP 200 and legacy form absent |
+| `/signup` route | PASS; HTTP 200 and legacy form absent |
+| `/admin-login` route | PASS; HTTP 200 and legacy form absent |
+| Public-route middleware behavior | PASS; public auth routes bypass middleware while protected routes remain matched |
+| FastAPI health | PASS; HTTP 200 |
+| Frontend lint/typecheck | PASS |
+| Frontend production build | PASS |
+| Interactive Clerk authentication | NOT RUN; requires manual browser sign-in and verification |

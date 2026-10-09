@@ -26,6 +26,7 @@ __pycache__/
 node_modules/
 **/node_modules/
 .next/
+.next-local/
 **/.next/
 apps/web/next-env.d.ts
 apps/web/tsconfig.tsbuildinfo

@@ -58,3 +58,11 @@ The API loads secret values server-side only. The web bundle may contain only th
 - Fix: `apps/web/next.config.js` now loads the repository-root environment at startup with Next's supported `@next/env` loader. Only the public Clerk publishable key is exposed to the web bundle; Clerk secret values remain server-side.
 - The Next process was restarted after the fix. Local `/login` and `/signup` both return HTTP 200 with the Clerk-enabled route selected; the server log confirms both routes compile and render through the restarted process.
 - A real interactive Clerk sign-in, successful session, logout, and dashboard redirect were not completed in this run because no browser interaction/session credentials were supplied. Do not treat route rendering as proof of authenticated login.
+
+## Follow-up correction - 2026-10-10
+
+- Next edge middleware does not reliably consume a parent-directory `.env` or `next.config.js` environment injection. The local web app now uses an ignored `apps/web/.env.local` containing the public publishable key and server-only `CLERK_SECRET_KEY`.
+- Public routes bypass Clerk middleware; protected dashboard, admin, and extension routes remain protected by Clerk middleware. This avoids blocking the public sign-in UI on an unnecessary middleware request.
+- The login, signup, and admin-login server routes now choose Clerk by default. The legacy forms are retained only behind an explicit `LEGACY_AUTH_MODE=true` setting.
+- After a clean restart, `/login`, `/signup`, and `/admin-login` returned HTTP 200 and did not render the legacy forms. The FastAPI health endpoint returned HTTP 200.
+- Interactive Clerk sign-in, MFA, logout, and dashboard session verification still require manual completion in the browser.

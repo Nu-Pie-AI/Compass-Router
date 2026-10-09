@@ -15,6 +15,9 @@ export default function proxy(request: NextRequest, event: NextFetchEvent) {
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
     return NextResponse.next();
   }
+  if (!isProtectedRoute(request)) {
+    return NextResponse.next();
+  }
   return clerkHandler(request, event);
 }
 
