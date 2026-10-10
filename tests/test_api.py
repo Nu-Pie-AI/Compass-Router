@@ -1678,6 +1678,29 @@ def test_signup_promotion_is_configurable_and_idempotent():
         db.close()
 
 
+def test_signup_promotion_respects_configured_email_domain_eligibility():
+    db = TestingSessionLocal()
+    db.merge(PlatformSetting(key="trial_credit_paise", value_json="321"))
+    db.merge(PlatformSetting(key="trial_credit_eligible_domains", value_json='["eligible.example"]'))
+    db.commit()
+    db.close()
+    try:
+        ineligible = client.post("/auth/signup", json={"email": f"user-{time.time_ns()}@other.example", "password": "Eligibility123!", "organization_name": "Ineligible Workspace"})
+        assert ineligible.status_code == 200, ineligible.text
+        ineligible_team = client.get("/teams", headers={"Authorization": f"Bearer {ineligible.json()['token']}"}).json()[0]
+        assert client.get("/wallet", params={"team_id": ineligible_team["id"]}, headers={"Authorization": f"Bearer {ineligible.json()['token']}"}).json()["balance_paise"] == 0
+        eligible = client.post("/auth/signup", json={"email": f"user-{time.time_ns()}@eligible.example", "password": "Eligibility123!", "organization_name": "Eligible Workspace"})
+        assert eligible.status_code == 200, eligible.text
+        eligible_headers = {"Authorization": f"Bearer {eligible.json()['token']}"}
+        eligible_team = client.get("/teams", headers=eligible_headers).json()[0]
+        assert client.get("/wallet", params={"team_id": eligible_team["id"]}, headers=eligible_headers).json()["balance_paise"] == 321
+    finally:
+        db = TestingSessionLocal()
+        db.query(PlatformSetting).filter(PlatformSetting.key.in_(["trial_credit_paise", "trial_credit_eligible_domains"])).delete(synchronize_session=False)
+        db.commit()
+        db.close()
+
+
 def test_unknown_catalog_capability_cannot_be_activated(monkeypatch):
     headers = admin_headers()
     team = create_team_fixture(headers)

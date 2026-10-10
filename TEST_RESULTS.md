@@ -404,6 +404,16 @@ No Clerk secret values were printed or committed.
 | Extension build | PASS |
 | Live Clerk/browser refresh behavior | NOT RUN; requires staging browser verification |
 
+## Signup-credit eligibility - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Optional domain allowlist validation | PASS; Super Admin setting accepts bounded non-empty domain lists |
+| Eligible-domain signup grant | PASS |
+| Ineligible-domain signup grant suppression | PASS; wallet remains zero |
+| Existing signup idempotency regression | PASS |
+| Full API suite after eligibility change | PASS; 85 passed, 1 existing Pydantic deprecation warning |
+
 ## Razorpay refund webhook coverage - 2026-10-11
 
 | Check | Result |

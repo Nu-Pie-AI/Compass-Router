@@ -29,6 +29,7 @@ SETTING_RULES = {
     "maintenance_mode": "bool",
     "provider_availability_policy": "string",
     "trial_credit_paise": "nonnegative_int",
+    "trial_credit_eligible_domains": "string_list",
     "maximum_wallet_topup_paise": "positive_int",
     "default_requests_per_minute": "nonnegative_int",
     "default_tokens_per_minute": "nonnegative_int",
@@ -166,6 +167,8 @@ def validate_platform_settings(values: dict[str, object]) -> dict[str, object]:
             raise compass_error(400, "platform_setting_invalid", f"{key} must be a positive integer.")
         if rule == "bool_map" and (not isinstance(value, dict) or any(not isinstance(item, bool) for item in value.values())):
             raise compass_error(400, "platform_setting_invalid", f"{key} must be a map of boolean feature flags.")
+        if rule == "string_list" and (not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() or len(item.strip()) > 253 for item in value) or len(value) > 100):
+            raise compass_error(400, "platform_setting_invalid", f"{key} must be a list of non-empty domain names.")
         validated[key] = value
     return validated
 

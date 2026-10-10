@@ -452,6 +452,20 @@ def _grant_signup_credits(db: Session, team_id: str, user_id: str) -> None:
         return
     if amount_paise <= 0:
         return
+    user = db.get(User, user_id)
+    if user is None:
+        return
+    eligibility = db.get(PlatformSetting, "trial_credit_eligible_domains")
+    if eligibility is not None:
+        try:
+            eligible_domains = json.loads(eligibility.value_json) if eligibility is not None else []
+        except (TypeError, json.JSONDecodeError):
+            eligible_domains = []
+        if not isinstance(eligible_domains, list):
+            eligible_domains = []
+        eligible_domains = {str(domain).strip().lower().lstrip("@") for domain in eligible_domains if str(domain).strip()}
+        if eligible_domains and ("@" not in user.email or user.email.rsplit("@", 1)[1].lower() not in eligible_domains):
+            return
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
     if wallet is None:
         raise compass_error(500, "signup_credit_wallet_missing", "The signup Credits account could not be created.")

@@ -578,3 +578,9 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Added device-session token rotation with a 30-day rolling expiry.
 - Refresh invalidates the old token, updates the stored authorization token, and preserves the existing device/project/API-key scope.
 - VS Code refresh now rotates device credentials before loading models/account data; logout and admin revocation remain compatible.
+
+## Signup-credit eligibility - 2026-10-11
+
+- Added the Super Admin platform setting `trial_credit_eligible_domains` as an optional email-domain allowlist.
+- Empty or absent allowlists preserve the existing eligible-for-all behavior; configured allowlists grant signup Credits only to matching domains.
+- Added regression coverage for eligible and ineligible domains without changing existing ledger idempotency or financial history.
