@@ -391,6 +391,19 @@ No Clerk secret values were printed or committed.
 | Admin analytics regression | PASS; all rows expose consistent usage finality |
 | Full API suite after analytics change | PASS; 84 passed, 1 existing Pydantic deprecation warning |
 
+## Extension session refresh - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Device token rotation | PASS; old token rejected and rotated token accepted |
+| Rolling session expiry | PASS; refreshed session receives a new 30-day expiry |
+| Authorization scope preservation | PASS; project/team/API-key scope remains unchanged |
+| Full API suite | PASS; 84 passed, 1 existing Pydantic deprecation warning |
+| Extension typecheck | PASS |
+| Extension tests | PASS; 10 passed |
+| Extension build | PASS |
+| Live Clerk/browser refresh behavior | NOT RUN; requires staging browser verification |
+
 ## Razorpay refund webhook coverage - 2026-10-11
 
 | Check | Result |

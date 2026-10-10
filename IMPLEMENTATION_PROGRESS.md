@@ -572,3 +572,9 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - Provider and organization analytics now group by recorded `usage_source` and expose `usage_finality` as finalized, estimated, or unavailable.
 - Added regression coverage for the classification while keeping provider cost and Compass Credit charge fields separate.
+
+## Extension session refresh - 2026-10-11
+
+- Added device-session token rotation with a 30-day rolling expiry.
+- Refresh invalidates the old token, updates the stored authorization token, and preserves the existing device/project/API-key scope.
+- VS Code refresh now rotates device credentials before loading models/account data; logout and admin revocation remain compatible.

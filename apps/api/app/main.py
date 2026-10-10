@@ -87,6 +87,7 @@ from .services import (
     poll_extension_device_authorization,
     revoke_extension_sessions_for_user,
     revoke_extension_session,
+    refresh_extension_session,
     start_extension_device_authorization,
     upsert_marketplace_user,
     upsert_byok_api_key,
@@ -525,6 +526,15 @@ def revoke_extension_session_route(authorization: str | None = Header(default=No
         raise compass_error(400, "device_session_required", "This endpoint requires a VS Code device session.")
     revoked = revoke_extension_session(db, session_id)
     return {"status": "revoked" if revoked else "already_revoked"}
+
+
+@app.post("/auth/extension/session/refresh")
+def refresh_extension_session_route(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
+    authenticate_api_key(db, authorization)
+    session_id = device_session_context.get()
+    if session_id is None:
+        raise compass_error(400, "device_session_required", "This endpoint requires a VS Code device session.")
+    return refresh_extension_session(db, session_id)
 
 
 @app.post("/auth/marketplace", response_model=SessionResponse)

@@ -73,6 +73,13 @@ export class CompassClient implements ModelProvider {
     await this.context.globalState.update(ollamaEnabledKey, false);
   }
 
+  async refreshDeviceSession(): Promise<void> {
+    const apiKey = await this.context.secrets.get(secretKey);
+    if (!apiKey?.startsWith("cmp_device_")) return;
+    const response = await this.request<{ access_token: string }>("/auth/extension/session/refresh", { method: "POST" });
+    await this.context.secrets.store(secretKey, response.access_token);
+  }
+
   async provider(kind: ProviderKind): Promise<ModelProvider> {
     if (kind === "compass") return this;
     const apiKey = await this.context.secrets.get(secretKey);

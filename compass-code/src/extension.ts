@@ -578,6 +578,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     try {
       this.state.baseUrl = this.client.baseUrl;
       this.state.provider = vscode.workspace.getConfiguration("compassCode").get<ProviderKind>("provider", "compass");
+      if (this.state.provider === "compass") await this.client.refreshDeviceSession();
       this.modelProvider = await this.client.provider(this.state.provider);
       const models = await this.modelProvider.models();
       this.state.models = models;

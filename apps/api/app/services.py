@@ -367,6 +367,25 @@ def revoke_extension_session(db: Session, session_id: str) -> bool:
     return True
 
 
+def refresh_extension_session(db: Session, session_id: str) -> dict:
+    session = db.get(ExtensionSession, session_id)
+    if session is None or session.revoked_at is not None or session.expires_at < now():
+        raise compass_error(401, "invalid_device_session", "The VS Code device session has expired or been revoked.")
+    device = db.get(ExtensionDevice, session.device_id)
+    if device is None or device.status != "active":
+        raise compass_error(401, "invalid_device_session", "The VS Code device has been revoked.")
+    token = "cmp_device_" + secrets.token_urlsafe(40)
+    expires_at = now() + timedelta(days=30)
+    session.token_hash = hash_api_key(token)
+    session.expires_at = expires_at
+    device.last_seen_at = now()
+    authorization = db.scalar(select(ExtensionDeviceAuthorization).where(ExtensionDeviceAuthorization.session_id == session.id))
+    if authorization is not None:
+        authorization.session_token_encrypted = encrypt_secret(token)
+    db.commit()
+    return {"access_token": token, "token_type": "Bearer", "expires_at": expires_at.isoformat()}
+
+
 def register_customer(db: Session, email: str, password: str, organization_name: str) -> tuple[User, Organization, Team]:
     normalized_email = email.strip().lower()
     workspace_name = organization_name.strip()

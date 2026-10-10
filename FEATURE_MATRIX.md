@@ -30,7 +30,7 @@ Legend: Implemented, Partial, Mocked, Unverified, Risk.
 | Invoices | Router API and web | invoice and reconciliation routes | Partial | Accounting workflow needs live validation |
 | Usage and activity | Router API and web | usage and request rows | Implemented | Accuracy depends on provider response metadata |
 | Admin controls | Router API and web | admin routes and pages | Partial | Production role and operational audit need verification |
-| Extension device auth | API and extension | device start, poll, approve, server-side session revoke, SecretStorage logout | Partial | Live browser/device loop and revocation unverified |
+| Extension device auth | API and extension | device start, poll, approve, token refresh, server-side session revoke, SecretStorage logout | Partial | Live browser/device loop and revocation unverified |
 | Extension chat UI | VS Code extension | src/ui and styles | Implemented | Current UI has a custom agent surface |
 | Extension agent loop | VS Code extension | agent.ts | Implemented | Bounded loop and local tools present |
 | Extension workspace tools | VS Code extension | tools, terminal, checkpoints, diffs | Implemented | Permission and host behavior need release testing |
