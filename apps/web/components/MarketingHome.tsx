@@ -26,14 +26,14 @@ const capabilities = [
   { icon: Route, title: "One API for configured routes", copy: "Connect applications once, then route chat requests through the models and providers enabled for your workspace." },
   { icon: KeyRound, title: "BYOK or managed access", copy: "Save a team provider key or use an administrator-managed route. Raw provider credentials stay out of client applications." },
   { icon: Gauge, title: "Model access you control", copy: "Browse the model catalog, enable compatible chat models, and optionally restrict which models each Compass key can use." },
-  { icon: Wallet, title: "Usage priced in INR", copy: "Check wallet balance before inference, record token usage, and settle each completed request with an idempotent ledger entry." },
+  { icon: Wallet, title: "Usage priced in INR", copy: "Check Credits before inference, record token usage, and settle each completed request with an idempotent ledger entry." },
 ];
 
 const flow = [
   ["01", "Authenticate", "Validate the Compass key and resolve its workspace and model access."],
   ["02", "Route", "Select the configured provider route, with retry and fallback handling when available."],
   ["03", "Measure", "Record provider attempts, usage, latency, status, and request metadata."],
-  ["04", "Settle", "Calculate INR cost, debit the wallet once, and return an OpenAI-compatible chat response."],
+  ["04", "Settle", "Calculate INR cost, debit Credits once, and return an OpenAI-compatible chat response."],
 ];
 
 export function MarketingHome() {
@@ -45,7 +45,7 @@ export function MarketingHome() {
         <div className="hero-copy">
           <span className="eyebrow"><Sparkles aria-hidden="true" /> Controlled AI routing for teams</span>
           <h1>One API for the models your team enables.</h1>
-          <p>Compass gives teams an OpenAI-compatible chat endpoint with workspace access, BYOK credentials, provider routing, usage records, and wallet-backed INR billing.</p>
+          <p>Compass gives teams an OpenAI-compatible chat endpoint with workspace access, BYOK credentials, provider routing, usage records, and Credits-backed INR billing.</p>
           <div className="hero-actions">
             <Link className="button button-primary button-large" href="/dashboard">Start building <ArrowRight aria-hidden="true" /></Link>
             <Link className="button button-secondary button-large" href="/playground"><Code2 aria-hidden="true" /> Open playground</Link>
@@ -53,7 +53,7 @@ export function MarketingHome() {
           <div className="hero-proof">
             <span><Check aria-hidden="true" /> Chat completions compatible</span>
             <span><Check aria-hidden="true" /> BYOK keys stay server-side</span>
-            <span><Check aria-hidden="true" /> Wallet usage in INR</span>
+            <span><Check aria-hidden="true" /> Credits usage in INR</span>
           </div>
         </div>
 
@@ -86,7 +86,7 @@ export function MarketingHome() {
               <div><span>ENDPOINT</span><strong className="success-text">Chat completions</strong></div>
               <div><span>ACCESS</span><strong>Workspace key</strong></div>
               <div><span>USAGE</span><strong>Recorded</strong></div>
-              <div><span>SETTLEMENT</span><strong>Wallet ledger</strong></div>
+              <div><span>SETTLEMENT</span><strong>Credits ledger</strong></div>
             </div>
           </div>
         </div>
@@ -118,7 +118,7 @@ export function MarketingHome() {
         <div className="workflow-intro">
           <span className="eyebrow">Request lifecycle</span>
           <h2>One request. Clear routing and usage records.</h2>
-          <p>Compass connects API-key access, model routing, provider attempts, usage, and wallet settlement without exposing provider credentials to the client.</p>
+          <p>Compass connects API-key access, model routing, provider attempts, usage, and Credits settlement without exposing provider credentials to the client.</p>
           <Link className="text-link" href="/usage">Explore request usage <ArrowRight aria-hidden="true" /></Link>
         </div>
         <div className="workflow-list">
@@ -147,7 +147,7 @@ export function MarketingHome() {
           <div className="signal-table">
              <div><span className="dot dot-green" /><strong>Model request</strong><span>Tokens recorded</span><span>INR cost</span></div>
              <div><span className="dot dot-violet" /><strong>Provider attempt</strong><span>Latency recorded</span><span>Status</span></div>
-             <div><span className="dot dot-blue" /><strong>Wallet settlement</strong><span>Ledger entry</span><span>Idempotent</span></div>
+             <div><span className="dot dot-blue" /><strong>Credits settlement</strong><span>Ledger entry</span><span>Idempotent</span></div>
           </div>
         </div>
       </section>
@@ -173,7 +173,7 @@ export function MarketingHome() {
         <div className="security-points">
           <span><KeyRound aria-hidden="true" /> Hashed Compass API keys</span>
            <span><Layers3 aria-hidden="true" /> Workspace-scoped model access</span>
-           <span><Zap aria-hidden="true" /> Server-side wallet controls</span>
+           <span><Zap aria-hidden="true" /> Server-side Credits controls</span>
         </div>
       </section>
 
@@ -184,7 +184,7 @@ export function MarketingHome() {
 
       <footer className="marketing-footer">
         <Link className="brand-lockup" href="/"><span className="brand-mark"><Route aria-hidden="true" /></span><span>Compass</span></Link>
-         <p>OpenAI-compatible chat routing, BYOK access, usage records, and INR wallet billing.</p>
+         <p>OpenAI-compatible chat routing, BYOK access, usage records, and INR Credits billing.</p>
         <div><Link href="/dashboard">Console</Link><Link href="/models">Models</Link><Link href="/pricing">Pricing</Link><Link href="/playground">Playground</Link></div>
       </footer>
     </main>

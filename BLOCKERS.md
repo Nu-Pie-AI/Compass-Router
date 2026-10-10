@@ -128,6 +128,7 @@ M4 implementation blockers:
 - Usage responses and workspace activity now distinguish managed versus BYOK traffic and provider cost versus Compass Credits. The Super Admin Operations screen now renders the provider/model aggregation with tenant/project scope, credential mode, cost, charge, and failure columns.
 - The extension now uses the existing browser/device authorization flow for the primary Compass connection path and keeps manual API-key connection as a compatibility path; live browser approval and revocation still require staging verification.
 - Organization-scoped provider analytics are implemented and authorization-tested; live PostgreSQL performance/index verification remains part of staging validation.
+- Customer-facing Wallet terminology has been replaced with Credits; internal wallet identifiers remain intentionally unchanged for compatibility.
 - Signup-credit expiration/eligibility policy is still not modeled in the ledger; the current configurable grant is one-time and idempotent with no expiry.
 - Invitation emails include secure onboarding and extension instructions; SMTP delivery remains dependent on verified staging SMTP configuration.
 - Razorpay sandbox verification remains blocked by external sandbox credentials and approval; no live or simulated payment was run.

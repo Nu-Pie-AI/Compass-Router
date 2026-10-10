@@ -5,7 +5,7 @@ import { clerkPublishableKey } from "../lib/server-config";
 
 export const metadata = {
   title: "Compass AI Router",
-  description: "OpenAI-compatible chat routing with BYOK access, workspace model controls, usage records, and INR wallet billing."
+  description: "OpenAI-compatible chat routing with BYOK access, workspace model controls, usage records, and INR Credits billing."
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

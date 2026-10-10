@@ -495,6 +495,7 @@ M9 external/live gates:
 - Super Admin Operations now renders the provider analytics aggregation alongside request metadata, including provider/model, organization/project scope, managed versus BYOK, requests, tokens, provider cost, Compass Credits, and failures.
 - The VS Code extension now reaches the existing browser/device authorization flow: it opens the verified Compass authorization page, polls the short-lived device code, stores the returned device session in VS Code SecretStorage, and preserves manual API-key connection for compatibility.
 - Added organization-scoped provider analytics with date, provider, model, project, member/user, API-key, credential mode, token, upstream-cost, Compass-Credit, and failure dimensions. Organization owners/admins are scoped by server-side organization membership; regular members are denied.
+- Completed the active customer-facing terminology sweep: Credits is used in dashboard, billing, team, marketing, pricing, and Super Admin copy; internal `wallet_*` persistence/API names and the compatibility route remain unchanged.
 - Promotional credit expiration remains intentionally unimplemented: the current aggregate wallet cannot identify whether a later debit consumed promotional or purchased Credits. A future ledger design must model credit lots or equivalent allocation before expiration is enabled.
 
 ## Neon staging verification - 2026-10-09

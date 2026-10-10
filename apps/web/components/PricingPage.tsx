@@ -22,7 +22,7 @@ const example = {
 };
 
 const included = [
-  "Usage-based wallet billing",
+  "Usage-based Credits billing",
   "Per-request cost visibility in INR",
   "One API key across enabled models",
   "Provider routing and failover controls",
@@ -64,7 +64,7 @@ export function PricingPage() {
       <h1>Simple, transparent pricing in rupees.</h1>
       <p>Pay for the tokens your applications use through Compass. See the provider price, conversion assumptions, and platform fee before you make a request.</p>
       <div className="pricing-hero-actions"><Link className="button button-primary button-large" href="/dashboard">Start building <ArrowRight aria-hidden="true" /></Link><Link className="button button-secondary button-large" href="/models">Browse models</Link></div>
-      <div className="pricing-proof"><span><Check aria-hidden="true" /> No monthly subscription</span><span><Check aria-hidden="true" /> Wallet-backed usage</span><span><Check aria-hidden="true" /> Prices shown in INR</span></div>
+      <div className="pricing-proof"><span><Check aria-hidden="true" /> No monthly subscription</span><span><Check aria-hidden="true" /> Credits-backed usage</span><span><Check aria-hidden="true" /> Prices shown in INR</span></div>
     </section>
 
     <section className="pricing-section" id="formula" aria-labelledby="formula-title">
