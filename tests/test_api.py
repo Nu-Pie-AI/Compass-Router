@@ -1060,6 +1060,44 @@ def test_razorpay_webhook_is_signature_checked_and_idempotent(monkeypatch):
     db.close()
 
 
+def test_razorpay_refund_webhook_is_idempotent_and_reverses_credits(monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module.settings, "razorpay_webhook_secret", "refund-webhook-secret")
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    db = TestingSessionLocal()
+    order = PaymentOrder(team_id=team["id"], provider="razorpay", provider_order_id="order_refund_test", payment_id="pay_refund_test", amount_paise=3000, currency="INR", status="completed", completed_at=services.now())
+    db.add(order)
+    db.flush()
+    wallet = db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one()
+    wallet.balance_paise = 3000
+    db.add(WalletLedger(wallet_id=wallet.id, type="credit", amount_paise=3000, balance_before=0, balance_after=3000, reference_type="payment_order", reference_id="pay_refund_test", description="Test payment credit", idempotency_key="payment:refund-order"))
+    db.add(PaymentRefund(order_id=order.id, team_id=team["id"], provider_refund_id="rfnd_test_123", amount_paise=1000, status="requested", reason="test"))
+    db.commit()
+    db.close()
+    import hashlib
+    import hmac
+    import json
+
+    payload = {"id": "evt_refund_123", "event": "refund.processed", "payload": {"refund": {"entity": {"id": "rfnd_test_123", "payment_id": "pay_refund_test", "amount": 1000}}}}
+    raw = json.dumps(payload).encode()
+    signature = hmac.new(b"refund-webhook-secret", raw, hashlib.sha256).hexdigest()
+    webhook_headers = {"X-Razorpay-Signature": signature, "X-Razorpay-Event-Id": "evt_refund_123"}
+    first = client.post("/webhooks/razorpay", content=raw, headers=webhook_headers)
+    second = client.post("/webhooks/razorpay", content=raw, headers=webhook_headers)
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200 and second.json()["duplicate"] is True
+    assert client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"] == 2000
+    db = TestingSessionLocal()
+    try:
+        refund = db.query(PaymentRefund).filter(PaymentRefund.provider_refund_id == "rfnd_test_123").one()
+        assert refund.status == "processed"
+        assert db.query(PaymentEvent).filter(PaymentEvent.event_id == "evt_refund_123").count() == 1
+    finally:
+        db.close()
+
+
 def test_development_refund_reverses_wallet_and_reconciliation_matches():
     headers = admin_headers()
     team = create_team_fixture(headers)

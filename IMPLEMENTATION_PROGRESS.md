@@ -557,3 +557,8 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - Expanded invitation and resend email templates with email OTP, Compass Router login, VS Code browser sign-in, project selection, authorized-key access, expiry, and support instructions.
 - Templates explicitly state that API keys and provider credentials are never sent by email.
+
+## Razorpay refund webhook coverage - 2026-10-11
+
+- Added local signed-webhook coverage for `refund.processed`, duplicate delivery, refund ledger reversal, and processed refund status.
+- No live Razorpay request or production financial balance was touched; sandbox credentials and approval remain external gates.
