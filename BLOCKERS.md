@@ -150,3 +150,8 @@ M4 implementation blockers:
 
 - Membership and invitation audit events are locally implemented and regression-tested.
 - Live SMTP delivery, Clerk identity verification, and production log/audit retention remain external verification gates.
+
+## Onboarding email guidance - 2026-10-11
+
+- Invitation and resend templates now contain the required setup guidance without secrets.
+- Actual SMTP delivery, bounce handling, and template rendering remain unverified until staging SMTP credentials are configured.

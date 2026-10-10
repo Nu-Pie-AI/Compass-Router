@@ -242,7 +242,7 @@ def create_invitation(db: Session, actor: User, project: Project, email: str, ro
     invitation = Invitation(organization_id=project.organization_id, project_id=project.id, team_id=team_id, email=normalized, role=role, token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(), invited_by=actor.id, expires_at=now() + timedelta(days=7))
     db.add(invitation)
     origin = get_settings().compass_web_origin.split(",", 1)[0].strip().rstrip("/")
-    queue_email(db, normalized, f"You have been invited to {project.name}", f"You have been invited to join project {project.name} in Compass Router. Open {origin}/invitations/{token} to verify your email and accept the invitation. After accepting, install the Compass Router VS Code extension and connect with your workspace account.")
+    queue_email(db, normalized, f"You have been invited to {project.name}", _invitation_email_body(origin, token, project.name))
     db.commit()
     return invitation, token
 
@@ -256,10 +256,23 @@ def resend_invitation(db: Session, invitation: Invitation, actor: User) -> Invit
     origin = get_settings().compass_web_origin.split(",", 1)[0].strip().rstrip("/")
     project = db.get(Project, invitation.project_id)
     project_name = project.name if project else "your Compass Router project"
-    queue_email(db, invitation.email, f"Reminder: invitation to {project_name}", f"You have a pending invitation to join {project_name} in Compass Router. Open {origin}/invitations/{token} to verify your email and accept access. After accepting, install the Compass Router VS Code extension and connect with your workspace account. The invitation expires in 7 days.")
+    queue_email(db, invitation.email, f"Reminder: invitation to {project_name}", _invitation_email_body(origin, token, project_name))
     record_audit_log(db, actor, "organization.invitation_resent", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id})
     db.commit()
     return invitation
+
+
+def _invitation_email_body(origin: str, token: str, project_name: str) -> str:
+    return (
+        f"You have been invited to join {project_name} in Compass Router.\n\n"
+        f"1. Open {origin}/invitations/{token} and verify the invited email with the one-time email code.\n"
+        "2. Sign in to Compass Router with the same verified email.\n"
+        "3. Install the Compass Router VS Code extension, choose Sign in with browser, and approve the authorized project.\n"
+        "4. Select the project in VS Code before sending requests; the server checks project access on every request.\n"
+        "5. View only the workspace API keys and model access assigned to you in the Compass Router console. API keys and provider credentials are never included in this email.\n\n"
+        "If the link expires, ask a workspace administrator to resend the invitation. For support, contact your Compass Router administrator.\n\n"
+        "This invitation expires in 7 days."
+    )
 
 
 def start_extension_device_authorization(db: Session, device_name: str) -> dict:

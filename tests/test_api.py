@@ -1812,6 +1812,16 @@ def test_project_invitation_otp_acceptance_and_member_revocation():
     invite_email = f"invite-member-{time.time_ns()}@example.com"
     invitation = client.post("/organization/invitations", json={"project_id": project.json()["id"], "email": invite_email}, headers=owner_headers)
     assert invitation.status_code == 200, invitation.text
+    db = TestingSessionLocal()
+    try:
+        email = db.query(EmailOutbox).filter(EmailOutbox.recipient == invite_email).order_by(EmailOutbox.created_at.desc()).first()
+        assert email is not None
+        assert "one-time email code" in email.body
+        assert "Sign in with browser" in email.body
+        assert "Select the project in VS Code" in email.body
+        assert "API keys and provider credentials are never included" in email.body
+    finally:
+        db.close()
     token = invitation.json()["accept_token"]
     otp = client.post(f"/auth/invitations/{token}/request-otp")
     assert otp.status_code == 200, otp.text

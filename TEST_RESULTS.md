@@ -364,3 +364,12 @@ No Clerk secret values were printed or committed.
 | Project/team membership audit paths | PASS; code paths write organization-scoped metadata without credentials |
 | Full API suite after audit changes | PASS; 81 passed, 1 existing Pydantic deprecation warning |
 | Python compile check | PASS |
+
+## Onboarding email guidance - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Invitation email OTP and login guidance | PASS |
+| VS Code browser sign-in and project selection guidance | PASS |
+| No-secret email wording | PASS; provider credentials and API keys are explicitly excluded |
+| Full API suite after email changes | PASS; 81 passed, 1 existing Pydantic deprecation warning |

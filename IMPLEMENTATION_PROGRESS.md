@@ -552,3 +552,8 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - Added audit records for invitation creation and acceptance, organization member removal and role changes, project member assignment/removal, and team member removal.
 - Extended the invitation acceptance/removal regression to verify the resulting audit history without exposing invitation or session secrets.
+
+## Onboarding email guidance - 2026-10-11
+
+- Expanded invitation and resend email templates with email OTP, Compass Router login, VS Code browser sign-in, project selection, authorized-key access, expiry, and support instructions.
+- Templates explicitly state that API keys and provider credentials are never sent by email.
