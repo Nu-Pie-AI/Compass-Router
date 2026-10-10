@@ -28,7 +28,7 @@ from app.db import Base, get_db  # noqa: E402
 from app.config import Settings, validate_runtime_config  # noqa: E402
 from app.errors import compass_error  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
+from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
 from app.security import encrypt_secret, hash_api_key, hash_password  # noqa: E402
 from app.recovery import recover_stale_llm_reservations  # noqa: E402
 from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
@@ -203,6 +203,16 @@ def test_m9_command_center_returns_real_bounded_metrics():
     assert {"customers", "organizations", "active_api_keys", "requests", "tokens", "financial", "provider_health"}.issubset(payload)
     assert payload["latency_ms"]["percentiles"] == "not_available_without_aggregation"
     assert payload["financial"]["platform_fee_paise"]["availability"] == "not_recorded"
+
+
+def test_admin_provider_analytics_is_permission_gated_and_tenant_aware():
+    signup = client.post("/auth/signup", json={"email": f"analytics-customer-{time.time_ns()}@example.com", "password": "AnalyticsCustomer123!", "organization_name": "Analytics Customer Workspace"})
+    assert signup.status_code == 200, signup.text
+    customer = client.get("/admin/analytics/providers", headers={"Authorization": f"Bearer {signup.json()['token']}"})
+    assert customer.status_code == 403
+    response = client.get("/admin/analytics/providers", headers=admin_headers())
+    assert response.status_code == 200, response.text
+    assert {"items", "total", "content_policy"}.issubset(response.json())
 
 
 def test_production_configuration_rejects_development_defaults():
@@ -1466,6 +1476,7 @@ def test_team_byok_activation_and_routing(monkeypatch):
 
     key = create_key_fixture(headers, team["id"], models=["openai/gpt-byok"])["key"]
     credit(headers, team["id"], 5000)
+    before_balance = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"]
     captured = {}
 
     async def byok_provider(self, payload):  # noqa: ARG001
@@ -1476,6 +1487,11 @@ def test_team_byok_activation_and_routing(monkeypatch):
     response = chat(key, model="openai/gpt-byok")
     assert response.status_code == 200, response.text
     assert response.json()["compass"]["credential_mode"] == "byok"
+    after_balance = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"]
+    assert after_balance == before_balance
+    db = TestingSessionLocal()
+    assert db.query(WalletLedger).filter(WalletLedger.wallet_id == db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one().id, WalletLedger.reference_type.in_(["llm_reservation", "llm_settlement"])).count() == 0
+    db.close()
     assert captured["model"] == "openai/gpt-byok"
     assert captured["api_key"] == raw_secret
 
@@ -1490,6 +1506,34 @@ def test_team_byok_activation_and_routing(monkeypatch):
     deleted = client.delete(f"/byok/credentials/openai?team_id={team['id']}", headers=headers)
     assert deleted.status_code == 200
     assert deleted.json()["status"] == "revoked"
+
+
+def test_signup_promotion_is_configurable_and_idempotent():
+    amount = 1234
+    db = TestingSessionLocal()
+    db.merge(PlatformSetting(key="trial_credit_paise", value_json=str(amount)))
+    db.commit()
+    db.close()
+    email = f"signup-credit-{time.time_ns()}@example.com"
+    try:
+        signup = client.post("/auth/signup", json={"email": email, "password": "SignupCredit123!", "organization_name": "Signup Credit Workspace"})
+        assert signup.status_code == 200, signup.text
+        headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+        team_id = client.get("/teams", headers=headers).json()[0]["id"]
+        first = client.get("/wallet", params={"team_id": team_id}, headers=headers).json()["balance_paise"]
+        assert first == amount
+        login = client.post("/auth/login", json={"email": email, "password": "SignupCredit123!"})
+        assert login.status_code == 200
+        second = client.get("/wallet", params={"team_id": team_id}, headers={"Authorization": f"Bearer {login.json()['token']}"}).json()["balance_paise"]
+        assert second == amount
+        db = TestingSessionLocal()
+        assert db.query(WalletLedger).filter(WalletLedger.reference_type == "signup_promotion", WalletLedger.reference_id == signup.json()["user_id"]).count() == 1
+        db.close()
+    finally:
+        db = TestingSessionLocal()
+        db.query(PlatformSetting).filter(PlatformSetting.key == "trial_credit_paise").delete()
+        db.commit()
+        db.close()
 
 
 def test_unknown_catalog_capability_cannot_be_activated(monkeypatch):
@@ -1823,6 +1867,33 @@ def test_team_owner_can_manage_team_keys_but_member_cannot():
     assert any(row["id"] == created.json()["id"] for row in listed.json())
     denied = client.patch(f"/api-keys/{created.json()['id']}/models", json={"allowed_models": ["openai/gpt-5"]}, headers=member_headers)
     assert denied.status_code == 403, denied.text
+
+
+def test_organization_admin_can_change_role_and_project_access():
+    owner_email = f"access-owner-{time.time_ns()}@example.com"
+    owner = client.post("/auth/signup", json={"email": owner_email, "password": "AccessOwner123!", "organization_name": "Access Workspace"})
+    assert owner.status_code == 200, owner.text
+    owner_headers = {"Authorization": f"Bearer {owner.json()['token']}"}
+    project = client.get("/projects", headers=owner_headers).json()[0]
+    member_email = f"access-member-{time.time_ns()}@example.com"
+    invitation = client.post("/organization/invitations", json={"project_id": project["id"], "email": member_email}, headers=owner_headers)
+    assert invitation.status_code == 200, invitation.text
+    token = invitation.json()["accept_token"]
+    otp = client.post(f"/auth/invitations/{token}/request-otp")
+    accepted = client.post(f"/auth/invitations/{token}/accept", json={"challenge_id": otp.json()["challenge_id"], "email": member_email, "code": otp.json()["debug_otp"], "name": "Access Member"})
+    assert accepted.status_code == 200, accepted.text
+    member_id = accepted.json()["user_id"]
+    changed = client.patch(f"/organization/members/{member_id}", json={"role": "admin"}, headers=owner_headers)
+    assert changed.status_code == 200, changed.text
+    assigned = client.put(f"/projects/{project['id']}/members/{member_id}", json={"role": "admin"}, headers=owner_headers)
+    assert assigned.status_code == 200, assigned.text
+    listed = client.get(f"/projects/{project['id']}/members", headers=owner_headers)
+    assert any(row["user_id"] == member_id and row["role"] == "admin" for row in listed.json())
+    removed = client.delete(f"/projects/{project['id']}/members/{member_id}", headers=owner_headers)
+    assert removed.status_code == 200, removed.text
+    db = TestingSessionLocal()
+    assert db.query(ProjectMember).filter(ProjectMember.project_id == project["id"], ProjectMember.user_id == member_id, ProjectMember.status == "removed").count() == 1
+    db.close()
 
 
 def test_production_rate_limiting_fails_closed_when_redis_is_unavailable(monkeypatch):

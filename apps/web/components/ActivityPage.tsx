@@ -11,6 +11,8 @@ type ActivityRow = {
   error_code?: string | null;
   model: string;
   provider: string;
+  credential_mode?: string;
+  provider_cost_paise?: number;
   tokens: number;
   input_tokens?: number;
   output_tokens?: number;
@@ -50,6 +52,7 @@ export function ActivityPage({ rows }: { rows: ActivityRow[] }) {
   const [provider, setProvider] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [status, setStatus] = useState("all");
+  const [billingMode, setBillingMode] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [metric, setMetric] = useState("spend");
   const [groupBy, setGroupBy] = useState("model");
@@ -64,9 +67,9 @@ export function ActivityPage({ rows }: { rows: ActivityRow[] }) {
     return rows.filter((row) => {
       const inRange = !Number.isFinite(cutoff) || now - new Date(row.created_at).getTime() <= cutoff * 24 * 60 * 60 * 1000;
       const matchesSearch = !term || `${row.id} ${row.model} ${row.provider} ${row.error_code ?? ""}`.toLowerCase().includes(term);
-      return inRange && matchesSearch && (provider === "all" || row.provider === provider) && (modelFilter === "all" || row.model === modelFilter) && (status === "all" || row.status === status);
+      return inRange && matchesSearch && (provider === "all" || row.provider === provider) && (modelFilter === "all" || row.model === modelFilter) && (status === "all" || row.status === status) && (billingMode === "all" || (row.credential_mode ?? "platform") === billingMode);
     });
-  }, [modelFilter, now, provider, query, range, rows, status]);
+  }, [billingMode, modelFilter, now, provider, query, range, rows, status]);
 
   const summary = useMemo(() => {
     const successful = filtered.filter((row) => row.status === "success").length;
@@ -74,10 +77,12 @@ export function ActivityPage({ rows }: { rows: ActivityRow[] }) {
     const inputTokens = filtered.reduce((sum, row) => sum + (row.input_tokens ?? 0), 0);
     const outputTokens = filtered.reduce((sum, row) => sum + (row.output_tokens ?? 0), 0);
     const spend = filtered.reduce((sum, row) => sum + row.cost_paise, 0);
+    const providerCost = filtered.reduce((sum, row) => sum + (row.provider_cost_paise ?? 0), 0);
     const latencies = filtered.map((row) => row.latency_ms);
     const latency = filtered.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / filtered.length) : 0;
     const blendedCost = tokens ? Math.round((spend / tokens) * 1_000_000) : 0;
-    return { successful, tokens, inputTokens, outputTokens, spend, latency, p50: percentile(latencies, 50), p90: percentile(latencies, 90), p99: percentile(latencies, 99), blendedCost, successRate: filtered.length ? Math.round((successful / filtered.length) * 100) : 0 };
+    const byokRequests = filtered.filter((row) => row.credential_mode === "byok").length;
+    return { successful, tokens, inputTokens, outputTokens, spend, providerCost, byokRequests, latency, p50: percentile(latencies, 50), p90: percentile(latencies, 90), p99: percentile(latencies, 99), blendedCost, successRate: filtered.length ? Math.round((successful / filtered.length) * 100) : 0 };
   }, [filtered]);
 
   const grouped = useMemo(() => {
@@ -111,7 +116,7 @@ export function ActivityPage({ rows }: { rows: ActivityRow[] }) {
     const measure = (row: ActivityRow) => metric === "requests" ? 1 : metric === "tokens" ? row.tokens : row.cost_paise;
     for (const row of rows) {
       const age = now - new Date(row.created_at).getTime();
-      const matches = (!term || `${row.id} ${row.model} ${row.provider} ${row.error_code ?? ""}`.toLowerCase().includes(term)) && (provider === "all" || row.provider === provider) && (modelFilter === "all" || row.model === modelFilter) && (status === "all" || row.status === status);
+      const matches = (!term || `${row.id} ${row.model} ${row.provider} ${row.error_code ?? ""}`.toLowerCase().includes(term)) && (provider === "all" || row.provider === provider) && (modelFilter === "all" || row.model === modelFilter) && (status === "all" || row.status === status) && (billingMode === "all" || (row.credential_mode ?? "platform") === billingMode);
       if (!matches || age < 0 || age > windowMs * 2) continue;
       const key = groupBy === "provider" ? row.provider : groupBy === "status" ? row.status : row.model;
       const target = age <= windowMs ? current : previous;
@@ -122,15 +127,15 @@ export function ActivityPage({ rows }: { rows: ActivityRow[] }) {
       const previousValue = previous.get(name) ?? 0;
       return { name, currentValue, previousValue, delta: currentValue - previousValue };
     }).sort((a, b) => b.delta - a.delta).slice(0, 8);
-  }, [groupBy, metric, modelFilter, now, provider, query, range, rows, status]);
+  }, [billingMode, groupBy, metric, modelFilter, now, provider, query, range, rows, status]);
 
   const selected = selectedId ? rows.find((row) => row.id === selectedId) ?? null : null;
   const maxGrouped = Math.max(...grouped.map(([, value]) => metric === "requests" ? value.requests : metric === "tokens" ? value.tokens : value.spend), 1);
   const maxDaily = Math.max(...daily.map(([, value]) => value), 1);
 
   function exportCsv() {
-    const header = ["request_id", "created_at", "status", "model", "provider", "tokens", "input_tokens", "output_tokens", "cost_paise", "latency_ms", "error_code"];
-    const body = filtered.map((row) => [row.id, row.created_at, row.status, row.model, row.provider, row.tokens, row.input_tokens ?? "", row.output_tokens ?? "", row.cost_paise, row.latency_ms, row.error_code ?? ""]);
+    const header = ["request_id", "created_at", "status", "model", "provider", "credential_mode", "tokens", "input_tokens", "output_tokens", "provider_cost_paise", "credits_paise", "latency_ms", "error_code"];
+    const body = filtered.map((row) => [row.id, row.created_at, row.status, row.model, row.provider, row.credential_mode ?? "platform", row.tokens, row.input_tokens ?? "", row.output_tokens ?? "", row.provider_cost_paise ?? 0, row.cost_paise, row.latency_ms, row.error_code ?? ""]);
     const csv = [header, ...body].map((line) => line.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
@@ -152,10 +157,10 @@ export function ActivityPage({ rows }: { rows: ActivityRow[] }) {
   return <section className="activity-page">
     <div className="activity-hero"><div><span className="analytics-eyebrow">Workspace activity</span><h2>Understand every model request.</h2><p>Monitor spend, reliability, latency, and token volume across the selected workspace.</p></div><div className="activity-hero-actions"><button className="console-secondary" onClick={printReport}><Printer size={16} />Print / PDF</button><button className="console-secondary" onClick={exportCsv}><Download size={16} />Export CSV</button></div></div>
     <div className="activity-tabs" role="tablist" aria-label="Activity views">{(["overview", "trends", "logs", "explore"] as Tab[]).map((item) => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item === "overview" ? "Overview" : item === "trends" ? "Trends" : item === "logs" ? "Request logs" : "Explore"}</button>)}</div>
-    <div className="activity-toolbar"><div className="activity-range" role="group" aria-label="Activity time range">{[["1", "24h"], ["7", "7d"], ["30", "30d"]].map(([value, label]) => <button key={value} className={range === value ? "active" : ""} onClick={() => setRange(value)}>{label}</button>)}</div><label className="activity-search"><Search size={16} /><input aria-label="Search activity" placeholder="Search model, provider, or request ID" value={query} onChange={(event) => setQuery(event.target.value)} /></label><label className="activity-select"><Filter size={15} /><span className="sr-only">Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="all">All providers</option>{providers.map((item) => <option key={item}>{item}</option>)}</select></label><label className="activity-select"><ListFilter size={15} /><span className="sr-only">Model</span><select value={modelFilter} onChange={(event) => setModelFilter(event.target.value)}><option value="all">All models</option>{models.map((item) => <option key={item}>{item}</option>)}</select></label><label className="activity-select"><ListFilter size={15} /><span className="sr-only">Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="success">Success</option><option value="error">Error</option></select></label></div>
+    <div className="activity-toolbar"><div className="activity-range" role="group" aria-label="Activity time range">{[["1", "24h"], ["7", "7d"], ["30", "30d"]].map(([value, label]) => <button key={value} className={range === value ? "active" : ""} onClick={() => setRange(value)}>{label}</button>)}</div><label className="activity-search"><Search size={16} /><input aria-label="Search activity" placeholder="Search model, provider, or request ID" value={query} onChange={(event) => setQuery(event.target.value)} /></label><label className="activity-select"><Filter size={15} /><span className="sr-only">Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="all">All providers</option>{providers.map((item) => <option key={item}>{item}</option>)}</select></label><label className="activity-select"><ListFilter size={15} /><span className="sr-only">Model</span><select value={modelFilter} onChange={(event) => setModelFilter(event.target.value)}><option value="all">All models</option>{models.map((item) => <option key={item}>{item}</option>)}</select></label><label className="activity-select"><ListFilter size={15} /><span className="sr-only">Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="success">Success</option><option value="error">Error</option></select></label><label className="activity-select"><ListFilter size={15} /><span className="sr-only">Billing mode</span><select value={billingMode} onChange={(event) => setBillingMode(event.target.value)}><option value="all">Managed and BYOK</option><option value="platform">Managed</option><option value="byok">BYOK</option></select></label></div>
 
     {tab === "overview" ? <>
-      <div className="activity-metrics"><ActivityMetric label="Total spend" value={formatPaise(summary.spend)} detail={`${filtered.length} filtered requests`} tone="accent" /><ActivityMetric label="Requests" value={String(filtered.length)} detail={filtered.length ? `${summary.successRate}% successful` : "No activity yet"} /><ActivityMetric label="Token volume" value={summary.tokens.toLocaleString("en-IN")} detail="Input and output total" /><ActivityMetric label="Blended cost" value={summary.blendedCost ? `${formatPaise(summary.blendedCost)} / 1M` : "-"} detail="Based on recorded tokens" /><ActivityMetric label="P90 latency" value={latencyValue(summary.p90, filtered.length > 0)} detail={filtered.length ? `Average ${summary.latency} ms` : "No activity yet"} /><ActivityMetric label="Failure rate" value={filtered.length ? `${100 - summary.successRate}%` : "-"} detail={filtered.length ? `${filtered.length - summary.successful} failed requests` : "No activity yet"} /></div>
+      <div className="activity-metrics"><ActivityMetric label="Compass Credits" value={formatPaise(summary.spend)} detail={`${filtered.length} filtered requests`} tone="accent" /><ActivityMetric label="Requests" value={String(filtered.length)} detail={filtered.length ? `${summary.successRate}% successful` : "No activity yet"} /><ActivityMetric label="BYOK requests" value={String(summary.byokRequests)} detail="No Compass Credits charged" /><ActivityMetric label="Provider cost" value={formatPaise(summary.providerCost)} detail="Upstream estimate or reported cost" /><ActivityMetric label="P90 latency" value={latencyValue(summary.p90, filtered.length > 0)} detail={filtered.length ? `Average ${summary.latency} ms` : "No activity yet"} /><ActivityMetric label="Failure rate" value={filtered.length ? `${100 - summary.successRate}%` : "-"} detail={filtered.length ? `${filtered.length - summary.successful} failed requests` : "No activity yet"} /></div>
       <div className="activity-grid"><section className="activity-card activity-chart-card"><div className="activity-card-heading"><div><h3>Usage over time</h3><p>{metric === "spend" ? "Spend in INR" : metric === "tokens" ? "Tokens" : "Requests"} by day</p></div><BarChart3 size={19} /></div><div className="activity-bars">{daily.length ? daily.map(([day, value]) => <div className="activity-bar-item" key={day}><div className="activity-bar-track"><span style={{ height: `${Math.max((value / maxDaily) * 100, 5)}%` }} /></div><small>{shortDate(day)}</small></div>) : <div className="activity-empty">Requests will appear here after the first model call.</div>}</div></section><section className="activity-card"><div className="activity-card-heading"><div><h3>Top {groupBy}s</h3><p>Ranked by {metric}</p></div><CheckCircle2 size={19} /></div><div className="activity-ranked">{grouped.length ? grouped.map(([name, value]) => { const amount = metric === "requests" ? value.requests : metric === "tokens" ? value.tokens : value.spend; return <div key={name}><div><span title={name}>{name}</span><strong>{metric === "spend" ? formatPaise(amount) : amount.toLocaleString("en-IN")}</strong></div><div className="activity-rank-track"><span style={{ width: `${Math.max((amount / maxGrouped) * 100, 5)}%` }} /></div></div>; }) : <div className="activity-empty">No matching activity.</div>}</div></section></div>
       <div className="activity-analytics-grid"><section className="activity-card activity-breakdown"><div className="activity-card-heading"><div><h3>Latency distribution</h3><p>Percentiles show the long-tail experience.</p></div><Clock3 size={19} /></div><div className="activity-breakdown-grid"><div><span>P50 latency</span><strong>{latencyValue(summary.p50, filtered.length > 0)}</strong></div><div><span>P90 latency</span><strong>{latencyValue(summary.p90, filtered.length > 0)}</strong></div><div><span>P99 latency</span><strong>{latencyValue(summary.p99, filtered.length > 0)}</strong></div><div><span>Data retention</span><strong>Metadata only</strong></div></div></section><section className="activity-card activity-breakdown"><div className="activity-card-heading"><div><h3>Token mix</h3><p>Recorded prompt and completion usage.</p></div><Clock3 size={19} /></div><div className="activity-breakdown-grid"><div><span>Input tokens</span><strong>{filtered.length ? summary.inputTokens.toLocaleString("en-IN") : "-"}</strong></div><div><span>Output tokens</span><strong>{filtered.length ? summary.outputTokens.toLocaleString("en-IN") : "-"}</strong></div><div><span>Successful requests</span><strong>{filtered.length ? summary.successful : "-"}</strong></div><div><span>Cache hit rate</span><strong>Not recorded</strong></div></div></section></div>
     </> : null}

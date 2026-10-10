@@ -33,6 +33,9 @@ const initial: State = {
   selectedModel: "",
   mode: "ask",
   account: null,
+  projectId: null,
+  projectName: null,
+  projectIsDefault: false,
   transcript: [],
   conversations: [],
   activeConversationId: null,
@@ -256,6 +259,7 @@ function Connection({ state, standalone = false, providerOverride, onCancel }: {
       <button className="primary" disabled={state.connecting}>
         {state.connecting ? "Connecting..." : provider === "compass" ? "Connect workspace" : "Connect provider"}
       </button>
+      {provider === "compass" ? <button type="button" className="secondary" disabled={state.connecting} onClick={() => post({ type: "deviceLogin" })}><Icon name="account" /> Sign in with browser</button> : null}
     </form>
   );
 }
@@ -319,7 +323,8 @@ function Settings({ state, onBack }: { state: State; onBack: () => void }) {
         <section className="provider-group" aria-labelledby="gateway-heading">
           <div className="provider-group-heading"><div><h2 id="gateway-heading">Compass Router gateway</h2><p>Routes requests through your Compass workspace, including model access, usage, and billing.</p></div><span className={`provider-status ${gatewayConnected ? "is-connected" : "is-disconnected"}`}><span className="status-dot" /> {gatewayConnected ? "Connected" : "Not active"}</span></div>
           <div className="provider-card"><span className="provider-mark"><Icon name="compass" /></span><div><strong>Compass Router</strong><p>{state.baseUrl}</p><small>{state.account ? `${state.account.team?.name || "Compass workspace"} · ${state.account.api_key.name}` : "No workspace credential is stored on this device."}</small></div></div>
-          <div className="actions"><button className="secondary" disabled={!gatewayConnected || state.connecting} onClick={() => post({ type: "refresh" })}><Icon name="refresh" /> Refresh models</button><button className="secondary" onClick={() => post({ type: "openAccount" })}><Icon name="account" /> Account</button>{gatewayConnected ? <button className="danger-button" onClick={() => post({ type: "disconnect" })}><Icon name="sign-out" /> Sign out on this device</button> : <button className="primary" onClick={() => post({ type: "openConnect", provider: "compass" })}><Icon name="plug" /> Connect workspace</button>}</div>
+          <div className="actions"><button className="secondary" disabled={!gatewayConnected || state.connecting} onClick={() => post({ type: "refresh" })}><Icon name="refresh" /> Refresh models</button><button className="secondary" disabled={!gatewayConnected || state.connecting} onClick={() => post({ type: "chooseProject" })}><Icon name="folder" /> Choose project</button><button className="secondary" onClick={() => post({ type: "openAccount" })}><Icon name="account" /> Account</button>{gatewayConnected ? <button className="danger-button" onClick={() => post({ type: "disconnect" })}><Icon name="sign-out" /> Sign out on this device</button> : <button className="primary" onClick={() => post({ type: "openConnect", provider: "compass" })}><Icon name="plug" /> Connect workspace</button>}</div>
+          {gatewayConnected ? <div className={`project-scope ${state.projectId ? "configured" : "warning"}`}><Icon name="folder" /><span>{state.projectId ? `Project: ${state.projectName || "Selected"}${state.projectIsDefault ? " (default)" : ""}` : "No project selected; requests may use the server default."}</span></div> : null}
         </section>
         <section className="provider-group" aria-labelledby="direct-heading">
           <div className="provider-group-heading"><div><h2 id="direct-heading">Direct provider connections</h2><p>Optional developer connections that do not use Compass account billing or routing.</p></div></div>
@@ -348,10 +353,10 @@ function Account({ state }: { state: State }) {
       <div className="account-card"><div className="account-avatar"><Icon name="account" /></div><div><strong>{state.account.team?.name || "Compass workspace"}</strong><span>{state.account.api_key.name}</span><small>Workspace API key stored in VS Code SecretStorage</small></div><span className="provider-status is-connected"><span className="status-dot" /> Workspace connected</span></div>
       <p className="account-note">This extension uses a workspace API key for metered model requests. Signing out removes the key from this device; revoke the key in the Compass console if it should stop working everywhere.</p>
       <dl>
-        <dt>Balance</dt><dd>{money(state.account.wallet?.balance_paise || 0)}</dd>
+        <dt>Credits</dt><dd>{money(state.account.wallet?.balance_paise || 0)}</dd>
         <dt>Requests</dt><dd>{state.account.usage.requests}</dd>
         <dt>Tokens</dt><dd>{state.account.usage.tokens.toLocaleString()}</dd>
-        <dt>Spend</dt><dd>{money(state.account.usage.spend_paise)}</dd>
+        <dt>Compass Credits used</dt><dd>{money(state.account.usage.spend_paise)}</dd>
       </dl>
       <div className="actions"><button className="secondary" onClick={() => post({ type: "openDashboard" })}><Icon name="link-external" /> Manage in console</button><button className="secondary" onClick={() => post({ type: "login" })}><Icon name="sign-in" /> Switch workspace key</button><button className="danger-button" onClick={() => post({ type: "disconnect" })}><Icon name="sign-out" /> Sign out on this device</button></div>
     </> : <div className="account-empty"><Icon name="account" /><strong>No Compass workspace connected</strong><span>Sign in to the Compass web console, create or copy a workspace API key, then connect it here. The extension uses that key for model access and usage tracking.</span><div className="actions"><button className="secondary" onClick={() => post({ type: "openDashboard" })}><Icon name="link-external" /> Open Compass console</button><button className="primary" onClick={() => post({ type: "login" })}><Icon name="plug" /> Connect workspace</button></div></div>}

@@ -119,3 +119,16 @@ M4 implementation blockers:
 - The local file was populated from the existing root values without printing them. It must never be committed or copied into a client bundle beyond the intended public publishable key.
 - The browser must still complete a real Clerk development-instance sign-in to verify session bootstrap, dashboard access, logout, and FastAPI token validation.
 - A browser with a stale Clerk cookie should be redirected to `/login?callbackUrl=/dashboard`; complete a fresh sign-in there before retrying the dashboard.
+
+## Customer Credits and BYOK follow-up - 2026-10-10
+
+- BYOK zero-Compass-Credit handling is implemented for chat, JSON, streaming, binary, and multipart service paths; focused wallet-invariant regression coverage passes.
+- Signup promotion uses the existing `trial_credit_paise` platform setting and is idempotent by user ledger key; promotional expiration is not yet modeled.
+- Organization/project/team membership, invitation APIs/UI, extension project-tag status/selector, and scoped API-key creation controls are implemented.
+- Usage responses and workspace activity now distinguish managed versus BYOK traffic and provider cost versus Compass Credits. The Super Admin Operations screen now renders the provider/model aggregation with tenant/project scope, credential mode, cost, charge, and failure columns.
+- The extension now uses the existing browser/device authorization flow for the primary Compass connection path and keeps manual API-key connection as a compatibility path; live browser approval and revocation still require staging verification.
+- Signup-credit expiration/eligibility policy is still not modeled in the ledger; the current configurable grant is one-time and idempotent with no expiry.
+- Invitation emails include secure onboarding and extension instructions; SMTP delivery remains dependent on verified staging SMTP configuration.
+- Razorpay sandbox verification remains blocked by external sandbox credentials and approval; no live or simulated payment was run.
+- The full API pytest invocation did not finish in this Windows environment; focused tests passed, but the broader suite requires isolation of its long-running test.
+- Promotional credit expiration cannot be enabled safely with the current aggregate wallet balance. Add credit-lot/allocation semantics before implementing expiry, so purchased Credits cannot be clawed back accidentally.

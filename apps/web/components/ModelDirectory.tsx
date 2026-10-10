@@ -25,8 +25,8 @@ type ProviderModel = {
   mode: string;
   context_window?: number | null;
   compass_model_id?: string | null;
-  input_cost_per_million_usd: number;
-  output_cost_per_million_usd: number;
+  input_cost_per_million_usd?: number | string | null;
+  output_cost_per_million_usd?: number | string | null;
   byok_supported: boolean;
   credential_available?: boolean;
   metadata?: { owned_by?: string | null; family?: string | null; parameter_size?: string | null };
@@ -84,6 +84,42 @@ function formatContext(value?: number | null) {
   return `${value} tokens`;
 }
 
+function numericPrice(value?: number | string | null) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatPrice(value?: number | string | null) {
+  const parsed = numericPrice(value);
+  if (parsed === null) return "Not published";
+  return `$${parsed.toFixed(parsed < 1 ? 3 : 2)}`;
+}
+
+function comparePrices(a?: number | string | null, b?: number | string | null) {
+  const left = numericPrice(a);
+  const right = numericPrice(b);
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  return left - right;
+}
+
+function supportsCompassEndpoint(model: ProviderModel) {
+  return new Set([
+    "chat",
+    "responses",
+    "embedding",
+    "embeddings",
+    "image",
+    "image_generation",
+    "audio",
+    "audio_speech",
+    "speech",
+    "audio_transcription",
+    "transcription",
+  ]).has(model.mode.toLowerCase());
+}
+
 export function ModelDirectory({ published, token = "", teamId, onActivated }: { published: PublishedModel[]; token?: string; teamId: string; onActivated: () => Promise<void> }) {
   const [discovery, setDiscovery] = useState<DiscoveryResponse | null>(null);
   const [query, setQuery] = useState("");
@@ -92,6 +128,7 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
   const [visible, setVisible] = useState(pageSize);
   const [sort, setSort] = useState("provider");
   const [activating, setActivating] = useState("");
+  const [activatedModels, setActivatedModels] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -130,8 +167,8 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
     );
     return rows.sort((a, b) => {
       if (sort === "context") return (b.context_window ?? 0) - (a.context_window ?? 0);
-      if (sort === "input-price") return a.input_cost_per_million_usd - b.input_cost_per_million_usd;
-      if (sort === "output-price") return a.output_cost_per_million_usd - b.output_cost_per_million_usd;
+      if (sort === "input-price") return comparePrices(a.input_cost_per_million_usd, b.input_cost_per_million_usd);
+      if (sort === "output-price") return comparePrices(a.output_cost_per_million_usd, b.output_cost_per_million_usd);
       return `${a.provider}/${a.display_name}`.localeCompare(`${b.provider}/${b.display_name}`);
     });
   }, [category, discovery, provider, query, sort]);
@@ -145,6 +182,7 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
     setError("");
     try {
       await apiFetch("/models/activate", { method: "POST", body: JSON.stringify({ team_id: teamId, model_id: modelId }) }, token);
+      setActivatedModels((current) => new Set(current).add(modelId));
       await onActivated();
       await refresh();
     } catch (reason) {
@@ -203,7 +241,11 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
           <div className="catalog-result-count"><strong>{filtered.length} models</strong><span>{discovery?.scope_note ?? "Provider model registry"}</span></div>
           <div className="model-catalog-list">
             {loading && !discovery ? <div className="model-table-empty">Loading provider catalogs...</div> : filtered.length ? filtered.slice(0, visible).map((model) => {
-              const publication = model.compass_model_id ? publishedById.get(model.compass_model_id) : undefined;
+              const publication = activatedModels.has(model.provider_model_id)
+                ? { id: model.compass_model_id ?? model.provider_model_id }
+                : model.compass_model_id
+                  ? (publishedById.get(model.compass_model_id) ?? { id: model.compass_model_id })
+                  : undefined;
               return <article className="model-catalog-row" key={`${model.provider}:${model.provider_model_id}`}>
                 <div className="model-provider-avatar" aria-hidden="true">{providerLabel(model.provider).slice(0, 1)}</div>
                 <div className="model-catalog-main">
@@ -213,10 +255,10 @@ export function ModelDirectory({ published, token = "", teamId, onActivated }: {
                 </div>
                 <dl className="model-catalog-facts">
                   <div><dt>Context</dt><dd>{formatContext(model.context_window)}</dd></div>
-                  <div><dt>Input / 1M</dt><dd>${model.input_cost_per_million_usd.toFixed(model.input_cost_per_million_usd < 1 ? 3 : 2)}</dd></div>
-                  <div><dt>Output / 1M</dt><dd>${model.output_cost_per_million_usd.toFixed(model.output_cost_per_million_usd < 1 ? 3 : 2)}</dd></div>
+                  <div><dt>Input / 1M</dt><dd>{formatPrice(model.input_cost_per_million_usd)}</dd></div>
+                  <div><dt>Output / 1M</dt><dd>{formatPrice(model.output_cost_per_million_usd)}</dd></div>
                 </dl>
-                <div className="model-catalog-state">{publication ? <><span className="key-status active">Enabled</span><code>{publication.id}</code></> : model.mode !== "chat" ? <><span className="key-unavailable">Catalog only</span><small>{model.mode.replaceAll("_", " ")} endpoint not implemented</small></> : !model.byok_supported ? <><span className="key-unavailable">Advanced setup</span><small>Multi-field credentials required</small></> : !model.credential_available ? <><Link className="console-secondary" href="/byok"><KeyRound size={15} />Add BYOK key</Link><small>{providerLabel(model.provider)} credential required</small></> : <button className="console-primary" disabled={activating === model.provider_model_id} onClick={() => void activate(model.provider_model_id)}><Plus size={15} />{activating === model.provider_model_id ? "Enabling..." : "Enable"}</button>}</div>
+                <div className="model-catalog-state">{publication ? <><span className="key-status active">Enabled</span><code>{publication.id}</code></> : !supportsCompassEndpoint(model) ? <><span className="key-unavailable">Catalog only</span><small>{model.mode.replaceAll("_", " ")} endpoint is not available in Compass</small></> : !model.byok_supported ? <><span className="key-unavailable">Advanced setup</span><small>Multi-field credentials required</small></> : !model.credential_available ? <><Link className="console-secondary" href="/byok"><KeyRound size={15} />Add BYOK key</Link><small>{providerLabel(model.provider)} credential required</small></> : <button className="console-primary" disabled={activating === model.provider_model_id} onClick={() => void activate(model.provider_model_id)}><Plus size={15} />{activating === model.provider_model_id ? "Enabling..." : "Enable"}</button>}</div>
               </article>;
             }) : <div className="model-table-empty">{query || provider !== "all" || category !== "all" ? "No models match these filters." : "No provider models were discovered."}</div>}
           </div>

@@ -41,7 +41,7 @@ export function ByokManager({ token, teamId, onChanged }: { token: string; teamI
       setApiKey("");
       setStatus("Provider key saved for this team. The full key will not be shown again.");
       await load();
-      await onChanged();
+      void onChanged().catch(() => undefined);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not save provider key.");
     } finally { setBusy(false); }

@@ -28,6 +28,14 @@ function contentText(value: unknown): string | null {
 export class CompassClient implements ModelProvider {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
+  async startDeviceAuthorization(deviceName = "VS Code"): Promise<{ device_code: string; user_code: string; verification_uri: string; expires_at: string; interval: number }> {
+    return this.publicRequest("/auth/extension/device/start", { device_name: deviceName });
+  }
+
+  async pollDeviceAuthorization(deviceCode: string): Promise<{ status: string; access_token?: string; project_id?: string | null; expires_at: string }> {
+    return this.publicRequest("/auth/extension/device/poll", { device_code: deviceCode });
+  }
+
   get baseUrl(): string {
     const configured = normalizeBaseUrl(vscode.workspace.getConfiguration("compassCode").get<string>("apiBaseUrl", defaultApiBaseUrl));
     return configured === legacyApiBaseUrl ? defaultApiBaseUrl : configured;
@@ -46,6 +54,10 @@ export class CompassClient implements ModelProvider {
     else await this.context.secrets.delete(secretKey);
     const selectedProvider = provider ?? vscode.workspace.getConfiguration("compassCode").get<ProviderKind>("provider", "compass");
     await this.context.globalState.update(ollamaEnabledKey, selectedProvider === "ollama");
+  }
+
+  async setBaseUrl(baseUrl: string): Promise<void> {
+    await vscode.workspace.getConfiguration("compassCode").update("apiBaseUrl", normalizeBaseUrl(baseUrl), vscode.ConfigurationTarget.Global);
   }
 
   async disconnect(): Promise<void> {
@@ -67,6 +79,10 @@ export class CompassClient implements ModelProvider {
 
   async account(signal?: AbortSignal): Promise<AccountSummary> {
     return this.request<AccountSummary>("/v1/account", { signal });
+  }
+
+  async projects(signal?: AbortSignal): Promise<Array<{ id: string; name: string; slug: string; is_default: boolean }>> {
+    return this.request<Array<{ id: string; name: string; slug: string; is_default: boolean }>>("/projects", { signal });
   }
 
   async complete(
@@ -179,9 +195,21 @@ export class CompassClient implements ModelProvider {
     return response.json() as Promise<T>;
   }
 
+  private async publicRequest<T>(pathname: string, body: Record<string, unknown>): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${pathname}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000)
+    });
+    if (!response.ok) throw new Error(`Compass authorization request failed (HTTP ${response.status}).`);
+    return response.json() as Promise<T>;
+  }
+
   private async rawRequest(pathname: string, init: RequestInit = {}): Promise<Response> {
     const apiKey = await this.context.secrets.get(secretKey);
     const provider = vscode.workspace.getConfiguration("compassCode").get<string>("provider", "compass");
+    const projectId = vscode.workspace.getConfiguration("compassCode").get<string>("projectId", "").trim();
     if (!apiKey && provider !== "ollama") throw new Error("Connect an API key first.");
     const configuredTimeout = vscode.workspace.getConfiguration("compassCode").get<number>("requestTimeoutSeconds", 45);
     const timeoutSeconds = Math.min(120, Math.max(15, Number.isFinite(configuredTimeout) ? configuredTimeout : 45));
@@ -195,6 +223,7 @@ export class CompassClient implements ModelProvider {
         headers: {
           "Content-Type": "application/json",
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          ...(projectId ? { "X-Compass-Project-Id": projectId } : {}),
           ...(init.headers ?? {})
         }
       });

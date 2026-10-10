@@ -20,6 +20,9 @@ export type ViewState = {
   selectedModel: string;
   mode: AgentMode;
   account: AccountSummary | null;
+  projectId: string | null;
+  projectName: string | null;
+  projectIsDefault: boolean;
   transcript: TranscriptItem[];
   conversations: ConversationSummary[];
   activeConversationId: string | null;
@@ -33,6 +36,7 @@ export type ViewMessage =
         | "ready"
         | "disconnect"
         | "login"
+        | "deviceLogin"
         | "stop"
         | "pauseGoal"
         | "resumeGoal"
@@ -41,6 +45,7 @@ export type ViewMessage =
         | "retryLast"
         | "newTask"
         | "refresh"
+        | "chooseProject"
         | "openSettings"
         | "openAccount"
         | "openDashboard"

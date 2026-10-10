@@ -38,6 +38,26 @@ Working copy: C:/Users/tohee/Desktop/Compass-Router-Production
 Source repository: C:/Users/tohee/Desktop/Compass-Litellm-Router
 Scope exclusion: compass-code and VS Code extension implementation
 
+## Customer credits and BYOK audit - 2026-10-10
+
+Status: PARTIALLY IMPLEMENTED; payment, UI management, and provider analytics work remains
+
+- Audited the attached customer Credits, BYOK, members, authentication, extension, Razorpay, terminology, and analytics requirements against the existing API and web modules.
+- BYOK chat, JSON, streaming, binary, and multipart routes now avoid Compass Credit reservation/settlement and do not fall back from a BYOK route to a managed credential route.
+- BYOK requests continue to record provider, model, project, member, credential mode, usage, and provider-cost metadata where available.
+- Signup promotion support now reads the existing Super Admin `trial_credit_paise` platform setting and creates one idempotent `signup_promotion` ledger entry per newly created user. The default remains zero when unset.
+- Added organization role updates, project member list/assign/remove operations, and team member removal with member-scoped API-key revocation. Owner roles remain protected.
+- Added organization invitation listing, resend with token rotation, cancellation, and audit records; the web access manager exposes pending-invitation controls.
+- Added VS Code workspace project selection through `compassCode.chooseProject`; requests send `X-Compass-Project-Id`, and the API verifies that the key's user has access to the selected project.
+- Added managed-versus-BYOK fields to request usage responses and workspace activity filtering, including provider upstream cost versus Compass Credits charged.
+- Added a platform-permission-gated `/admin/analytics/providers` aggregation endpoint grouped by provider, model, organization, project, and credential mode with separate upstream cost, customer charge, tokens, and failures.
+- Renamed the main customer and Super Admin billing labels from Wallet to Credits while retaining internal wallet tables and routes for compatibility.
+- Added a visible VS Code project scope indicator and project selector; the extension persists the authorized default `Others` project when no workspace selection exists and warns when no project is available.
+- Extended the API-key creation UI to select a project, assign an active team member, and set an optional expiry; the existing server-side model-policy and revocation controls remain in place.
+- Focused validation: Python compile check passed; provider adapter/catalog tests passed (11 tests); infrastructure/staging tests passed (7 tests); API focused regressions passed (5 tests); web typecheck passed; VS Code extension build and tests passed (10 tests).
+- Full API test execution did not complete in the current environment; no result is claimed for that suite.
+- Remaining product work includes visible project-tag status/warning UI, setup email templates, provider-level analytics presentation, Credits terminology cleanup, promotional expiration policy, and Razorpay sandbox verification.
+
 ## Milestone M0 - Baseline, verification, and isolation
 
 Status: VERIFIED for source isolation and baseline checks; live integrations pending
@@ -469,6 +489,12 @@ M9 external/live gates:
 - Verify all new queries, locks, indexes, migrations, and concurrency behavior against PostgreSQL and Redis; the local suite remains SQLite/isolated.
 - Verify real provider/model state, SMTP delivery, Razorpay sandbox/reconciliation, GCP Secret Manager, Cloud Run, monitoring, backups, rollback, DNS/TLS, and production redaction review.
 - No deployment, live payment, secret write, destructive migration, or original-repository/VS Code extension change was performed.
+
+## Customer Credits follow-up - 2026-10-11
+
+- Super Admin Operations now renders the provider analytics aggregation alongside request metadata, including provider/model, organization/project scope, managed versus BYOK, requests, tokens, provider cost, Compass Credits, and failures.
+- The VS Code extension now reaches the existing browser/device authorization flow: it opens the verified Compass authorization page, polls the short-lived device code, stores the returned device session in VS Code SecretStorage, and preserves manual API-key connection for compatibility.
+- Promotional credit expiration remains intentionally unimplemented: the current aggregate wallet cannot identify whether a later debit consumed promotional or purchased Credits. A future ledger design must model credit lots or equivalent allocation before expiration is enabled.
 
 ## Neon staging verification - 2026-10-09
 

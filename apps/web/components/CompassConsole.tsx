@@ -19,7 +19,7 @@ type ApiKey = { id: string; name: string; key: string; status: string; team_id?:
 type Model = { id: string; display_name: string; provider: string; provider_model_id?: string; capabilities?: string[]; context_window?: number; input_price_paise_per_1k: number; output_price_paise_per_1k: number; status: string };
 type RouterModel = Model & { enabled: boolean; published: boolean; fallback_model_id?: string | null; provider_status: string; provider_enabled: boolean };
 type RouterProvider = { name: string; enabled: boolean; status: string; commercial_status: "unreviewed" | "approved" | "rejected"; last_health?: { status: string; latency_ms: number; error_rate: number; checked_at: string } | null };
-type RequestRow = { id: string; status: string; error_code?: string | null; model: string; provider: string; tokens: number; input_tokens?: number; output_tokens?: number; cost_paise: number; latency_ms: number; created_at: string };
+type RequestRow = { id: string; status: string; error_code?: string | null; model: string; provider: string; credential_mode?: string; provider_cost_paise?: number; tokens: number; input_tokens?: number; output_tokens?: number; cost_paise: number; latency_ms: number; created_at: string };
 type LedgerRow = { id: string; type: string; amount_paise: number; balance_before: number; balance_after: number; reference_id: string; reference_type?: string; created_at?: string };
 type BillingOrder = { id: string; team_id: string; provider: string; provider_order_id: string; payment_id?: string | null; amount_paise: number; refunded_paise: number; currency: string; status: string; failure_code?: string | null; failure_description?: string | null; created_at: string; completed_at?: string | null; can_complete: boolean; can_refund: boolean; checkout_key_id?: string | null };
 type BillingInvoice = { id: string; invoice_number: string; order_id: string; total_paise: number; currency: string; status: string; created_at: string; paid_at?: string | null };
@@ -59,11 +59,11 @@ const viewTitles: Record<string, [string, string]> = {
   "api-keys": ["API Keys", "Create and manage team-scoped credentials."],
   usage: ["Usage", "Review request status, tokens, cost, and latency."],
   activity: ["Activity", "Understand request volume, spend, tokens, and routing performance."],
-  wallet: ["Billing", "Recharge wallet credits and inspect the billing ledger."],
+  wallet: ["Credits", "Add Credits and inspect the billing ledger."],
   admin: ["Administration", "Configure teams, provider credentials, and pricing."],
   profile: ["Profile", "Manage your account details."],
-  workspaces: ["Workspaces", "Manage team workspaces and their wallets."],
-  teams: ["Teams", "Manage shared team wallets, members, and API access."],
+  workspaces: ["Workspaces", "Manage team workspaces and their Credits."],
+  teams: ["Teams", "Manage shared team Credits, members, and API access."],
 };
 
 const savedCompassKeyStorageKey = "compass.local.savedApiKey";
@@ -220,7 +220,7 @@ export function CompassConsole({ view }: { view: string }) {
     setStatus("Saved Compass API key removed from this browser.");
   }
 
-  async function createKey() {
+  async function createKey(options: { projectId?: string; memberId?: string; expiresAt?: string } = {}) {
     if (!session) return false;
     const teamId = selectedTeamId || dashboard?.teams[0]?.id;
     if (!teamId) {
@@ -230,7 +230,7 @@ export function CompassConsole({ view }: { view: string }) {
     setBusy(true);
     try {
       const path = session.role === "admin" || session.role === "super_admin" ? "/admin/api-keys" : "/api-keys";
-      const key = await apiFetch<{ key: string }>(path, { method: "POST", body: JSON.stringify({ name: keyName, team_id: teamId, allowed_models: [] }) }, session.token);
+      const key = await apiFetch<{ key: string }>(path, { method: "POST", body: JSON.stringify({ name: keyName, team_id: teamId, project_id: options.projectId, member_id: options.memberId, expires_at: options.expiresAt, allowed_models: [] }) }, session.token);
       setOneTimeKey(key.key);
       setSelectedKey(key.key);
       setStatus("Compass API key created. This is the only time the full key is shown.");
@@ -283,10 +283,10 @@ export function CompassConsole({ view }: { view: string }) {
     setBusy(true);
     try {
       await apiFetch("/admin/wallet/topups", { method: "POST", body: JSON.stringify({ team_id: teamId, amount_paise, idempotency_key: `local-topup-${Date.now()}` }) }, session.token);
-      setStatus("Wallet credited.");
+      setStatus("Credits added.");
       await loadData(session);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not credit wallet.");
+      setStatus(error instanceof Error ? error.message : "Could not add Credits.");
     } finally {
       setBusy(false);
     }
@@ -465,7 +465,7 @@ function ProfilePage({ session, dashboard }: { session: Session; dashboard: Dash
     <div className="profile-hero"><div className="profile-identity"><span className="account-avatar">{session.email.slice(0, 1).toUpperCase()}</span><div><span className="analytics-eyebrow">Compass account</span><h2>{session.email}</h2><p>Manage your account, workspaces, API access, and billing activity.</p></div></div><span className="profile-status"><i />Active</span></div>
     <div className="profile-stats"><div><span>Workspaces</span><strong>{workspaceCount}</strong></div><div><span>API keys</span><strong>{keyCount}</strong></div><div><span>Requests</span><strong>{requestCount.toLocaleString("en-IN")}</strong></div><div><span>Total spend</span><strong>{spend}</strong></div></div>
     <div className="profile-grid"><section className="profile-card"><div className="profile-card-heading"><div><h3>Account details</h3><p>Your account identity and current access.</p></div></div><dl className="profile-facts"><div><dt>Email address</dt><dd>{session.email}</dd></div><div><dt>Account status</dt><dd><span className="profile-inline-status"><i />Active</span></dd></div><div><dt>Default workspace</dt><dd>{dashboard?.workspaces[0]?.name ?? "No workspace selected"}</dd></div></dl></section><section className="profile-card"><div className="profile-card-heading"><div><h3>Quick access</h3><p>Jump to the areas you use most.</p></div></div><div className="profile-links"><Link href="/api-keys"><KeyRound size={17} />Manage API keys</Link><Link href="/activity"><Activity size={17} />View activity</Link><Link href="/wallet"><Wallet size={17} />Open billing</Link><Link href="/workspaces"><Building2 size={17} />Manage workspaces</Link></div></section></div>
-    <section className="profile-card profile-security"><div className="profile-card-heading"><div><h3>Account protection</h3><p>Provider credentials and wallet operations remain protected by the Compass gateway.</p></div><ShieldCheck size={20} /></div><div className="profile-security-grid"><div><strong>Provider credentials</strong><span>Stored server-side and never shown in your profile.</span></div><div><strong>API access</strong><span>Use scoped keys and revoke them from API Keys.</span></div><div><strong>Billing controls</strong><span>Wallet balance and recharge history are available in Billing.</span></div></div></section>
+    <section className="profile-card profile-security"><div className="profile-card-heading"><div><h3>Account protection</h3><p>Provider credentials and Credits operations remain protected by the Compass gateway.</p></div><ShieldCheck size={20} /></div><div className="profile-security-grid"><div><strong>Provider credentials</strong><span>Stored server-side and never shown in your profile.</span></div><div><strong>API access</strong><span>Use scoped keys and revoke them from API Keys.</span></div><div><strong>Billing controls</strong><span>Credits balance and recharge history are available in Billing.</span></div></div></section>
   </section>;
 }
 
@@ -603,7 +603,7 @@ function Playground(props: { busy: boolean; dashboard: Dashboard | null; model: 
 }
 
 function Usage({ rows, compact = false }: { rows: RequestRow[]; compact?: boolean }) {
-  return <section className={`${compact ? "mt-6" : ""} rounded-card border border-compass-line bg-compass-panel p-5`}><h2 className="text-base font-semibold">Recent requests</h2><DataTable headers={["Status", "Model", "Provider", "Tokens", "Cost", "Latency", "Request ID"]} rows={rows.map((row) => [row.error_code ? `${row.status} (${row.error_code})` : row.status, row.model, row.provider, String(row.tokens), formatPaise(row.cost_paise), `${row.latency_ms} ms`, row.id])} /></section>;
+  return <section className={`${compact ? "mt-6" : ""} rounded-card border border-compass-line bg-compass-panel p-5`}><h2 className="text-base font-semibold">Recent requests</h2><DataTable headers={["Status", "Model", "Provider", "Billing", "Tokens", "Provider cost", "Credits", "Latency", "Request ID"]} rows={rows.map((row) => [row.error_code ? `${row.status} (${row.error_code})` : row.status, row.model, row.provider, row.credential_mode === "byok" ? "BYOK" : "Managed", String(row.tokens), formatPaise(row.provider_cost_paise ?? 0), formatPaise(row.cost_paise), `${row.latency_ms} ms`, row.id])} /></section>;
 }
 
 function WalletPage({ wallet, ledger, teamId, token, refresh }: { wallet?: { currency: string; balance_paise: number }; ledger: LedgerRow[]; teamId: string; token: string; refresh: () => Promise<void> }) {
@@ -641,13 +641,13 @@ function WalletPage({ wallet, ledger, teamId, token, refresh }: { wallet?: { cur
       amount: order.amount_paise,
       currency: order.currency,
       name: "Compass",
-      description: "Compass wallet recharge",
+      description: "Compass Credits recharge",
       order_id: order.provider_order_id,
       handler: async (response: RazorpayResponse) => {
         setBusy(true);
         try {
           await apiFetch(`/billing/orders/${order.id}/verify`, { method: "POST", body: JSON.stringify(response) }, token);
-          setStatus("Payment verified. Wallet recharged successfully."); await loadOrders(); await refresh();
+          setStatus("Payment verified. Credits added successfully."); await loadOrders(); await refresh();
         } catch (error) { setStatus(error instanceof Error ? error.message : "Payment verification failed."); }
         finally { setBusy(false); }
       },
@@ -672,7 +672,7 @@ function WalletPage({ wallet, ledger, teamId, token, refresh }: { wallet?: { cur
     setBusy(true); setStatus("");
     try {
       await apiFetch(`/billing/orders/${order.id}/complete`, { method: "POST", body: JSON.stringify({ confirmation: "browser-confirmed" }) }, token);
-      setStatus("Wallet recharged successfully."); await loadOrders(); await refresh();
+      setStatus("Credits added successfully."); await loadOrders(); await refresh();
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not complete recharge."); }
     finally { setBusy(false); }
   }
@@ -680,20 +680,20 @@ function WalletPage({ wallet, ledger, teamId, token, refresh }: { wallet?: { cur
     setBusy(true); setStatus("");
     try {
       await apiFetch(`/billing/orders/${order.id}/refund`, { method: "POST", body: JSON.stringify({ reason: "Customer requested refund" }) }, token);
-      setStatus("Refund requested. The wallet will update when the payment provider confirms it."); await loadOrders(); await refresh();
+      setStatus("Refund requested. Credits will update when the payment provider confirms it."); await loadOrders(); await refresh();
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not request the refund."); }
     finally { setBusy(false); }
   }
   const credits = ledger.filter((row) => row.type === "credit").reduce((sum, row) => sum + Math.abs(row.amount_paise), 0);
   const usage = ledger.filter((row) => row.type === "debit").reduce((sum, row) => sum + Math.abs(row.amount_paise), 0);
   return <section className="billing-page">
-    <div className="billing-hero"><div><span className="analytics-eyebrow">Billing</span><h2>Wallet and recharge</h2><p>Keep credits available for model requests. Recharge activity and usage charges are recorded in the ledger.</p></div><div className="billing-balance"><span>Available balance</span><strong>{formatPaise(wallet?.balance_paise)}</strong><small>{wallet?.currency ?? "INR"}</small></div></div>
+    <div className="billing-hero"><div><span className="analytics-eyebrow">Billing</span><h2>Credits and recharge</h2><p>Keep Credits available for model requests. Recharge activity and usage charges are recorded in the ledger.</p></div><div className="billing-balance"><span>Available Credits</span><strong>{formatPaise(wallet?.balance_paise)}</strong><small>{wallet?.currency ?? "INR"}</small></div></div>
     {status ? <p className="model-error" role="status">{status}</p> : null}
-    <div className="billing-grid"><form className="billing-card recharge-card" onSubmit={(event) => void createRecharge(event)}><div className="billing-card-heading"><div><h3>Recharge wallet</h3><p>Choose an amount to create a secure recharge order.</p></div><CreditCard size={20} /></div><div className="amount-presets">{[500, 1000, 2500, 5000].map((preset) => <button type="button" key={preset} className={amount === String(preset) ? "selected" : ""} onClick={() => setAmount(String(preset))}>{formatPaise(preset * 100)}</button>)}</div><label>Amount in rupees<input type="number" min="10" max="50000" step="1" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></label><button className="console-primary" disabled={busy || !teamId}><CreditCard size={17} />{busy ? "Processing..." : "Create recharge order"}</button><small>Minimum Rs 10. Maximum Rs 50,000 per order.</small></form><section className="billing-card"><div className="billing-card-heading"><div><h3>Billing summary</h3><p>Selected team wallet activity.</p></div><Wallet size={20} /></div><div className="billing-summary"><div><span>Total credits</span><strong>{formatPaise(credits)}</strong></div><div><span>Usage charges</span><strong>{formatPaise(usage)}</strong></div><div><span>Ledger entries</span><strong>{ledger.length}</strong></div></div></section></div>
+    <div className="billing-grid"><form className="billing-card recharge-card" onSubmit={(event) => void createRecharge(event)}><div className="billing-card-heading"><div><h3>Recharge Credits</h3><p>Choose an amount to create a secure recharge order.</p></div><CreditCard size={20} /></div><div className="amount-presets">{[500, 1000, 2500, 5000].map((preset) => <button type="button" key={preset} className={amount === String(preset) ? "selected" : ""} onClick={() => setAmount(String(preset))}>{formatPaise(preset * 100)}</button>)}</div><label>Amount in rupees<input type="number" min="10" max="50000" step="1" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></label><button className="console-primary" disabled={busy || !teamId}><CreditCard size={17} />{busy ? "Processing..." : "Create recharge order"}</button><small>Minimum Rs 10. Maximum Rs 50,000 per order.</small></form><section className="billing-card"><div className="billing-card-heading"><div><h3>Billing summary</h3><p>Selected team Credits activity.</p></div><Wallet size={20} /></div><div className="billing-summary"><div><span>Total Credits</span><strong>{formatPaise(credits)}</strong></div><div><span>Usage charges</span><strong>{formatPaise(usage)}</strong></div><div><span>Ledger entries</span><strong>{ledger.length}</strong></div></div></section></div>
     <section className="billing-card billing-orders"><div className="billing-card-heading"><div><h3>Recharge orders</h3><p>Payment orders for this team.</p></div></div>{orders.length ? <div className="billing-order-list">{orders.map((order) => <article key={order.id}><div><strong>{formatPaise(order.amount_paise)}</strong><span>{order.provider === "development" ? "Development checkout" : "Razorpay"} · {new Date(order.created_at).toLocaleString("en-IN")}</span></div><div className="billing-order-action"><span className={`key-status ${order.status === "completed" ? "active" : "pending"}`}>{order.status}</span>{order.can_complete ? <button type="button" className="console-secondary" disabled={busy} onClick={() => void completeRecharge(order)}>Complete recharge</button> : null}</div></article>)}</div> : <div className="billing-empty"><CreditCard size={22} /><strong>No recharge orders</strong><span>Create an order to add credits to this team wallet.</span></div>}</section>
     <div className="billing-grid"><section className="billing-card"><div className="billing-card-heading"><div><h3>Invoices</h3><p>Paid receipts generated for completed wallet recharges.</p></div></div><DataTable headers={["Invoice", "Order", "Total", "Status"]} rows={invoices.map((invoice) => [invoice.invoice_number, invoice.order_id.slice(0, 8), formatPaise(invoice.total_paise), invoice.status])} /></section><section className="billing-card"><div className="billing-card-heading"><div><h3>Refunds</h3><p>Provider refunds and wallet reversals.</p></div></div><DataTable headers={["Order", "Amount", "Status", "Reason"]} rows={refunds.map((refund) => [refund.order_id.slice(0, 8), formatPaise(refund.amount_paise), refund.status, refund.reason])} /></section></div>
     {orders.some((order) => order.can_refund) ? <section className="billing-card"><div className="billing-card-heading"><div><h3>Refund eligible payments</h3><p>Request a full refund for a completed recharge. Provider-confirmed refunds reverse wallet credits.</p></div></div><div className="billing-order-list">{orders.filter((order) => order.can_refund).map((order) => <article key={order.id}><div><strong>{formatPaise(order.amount_paise - order.refunded_paise)}</strong><span>Remaining refundable balance</span></div><button type="button" className="console-secondary" disabled={busy} onClick={() => void refundRecharge(order)}>Request refund</button></article>)}</div></section> : null}
-    <section className="billing-card"><div className="billing-card-heading"><div><h3>Wallet ledger</h3><p>Every recharge, refund, and model usage charge is recorded here.</p></div></div><DataTable headers={["Type", "Amount", "Before", "After", "Reference"]} rows={ledger.map((row) => [row.type, formatPaise(row.amount_paise), formatPaise(row.balance_before), formatPaise(row.balance_after), row.reference_id])} /></section>
+    <section className="billing-card"><div className="billing-card-heading"><div><h3>Credits ledger</h3><p>Every recharge, refund, and model usage charge is recorded here.</p></div></div><DataTable headers={["Type", "Amount", "Before", "After", "Reference"]} rows={ledger.map((row) => [row.type, formatPaise(row.amount_paise), formatPaise(row.balance_before), formatPaise(row.balance_after), row.reference_id])} /></section>
   </section>;
 }
 

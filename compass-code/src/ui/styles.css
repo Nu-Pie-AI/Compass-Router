@@ -912,3 +912,17 @@ dd {
     gap: 3px;
   }
 }
+.project-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-scope.configured { color: var(--foreground); }
+.project-scope.warning { border-color: #c98d42; color: #e0ae68; }

@@ -31,7 +31,7 @@ services:
         required: false
     image: ${COMPASS_LITELLM_IMAGE:-compass-litellm:1.99.0-compass.1}
     build:
-      context: ../../compass-litellm
+      context: ../compass-litellm
       dockerfile: Dockerfile
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-local-dev-litellm-key}
@@ -40,7 +40,7 @@ services:
       STORE_MODEL_IN_DB: "False"
     command: ["--config", "/app/compass/config/local-test-config.yaml", "--port", "4000"]
     volumes:
-      - ../../compass-litellm/compass/config/local-test-config.yaml:/app/compass/config/local-test-config.yaml:ro
+      - ../compass-litellm/compass/config/local-test-config.yaml:/app/compass/config/local-test-config.yaml:ro
     ports:
       - "${LITELLM_PORT:-24000}:4000"
     healthcheck:

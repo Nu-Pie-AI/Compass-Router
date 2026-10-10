@@ -31,7 +31,7 @@ export default function ExtensionAuthorizePage() {
         .then(([projectRows, teamRows]) => {
           setProjects(projectRows);
           setTeams(teamRows);
-          const first = projectRows[0];
+          const first = projectRows.find((project) => project.is_default) || projectRows[0];
           setProjectId(first?.id || "");
           setTeamId(teamRows.find((team) => team.project_id === first?.id && team.is_active)?.id || "");
         })
@@ -42,7 +42,7 @@ export default function ExtensionAuthorizePage() {
 
   function changeProject(nextProjectId: string) {
     setProjectId(nextProjectId);
-    setTeamId(projectTeams.find((team) => team.project_id === nextProjectId)?.id || "");
+    setTeamId(teams.find((team) => team.project_id === nextProjectId && team.is_active)?.id || "");
   }
 
   async function approve() {

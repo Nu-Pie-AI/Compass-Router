@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import httpx
 from jose import JWTError
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Integer, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -25,7 +25,7 @@ from .db import get_db, init_db
 from .errors import compass_error
 from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, CatalogSyncRun, ClerkWebhookEvent, EmailOtpChallenge, ExtensionDeviceAuthorization, Invitation, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PricingPolicy, PricingRevision, Project, ProjectMember, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, RoutingPolicyRevision, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
 from .observability import configure_logging, log_request
-from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
+from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, OrganizationMemberUpdate, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectMemberUpdate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
 from .security import authenticate_clerk_request, clerk_user_email, create_session_token, decode_marketplace_sso_token, decode_session_claims, hash_password, verify_password
 from .services import (
     LiteLLMClient,
@@ -61,6 +61,7 @@ from .services import (
     provider_credentials_summary,
     record_audit_log,
     request_id_context,
+    resend_invitation,
     request_rows,
     revoke_byok_api_key,
     revoke_api_key,
@@ -629,11 +630,101 @@ def remove_organization_member(user_id: str, actor: User = Depends(organization_
     return {"user_id": user_id, "status": "removed"}
 
 
+@app.patch("/organization/members/{user_id}")
+def update_organization_member(user_id: str, body: OrganizationMemberUpdate, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    organization_id = organization_id_for_user(db, actor.id)
+    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user_id, OrganizationMember.role != "removed"))
+    if membership is None:
+        raise compass_error(404, "member_not_found", "Organization member not found.")
+    if membership.role == "owner":
+        raise compass_error(400, "owner_required", "The organization owner role cannot be changed here.")
+    membership.role = body.role
+    db.commit()
+    return {"user_id": user_id, "role": membership.role, "status": "active"}
+
+
+@app.get("/projects/{project_id}/members")
+def project_members(project_id: str, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> list[dict]:
+    project = db.get(Project, project_id)
+    organization_id = organization_id_for_user(db, actor.id)
+    if project is None or project.organization_id != organization_id:
+        raise compass_error(404, "project_not_found", "Project not found.")
+    rows = db.execute(select(User, ProjectMember).join(ProjectMember, ProjectMember.user_id == User.id).where(ProjectMember.project_id == project_id, ProjectMember.status == "active").order_by(User.email)).all()
+    return [{"user_id": member_user.id, "email": member_user.email, "role": membership.role, "status": membership.status} for member_user, membership in rows]
+
+
+@app.put("/projects/{project_id}/members/{user_id}")
+def assign_project_member(project_id: str, user_id: str, body: ProjectMemberUpdate, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    project = db.get(Project, project_id)
+    organization_id = organization_id_for_user(db, actor.id)
+    if project is None or project.organization_id != organization_id:
+        raise compass_error(404, "project_not_found", "Project not found.")
+    organization_membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user_id, OrganizationMember.role != "removed"))
+    if organization_membership is None:
+        raise compass_error(400, "member_not_in_organization", "Add the user to the organization before assigning project access.")
+    membership = db.scalar(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id))
+    if membership is None:
+        membership = ProjectMember(project_id=project_id, user_id=user_id, role=body.role, status="active")
+        db.add(membership)
+    else:
+        membership.role = body.role
+        membership.status = "active"
+    db.commit()
+    return {"project_id": project_id, "user_id": user_id, "role": membership.role, "status": membership.status}
+
+
+@app.delete("/projects/{project_id}/members/{user_id}")
+def remove_project_member(project_id: str, user_id: str, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    project = db.get(Project, project_id)
+    organization_id = organization_id_for_user(db, actor.id)
+    if project is None or project.organization_id != organization_id:
+        raise compass_error(404, "project_not_found", "Project not found.")
+    membership = db.scalar(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id))
+    if membership is None:
+        raise compass_error(404, "member_not_found", "Project member not found.")
+    if membership.role == "owner":
+        raise compass_error(400, "owner_required", "The project owner cannot be removed here.")
+    membership.status = "removed"
+    db.commit()
+    return {"project_id": project_id, "user_id": user_id, "status": "removed"}
+
+
 @app.post("/organization/invitations")
 def invite_organization_member(body: InvitationCreate, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
     project = require_project_access(db, actor, body.project_id, write=True)
     invitation, token = create_invitation(db, actor, project, body.email, body.role, body.team_id)
     return {"id": invitation.id, "email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role, "status": invitation.status, "expires_at": invitation.expires_at.isoformat(), "accept_token": token}
+
+
+@app.get("/organization/invitations")
+def organization_invitations(actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> list[dict]:
+    organization_id = organization_id_for_user(db, actor.id)
+    rows = db.scalars(select(Invitation).where(Invitation.organization_id == organization_id).order_by(Invitation.created_at.desc())).all()
+    return [{"id": row.id, "email": row.email, "project_id": row.project_id, "team_id": row.team_id, "role": row.role, "status": row.status, "expires_at": row.expires_at.isoformat(), "created_at": row.created_at.isoformat()} for row in rows]
+
+
+@app.post("/organization/invitations/{invitation_id}/resend")
+def resend_organization_invitation(invitation_id: str, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    organization_id = organization_id_for_user(db, actor.id)
+    invitation = db.scalar(select(Invitation).where(Invitation.id == invitation_id, Invitation.organization_id == organization_id))
+    if invitation is None:
+        raise compass_error(404, "invitation_not_found", "Invitation not found.")
+    resend_invitation(db, invitation, actor)
+    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at.isoformat()}
+
+
+@app.post("/organization/invitations/{invitation_id}/cancel")
+def cancel_organization_invitation(invitation_id: str, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    organization_id = organization_id_for_user(db, actor.id)
+    invitation = db.scalar(select(Invitation).where(Invitation.id == invitation_id, Invitation.organization_id == organization_id))
+    if invitation is None:
+        raise compass_error(404, "invitation_not_found", "Invitation not found.")
+    if invitation.status == "accepted":
+        raise compass_error(409, "invitation_already_accepted", "An accepted invitation cannot be cancelled.")
+    invitation.status = "cancelled"
+    record_audit_log(db, actor, "organization.invitation_cancelled", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id})
+    db.commit()
+    return {"id": invitation.id, "status": invitation.status}
 
 
 @app.get("/invitations/{token}")
@@ -706,6 +797,23 @@ def team_members(team_id: str, user: User = Depends(current_user), db: Session =
     require_team_access(db, user, team_id)
     rows = db.scalars(select(TeamMember).where(TeamMember.team_id == team_id).order_by(TeamMember.created_at.desc())).all()
     return [{"id": row.id, "team_id": row.team_id, "name": row.name, "email": row.email, "role": row.role, "is_active": row.is_active} for row in rows]
+
+
+@app.delete("/teams/{team_id}/members/{member_id}")
+def remove_team_member(team_id: str, member_id: str, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    team = db.get(Team, team_id)
+    organization_id = organization_id_for_user(db, actor.id)
+    if team is None or team.organization_id != organization_id:
+        raise compass_error(404, "team_not_found", "Team not found.")
+    member = db.scalar(select(TeamMember).where(TeamMember.id == member_id, TeamMember.team_id == team_id))
+    if member is None:
+        raise compass_error(404, "member_not_found", "Team member not found.")
+    if member.role == "owner":
+        raise compass_error(400, "owner_required", "The team owner cannot be removed here.")
+    member.is_active = False
+    db.query(ApiKey).filter(ApiKey.team_id == team_id, ApiKey.member_id == member_id, ApiKey.status == "active").update({ApiKey.status: "revoked", ApiKey.revoked_at: now()}, synchronize_session=False)
+    db.commit()
+    return {"member_id": member_id, "status": "removed", "api_keys_revoked": True}
 
 
 def team_limits_row(limits: TeamLimit) -> dict:
@@ -2031,6 +2139,28 @@ def admin_requests(page: int = 1, page_size: int = 50, date_from: str | None = N
     total = int(db.scalar(select(func.count(LlmRequest.id)).where(*filters)) or 0)
     rows = db.scalars(select(LlmRequest).where(*filters).order_by(LlmRequest.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     return {"items": [{"id": row.id, "request_id": row.id, "timestamp": row.created_at.isoformat(), "user_id": row.user_id, "organization_id": row.organization_id, "project_id": row.project_id, "model": row.resolved_model, "requested_model": row.requested_model, "provider": row.provider, "status": row.status, "latency_ms": row.latency_ms, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "total_tokens": row.total_tokens, "provider_cost_paise": row.provider_cost_paise, "customer_charge_paise": row.compass_cost_paise, "failure_category": row.error_code, "route": row.route, "credential_mode": row.credential_mode} for row in rows], "page": page, "page_size": page_size, "total": total, "content_policy": "raw prompts and completions are not stored or returned"}
+
+
+@app.get("/admin/analytics/providers")
+def admin_provider_analytics(date_from: str | None = None, date_to: str | None = None, provider: str | None = None, model: str | None = None, organization_id: str | None = None, project_id: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    require_platform_permission(db, actor, "operations.view")
+    filters = _admin_request_filters(date_from, date_to, provider, model, organization_id, project_id)
+    rows = db.execute(
+        select(
+            LlmRequest.provider,
+            LlmRequest.resolved_model,
+            LlmRequest.organization_id,
+            LlmRequest.project_id,
+            LlmRequest.credential_mode,
+            func.count(LlmRequest.id),
+            func.coalesce(func.sum(LlmRequest.input_tokens), 0),
+            func.coalesce(func.sum(LlmRequest.output_tokens), 0),
+            func.coalesce(func.sum(LlmRequest.provider_cost_paise), 0),
+            func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0),
+            func.sum(func.cast(LlmRequest.status == "error", Integer)),
+        ).where(*filters).group_by(LlmRequest.provider, LlmRequest.resolved_model, LlmRequest.organization_id, LlmRequest.project_id, LlmRequest.credential_mode).order_by(func.count(LlmRequest.id).desc())
+    ).all()
+    return {"items": [{"provider": row[0], "model": row[1], "organization_id": row[2], "project_id": row[3], "credential_mode": row[4], "requests": int(row[5] or 0), "input_tokens": int(row[6] or 0), "output_tokens": int(row[7] or 0), "provider_cost_paise": int(row[8] or 0), "customer_charge_paise": int(row[9] or 0), "failed_requests": int(row[10] or 0)} for row in rows], "total": len(rows), "content_policy": "Metadata only; prompt and response content is not retained."}
 
 
 @app.get("/admin/financial/wallets")

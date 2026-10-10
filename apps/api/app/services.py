@@ -52,6 +52,7 @@ from .models import (
     Project,
     ProjectMember,
     OperationalEvent,
+    PlatformSetting,
     Provider,
     ProviderAttempt,
     ProviderCredential,
@@ -246,6 +247,21 @@ def create_invitation(db: Session, actor: User, project: Project, email: str, ro
     return invitation, token
 
 
+def resend_invitation(db: Session, invitation: Invitation, actor: User) -> Invitation:
+    if invitation.status != "pending" or invitation.expires_at < now():
+        raise compass_error(409, "invitation_not_pending", "Only pending invitations can be resent.")
+    token = secrets.token_urlsafe(32)
+    invitation.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    invitation.expires_at = now() + timedelta(days=7)
+    origin = get_settings().compass_web_origin.split(",", 1)[0].strip().rstrip("/")
+    project = db.get(Project, invitation.project_id)
+    project_name = project.name if project else "your Compass Router project"
+    queue_email(db, invitation.email, f"Reminder: invitation to {project_name}", f"You have a pending invitation to join {project_name} in Compass Router. Open {origin}/invitations/{token} to verify your email and accept access. After accepting, install the Compass Router VS Code extension and connect with your workspace account. The invitation expires in 7 days.")
+    record_audit_log(db, actor, "organization.invitation_resent", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id})
+    db.commit()
+    return invitation
+
+
 def start_extension_device_authorization(db: Session, device_name: str) -> dict:
     device_code = "cmp_device_code_" + secrets.token_urlsafe(32)
     user_code = f"{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
@@ -365,12 +381,51 @@ def register_customer(db: Session, email: str, password: str, organization_name:
                 WalletAccount(team_id=team.id, balance_paise=0),
             ]
         )
+        # The promotion helper locks the newly-created wallet, so make the
+        # pending account visible to the current transaction first.
+        db.flush()
+        _grant_signup_credits(db, team.id, user.id)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise compass_error(409, "account_exists", "An account or workspace already exists for these details.") from exc
 
     return user, organization, team
+
+
+def _grant_signup_credits(db: Session, team_id: str, user_id: str) -> None:
+    """Grant the configured signup promotion once, inside the signup transaction."""
+    setting = db.get(PlatformSetting, "trial_credit_paise")
+    if setting is None:
+        return
+    try:
+        amount_paise = int(json.loads(setting.value_json))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return
+    if amount_paise <= 0:
+        return
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
+    if wallet is None:
+        raise compass_error(500, "signup_credit_wallet_missing", "The signup Credits account could not be created.")
+    idempotency_key = f"signup-credit:{user_id}"
+    if db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key)) is not None:
+        return
+    before = wallet.balance_paise
+    wallet.balance_paise += amount_paise
+    wallet.updated_at = now()
+    db.add(
+        WalletLedger(
+            wallet_id=wallet.id,
+            type="signup_promotion",
+            amount_paise=amount_paise,
+            balance_before=before,
+            balance_after=wallet.balance_paise,
+            reference_type="signup_promotion",
+            reference_id=user_id,
+            description="Configured signup Credits promotion",
+            idempotency_key=idempotency_key,
+        )
+    )
 
 
 def provision_clerk_customer(db: Session, clerk_user_id: str, email: str) -> tuple[User, Organization | None, bool]:
@@ -1656,7 +1711,7 @@ async def activate_catalog_model(db: Session, team_id: str, model_id: str) -> di
 
     provider = ensure_provider(db, row["provider"])
     if not provider.enabled or provider.status in {"unconfigured", "disabled", "unavailable"}:
-        raise compass_error(409, "provider_route_unavailable", "Verify and enable the provider before activating this model.")
+        raise compass_error(409, "provider_route_unavailable", f"Provider {row['provider']} is not enabled. A platform administrator must verify and enable this provider before activating its models.")
     if not get_settings().local_test_mode and provider.commercial_status != "approved":
         raise compass_error(409, "provider_commercial_approval_required", "Commercial approval is required before enabling this provider route.")
     if persisted is not None and persisted.catalog_source in {OPENROUTER_CATALOG_SOURCE, "litellm"}:
@@ -1898,6 +1953,27 @@ def authenticate_api_key(db: Session, bearer: str | None, project_id: str | None
             raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
         if key.project_id and project_id != key.project_id:
             raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
+        if key.project_id is None:
+            assigned_user_id = key.user_id
+            if key.member_id:
+                assigned_member = db.get(TeamMember, key.member_id)
+                assigned_user_id = assigned_member.user_id if assigned_member and assigned_member.user_id else assigned_user_id
+            organization_role = db.scalar(
+                select(OrganizationMember.role).where(
+                    OrganizationMember.organization_id == project.organization_id,
+                    OrganizationMember.user_id == assigned_user_id,
+                    OrganizationMember.role.in_(["owner", "admin"]),
+                )
+            ) if assigned_user_id else None
+            project_membership = db.scalar(
+                select(ProjectMember.id).where(
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.user_id == assigned_user_id,
+                    ProjectMember.status == "active",
+                )
+            ) if assigned_user_id else None
+            if organization_role is None and project_membership is None:
+                raise compass_error(403, "project_access_denied", "The API key owner is not authorized for the selected project.")
     key.last_used_at = now()
     db.commit()
     return key
@@ -2209,6 +2285,13 @@ def route_candidates(db: Session, api_key: ApiKey, requested_model: str, capabil
         candidates.append(route)
         model_id = route.model.fallback_model_id
     return candidates
+
+
+def _billing_routes(routes: list[ResolvedRoute]) -> tuple[list[ResolvedRoute], bool]:
+    """Keep BYOK requests on the customer credential and outside Compass billing."""
+    if routes and routes[0].credential_mode == "byok":
+        return routes[:1], True
+    return routes, False
 
 
 def _redis_client(redis_url: str) -> Redis:
@@ -2766,18 +2849,19 @@ def create_request_record(db: Session, api_key: ApiKey, route: ResolvedRoute, re
 
 
 async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
-    routes = route_candidates(db, api_key, body["model"])
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, body["model"]))
     route = routes[0]
     estimated_tokens = estimate_prompt_tokens(body) + int(body.get("max_tokens") or 256)
-    estimated_cost = max(estimate_max_cost_paise(candidate.model, body) for candidate in routes)
+    estimated_cost = 0 if byok_route else max(estimate_max_cost_paise(candidate.model, body) for candidate in routes)
     enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
-    if wallet is None or wallet.balance_paise < estimated_cost:
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
-    reservation_id = new_id()
-    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
     started = time.perf_counter()
     response: dict | None = None
     last_error: HTTPException | None = None
@@ -2816,13 +2900,16 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
         error_code = "provider_error"
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
-        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
     latency_ms = int((time.perf_counter() - started) * 1000)
     usage = response.get("usage", {})
     provider_cost, compass_cost = calculate_cost_paise(route.model, usage)
+    if byok_route:
+        compass_cost = 0
     record = create_request_record(db, api_key, route, body["model"], "success", latency_ms, attempts=attempt_rows)
     record.input_tokens = int(usage.get("prompt_tokens", 0))
     record.output_tokens = int(usage.get("completion_tokens", 0))
@@ -2830,7 +2917,8 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
-    settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+    if reservation_id is not None:
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
     response["model"] = body["model"]
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
@@ -2843,18 +2931,19 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
     response helper. Production and staging paths consume provider SSE lines
     incrementally and never manufacture chunks from a buffered response.
     """
-    routes = route_candidates(db, api_key, body["model"])
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, body["model"]))
     estimated_tokens = estimate_prompt_tokens(body) + int(body.get("max_tokens") or 256)
-    estimated_cost = max(estimate_max_cost_paise(candidate.model, body) for candidate in routes)
+    estimated_cost = 0 if byok_route else max(estimate_max_cost_paise(candidate.model, body) for candidate in routes)
     enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, routes[0].model.id, estimated_cost)
-    if wallet is None or wallet.balance_paise < estimated_cost:
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
 
-    reservation_id = new_id()
-    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     async def events():
         started = time.perf_counter()
@@ -2924,7 +3013,8 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 record = create_request_record(db, api_key, selected, body["model"], "error", latency_ms, error_code, attempt_rows)
                 record.usage_source = "none"
-                settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+                if reservation_id is not None:
+                    settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
                 return
 
             if usage is None:
@@ -2932,6 +3022,8 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
                 usage_source = "estimate"
             latency_ms = int((time.perf_counter() - started) * 1000)
             provider_cost, compass_cost = calculate_cost_paise(selected.model, usage)
+            if byok_route:
+                compass_cost = 0
             record = create_request_record(db, api_key, selected, body["model"], "success", latency_ms, attempts=attempt_rows)
             record.input_tokens = int(usage.get("prompt_tokens", 0))
             record.output_tokens = int(usage.get("completion_tokens", 0))
@@ -2940,12 +3032,14 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
             record.provider_cost_paise = provider_cost
             record.compass_cost_paise = compass_cost
             db.flush()
-            settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+            if reservation_id is not None:
+                settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
         except asyncio.CancelledError:
             latency_ms = int((time.perf_counter() - started) * 1000)
             record = create_request_record(db, api_key, selected, body["model"], "cancelled", latency_ms, "client_disconnected", attempt_rows)
             record.usage_source = "none"
-            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+            if reservation_id is not None:
+                settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
             raise
 
     return events()
@@ -2992,10 +3086,10 @@ def _stream_usage(line: str) -> dict | None:
 async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: str, capability: str):
     """Forward a provider SSE stream for non-chat OpenAI-compatible APIs."""
 
-    routes = route_candidates(db, api_key, body["model"], capability)
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, body["model"], capability))
     requested_max_tokens = int(body.get("max_tokens") or body.get("max_output_tokens") or 256)
     estimated_tokens = _estimate_generic_tokens(body) + requested_max_tokens
-    estimated_cost = max(
+    estimated_cost = 0 if byok_route else max(
         estimate_max_cost_paise(
             candidate.model,
             {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": requested_max_tokens},
@@ -3006,11 +3100,12 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, routes[0].model.id, estimated_cost)
-    if wallet is None or wallet.balance_paise < estimated_cost:
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
 
-    reservation_id = new_id()
-    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     async def events():
         started = time.perf_counter()
@@ -3073,7 +3168,8 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 record = create_request_record(db, api_key, selected, body["model"], "error", latency_ms, error_code, attempt_rows)
                 record.usage_source = "none"
-                settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+                if reservation_id is not None:
+                    settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
                 return
 
             usage_source = "provider"
@@ -3082,6 +3178,8 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
                 usage_source = "estimate"
             latency_ms = int((time.perf_counter() - started) * 1000)
             provider_cost, compass_cost = calculate_cost_paise(selected.model, usage)
+            if byok_route:
+                compass_cost = 0
             record = create_request_record(db, api_key, selected, body["model"], "success", latency_ms, attempts=attempt_rows)
             record.input_tokens = usage["prompt_tokens"]
             record.output_tokens = usage["completion_tokens"]
@@ -3090,12 +3188,14 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
             record.provider_cost_paise = provider_cost
             record.compass_cost_paise = compass_cost
             db.flush()
-            settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+            if reservation_id is not None:
+                settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
         except asyncio.CancelledError:
             latency_ms = int((time.perf_counter() - started) * 1000)
             record = create_request_record(db, api_key, selected, body["model"], "cancelled", latency_ms, "client_disconnected", attempt_rows)
             record.usage_source = "none"
-            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+            if reservation_id is not None:
+                settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
             raise
 
     return events()
@@ -3112,19 +3212,20 @@ def _estimate_generic_tokens(body: dict) -> int:
 
 async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: str, capability: str) -> dict:
     """Execute non-chat OpenAI-compatible APIs through the same Compass controls."""
-    routes = route_candidates(db, api_key, body["model"], capability)
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, body["model"], capability))
     route = routes[0]
     requested_max_tokens = int(body.get("max_tokens") or body.get("max_output_tokens") or 256)
     estimated_tokens = _estimate_generic_tokens(body) + requested_max_tokens
-    estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": requested_max_tokens}) for candidate in routes)
+    estimated_cost = 0 if byok_route else max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or body.get("prompt") or "")}], "max_tokens": requested_max_tokens}) for candidate in routes)
     enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
-    if wallet is None or wallet.balance_paise < estimated_cost:
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
-    reservation_id = new_id()
-    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     started = time.perf_counter()
     response: dict | None = None
@@ -3164,13 +3265,16 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
         error_code = "provider_error"
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
-        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
         db.commit()
         raise last_error or compass_error(503, "provider_unavailable", "No provider route succeeded.")
 
     usage = _generic_usage(response)
     provider_cost, compass_cost = calculate_cost_paise(route.model, usage)
+    if byok_route:
+        compass_cost = 0
     record = create_request_record(db, api_key, route, body["model"], "success", latency_ms, attempts=attempt_rows)
     record.input_tokens = usage["prompt_tokens"]
     record.output_tokens = usage["completion_tokens"]
@@ -3178,25 +3282,27 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
-    settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+    if reservation_id is not None:
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
     response.setdefault("model", body["model"])
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
 
 
 async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint: str, capability: str) -> tuple[bytes, str]:
-    routes = route_candidates(db, api_key, body["model"], capability)
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, body["model"], capability))
     route = routes[0]
     estimated_tokens = _estimate_generic_tokens(body)
-    estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or "")}], "max_tokens": 256}) for candidate in routes)
+    estimated_cost = 0 if byok_route else max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": str(body.get("input") or "")}], "max_tokens": 256}) for candidate in routes)
     enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
-    if wallet is None or wallet.balance_paise < estimated_cost:
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
-    reservation_id = new_id()
-    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     started = time.perf_counter()
     last_error: HTTPException | None = None
@@ -3230,7 +3336,8 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
         error_code = "provider_error"
         if last_error is not None and isinstance(last_error.detail, dict):
             error_code = last_error.detail.get("error", {}).get("code", error_code)
-        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         record = create_request_record(db, api_key, route, body["model"], "error", latency_ms, error_code, attempt_rows)
         record.usage_source = "none"
         db.commit()
@@ -3244,23 +3351,25 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
     record.provider_cost_paise = 0
     record.compass_cost_paise = estimated_cost
     db.flush()
-    settle_wallet_reservation(db, api_key.team_id, reservation_id, estimated_cost, record.id)
+    if reservation_id is not None:
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, estimated_cost, record.id)
     return audio, content_type
 
 
 async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, form_data: dict, file: tuple[str, bytes, str], endpoint: str, capability: str) -> dict:
-    routes = route_candidates(db, api_key, model_id, capability)
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, model_id, capability))
     route = routes[0]
     estimated_tokens = max(1, len(file[1]) // 4_000)
-    estimated_cost = max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": "audio transcription"}], "max_tokens": 256}) for candidate in routes)
+    estimated_cost = 0 if byok_route else max(estimate_max_cost_paise(candidate.model, {"messages": [{"content": "audio transcription"}], "max_tokens": 256}) for candidate in routes)
     enforce_team_limits(db, api_key.team_id, estimated_tokens, estimated_cost)
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
-    if wallet is None or wallet.balance_paise < estimated_cost:
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
         raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
-    reservation_id = new_id()
-    reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
 
     started = time.perf_counter()
     response: dict | None = None
@@ -3291,7 +3400,8 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
                 break
     latency_ms = int((time.perf_counter() - started) * 1000)
     if response is None:
-        settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
         record = create_request_record(db, api_key, route, model_id, "error", latency_ms, "provider_error", attempt_rows)
         record.usage_source = "none"
         db.commit()
@@ -3299,6 +3409,8 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
 
     usage, usage_source = _usage_with_source(response, estimated_tokens)
     provider_cost, compass_cost = calculate_cost_paise(route.model, usage)
+    if byok_route:
+        compass_cost = 0
     record = create_request_record(db, api_key, route, model_id, "success", latency_ms, attempts=attempt_rows)
     record.input_tokens = usage["prompt_tokens"]
     record.output_tokens = usage["completion_tokens"]
@@ -3307,7 +3419,8 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
     record.provider_cost_paise = provider_cost
     record.compass_cost_paise = compass_cost
     db.flush()
-    settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+    if reservation_id is not None:
+        settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
 
@@ -3522,7 +3635,7 @@ def list_api_keys(db: Session, team_id: str | None = None, team_ids: list[str] |
 
 
 def request_rows(rows: list[LlmRequest]) -> list[dict]:
-    return [{"id": row.id, "project_id": row.project_id, "team_id": row.team_id, "member_id": row.member_id, "api_key_id": row.api_key_id, "status": row.status, "error_code": row.error_code, "model": row.requested_model, "provider": row.provider, "tokens": row.total_tokens, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "usage_source": row.usage_source, "cost_paise": row.compass_cost_paise, "latency_ms": row.latency_ms, "created_at": row.created_at.isoformat()} for row in rows]
+    return [{"id": row.id, "project_id": row.project_id, "team_id": row.team_id, "member_id": row.member_id, "api_key_id": row.api_key_id, "status": row.status, "error_code": row.error_code, "model": row.requested_model, "provider": row.provider, "tokens": row.total_tokens, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "usage_source": row.usage_source, "credential_mode": row.credential_mode, "provider_cost_paise": row.provider_cost_paise, "cost_paise": row.compass_cost_paise, "latency_ms": row.latency_ms, "created_at": row.created_at.isoformat()} for row in rows]
 
 
 def dashboard_summary(db: Session, team_ids: list[str] | None = None, user_id: str | None = None, workspace_ids: list[str] | None = None) -> dict:

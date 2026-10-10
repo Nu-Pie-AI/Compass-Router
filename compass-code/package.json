@@ -37,6 +37,7 @@
     "onCommand:compassCode.openAgent",
     "onCommand:compassCode.newTask",
     "onCommand:compassCode.chooseModel",
+    "onCommand:compassCode.chooseProject",
     "onCommand:compassCode.restoreCheckpoint",
     "onCommand:compassCode.openSettings",
     "onCommand:compassCode.openDashboard",
@@ -302,6 +303,12 @@
           "type": "string",
           "default": "https://compass-router-api-c4psf2dvua-uc.a.run.app",
           "description": "Compass API base URL. Do not include /v1."
+        },
+        "compassCode.projectId": {
+          "type": "string",
+          "default": "",
+          "scope": "workspace",
+          "description": "Authorized Compass project ID for this workspace. Leave empty to use the API key's assigned project."
         },
         "compassCode.marketplaceUrl": {
           "type": "string",

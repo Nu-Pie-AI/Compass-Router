@@ -38,6 +38,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
     selectedModel: "",
     mode: "ask",
     account: null,
+    projectId: null,
+    projectName: null,
+    projectIsDefault: false,
     transcript: [],
     conversations: [],
     activeConversationId: null,
@@ -82,13 +85,38 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
       prompt: "Use the API base URL without /v1."
     });
     if (baseUrl === undefined) return;
-    const apiKey = await vscode.window.showInputBox({
-      title: "Compass API key",
-      password: true,
-      prompt: "Stored in VS Code SecretStorage; it is never written to workspace files."
-    });
-    if (!apiKey) return;
-    await this.finishConnect(baseUrl, apiKey);
+    await this.authorizeDevice(baseUrl);
+  }
+
+  private async authorizeDevice(baseUrl: string): Promise<void> {
+    this.state.connecting = true;
+    this.state.error = null;
+    this.postState();
+    try {
+      await this.client.setBaseUrl(baseUrl);
+      const authorization = await this.client.startDeviceAuthorization("VS Code");
+      const verificationUri = `${authorization.verification_uri}?user_code=${encodeURIComponent(authorization.user_code)}`;
+      await vscode.env.openExternal(vscode.Uri.parse(verificationUri));
+      vscode.window.showInformationMessage(`Authorize Compass Router in your browser using code ${authorization.user_code}.`);
+      const deadline = Date.parse(authorization.expires_at);
+      while (Date.now() < deadline) {
+        const result = await this.client.pollDeviceAuthorization(authorization.device_code);
+        if (result.status === "authorized" && result.access_token) {
+          if (result.project_id) await vscode.workspace.getConfiguration("compassCode").update("projectId", result.project_id, vscode.ConfigurationTarget.Workspace);
+          await this.finishConnect(baseUrl, result.access_token);
+          return;
+        }
+        if (result.status === "expired" || result.status === "cancelled") throw new Error("The Compass Router device authorization expired or was cancelled.");
+        await new Promise((resolve) => setTimeout(resolve, Math.max(2000, authorization.interval * 1000)));
+      }
+      throw new Error("The Compass Router device authorization expired before it was approved.");
+    } catch (error) {
+      this.state.error = error instanceof Error ? error.message : "Could not authorize this VS Code device.";
+      throw error;
+    } finally {
+      this.state.connecting = false;
+      this.postState();
+    }
   }
 
   async chooseModel(): Promise<void> {
@@ -103,6 +131,45 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
       this.state.selectedModel = picked.model.id;
       this.postState();
     }
+  }
+
+  async chooseProject(): Promise<void> {
+    if (!(await this.client.hasCredential())) {
+      await this.connect();
+      return;
+    }
+    const projects = await this.client.projects();
+    const picked = await vscode.window.showQuickPick(
+      projects.map((project) => ({ label: project.name, description: project.is_default ? "Default project" : project.slug, project })),
+      { title: "Choose a Compass project" },
+    );
+    if (picked) {
+      await vscode.workspace.getConfiguration("compassCode").update("projectId", picked.project.id, vscode.ConfigurationTarget.Workspace);
+      this.state.projectId = picked.project.id;
+      this.state.projectName = picked.project.name;
+      this.state.projectIsDefault = picked.project.is_default;
+      this.postState();
+      vscode.window.showInformationMessage(`Compass project selected: ${picked.project.name}`);
+    }
+  }
+
+  private async syncProjectSelection(): Promise<void> {
+    if (this.state.provider !== "compass") {
+      this.state.projectId = null;
+      this.state.projectName = null;
+      this.state.projectIsDefault = false;
+      return;
+    }
+    const projects = await this.client.projects();
+    const config = vscode.workspace.getConfiguration("compassCode");
+    const configuredId = config.get<string>("projectId", "").trim();
+    const selected = projects.find((project) => project.id === configuredId) ?? projects.find((project) => project.is_default);
+    if (selected && configuredId !== selected.id) {
+      await config.update("projectId", selected.id, vscode.ConfigurationTarget.Workspace);
+    }
+    this.state.projectId = selected?.id ?? null;
+    this.state.projectName = selected?.name ?? null;
+    this.state.projectIsDefault = selected?.is_default ?? false;
   }
 
   async newTask(): Promise<void> {
@@ -133,6 +200,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
       models: [],
       selectedModel: "",
       account: null,
+      projectId: null,
+      projectName: null,
+      projectIsDefault: false,
       transcript: [],
       conversations: this.summaries(),
       activeConversationId: null,
@@ -327,6 +397,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
         case "login":
           await this.connect();
           break;
+        case "deviceLogin":
+          await this.connect();
+          break;
         case "disconnect":
           await this.disconnect();
           break;
@@ -376,6 +449,9 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
           break;
         case "refresh":
           await this.refresh();
+          break;
+        case "chooseProject":
+          await this.chooseProject();
           break;
         case "openConnect":
           this.openPage("connect", message.provider);
@@ -475,6 +551,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
         : models[0].id;
       this.state.connected = true;
       this.state.account = provider === "compass" ? await this.client.account() : null;
+      await this.syncProjectSelection();
       this.ensureAgent();
       const connectionName = provider === "compass" ? "Compass Router" : provider === "ollama" ? "Ollama" : "the OpenAI-compatible provider";
       this.append({ id: `status-${Date.now()}`, role: "status", content: `Connected to ${connectionName}. ${models.length} model${models.length === 1 ? "" : "s"} available.` });
@@ -509,6 +586,7 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
         ? preferredModel
         : models[0]?.id ?? "";
       this.state.account = this.state.provider === "compass" ? await this.client.account() : null;
+      await this.syncProjectSelection();
       this.state.connected = true;
       this.ensureAgent();
     } catch (error) {
@@ -741,6 +819,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("compassCode.disconnect", () => provider.disconnect()),
     vscode.commands.registerCommand("compassCode.newTask", () => provider.newTask()),
     vscode.commands.registerCommand("compassCode.chooseModel", () => provider.chooseModel()),
+    vscode.commands.registerCommand("compassCode.chooseProject", () => provider.chooseProject()),
     vscode.commands.registerCommand("compassCode.restoreCheckpoint", () => provider.restoreCheckpoint()),
     vscode.commands.registerCommand("compassCode.openSettings", () => provider.openPage("settings")),
     vscode.commands.registerCommand("compassCode.openHistory", () => provider.openPage("history")),

@@ -44,6 +44,8 @@ type Dashboard = {
   api_keys: Key[];
   models: ModelOption[];
 };
+type Project = { id: string; name: string; is_default: boolean };
+type TeamMember = { id: string; name: string; email: string; is_active: boolean };
 
 export type KeyManagerProps = {
   dashboard: Dashboard | null;
@@ -54,7 +56,7 @@ export type KeyManagerProps = {
   setKeyName: (name: string) => void;
   oneTimeKey: string;
   dismissKey: () => void;
-  createKey: () => Promise<boolean>;
+  createKey: (options?: { projectId?: string; memberId?: string; expiresAt?: string }) => Promise<boolean>;
   updateKeyModels: (id: string, models: string[]) => Promise<boolean>;
   revokeKeys: (ids: string[]) => Promise<boolean>;
   busy: boolean;
@@ -93,6 +95,11 @@ export function ApiKeyManager(props: KeyManagerProps) {
   const [catalogModels, setCatalogModels] = useState<ModelOption[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [memberId, setMemberId] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
 
   const keys = (props.dashboard?.api_keys ?? []).filter(
     (key) =>
@@ -142,6 +149,23 @@ export function ApiKeyManager(props: KeyManagerProps) {
       active = false;
     };
   }, [editKey, props.selectedTeamId, props.token]);
+
+  useEffect(() => {
+    if (!props.token || !props.selectedTeamId) return;
+    let active = true;
+    void Promise.all([
+      apiFetch<Project[]>("/projects", {}, props.token),
+      apiFetch<TeamMember[]>(`/teams/${props.selectedTeamId}/members`, {}, props.token),
+    ]).then(([projectRows, memberRows]) => {
+      if (!active) return;
+      setProjects(projectRows);
+      setTeamMembers(memberRows.filter((member) => member.is_active));
+      setProjectId((current) => current || projectRows.find((project) => project.is_default)?.id || "");
+    }).catch(() => {
+      if (active) { setProjects([]); setTeamMembers([]); }
+    });
+    return () => { active = false; };
+  }, [props.selectedTeamId, props.token]);
 
   const availableModels = catalogModels.length
     ? catalogModels
@@ -197,7 +221,7 @@ export function ApiKeyManager(props: KeyManagerProps) {
       return;
     }
     setFormError("");
-    if (await props.createKey()) dialog.current?.close();
+    if (await props.createKey({ projectId: projectId || undefined, memberId: memberId || undefined, expiresAt: expiresAt ? new Date(`${expiresAt}T23:59:59`).toISOString() : undefined })) dialog.current?.close();
     else
       setFormError("Key creation failed. See the status message on this page.");
   }
@@ -507,9 +531,26 @@ export function ApiKeyManager(props: KeyManagerProps) {
                 ))}
             </select>
           </label>
+          <label>
+            Project scope
+            <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+              <option value="">No project scope</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.is_default ? " (default)" : ""}</option>)}
+            </select>
+          </label>
+          <label>
+            Assigned member
+            <select value={memberId} onChange={(event) => setMemberId(event.target.value)}>
+              <option value="">Current owner</option>
+              {teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.email}</option>)}
+            </select>
+          </label>
+          <label>
+            Expires on <span className="field-optional">Optional</span>
+            <input type="date" min={new Date().toISOString().slice(0, 10)} value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} />
+          </label>
           <p className="field-help">
-            This key starts with access to all available models. You can
-            restrict it later from the key actions menu.
+            The key is shown once. Project and member scopes are enforced by the API; model access can be restricted after creation.
           </p>
           {formError ? (
             <p className="dialog-error" role="alert">

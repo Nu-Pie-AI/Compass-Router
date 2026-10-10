@@ -8,7 +8,13 @@ const isProtectedRoute = createRouteMatcher([
 ]);
 
 const clerkHandler = clerkMiddleware(async (auth, request) => {
-  if (isProtectedRoute(request)) await auth.protect();
+  if (!isProtectedRoute(request)) return;
+  const { isAuthenticated } = await auth();
+  if (isAuthenticated) return;
+
+  const loginUrl = new URL("/login", request.url);
+  loginUrl.searchParams.set("callbackUrl", `${request.nextUrl.pathname}${request.nextUrl.search}`);
+  return NextResponse.redirect(loginUrl);
 });
 
 export default async function proxy(request: NextRequest, event: NextFetchEvent) {
