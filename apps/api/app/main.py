@@ -252,7 +252,8 @@ def admin_user(request: Request, user: User = Depends(current_user), db: Session
 def organization_admin(user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
     if is_admin(user):
         return user
-    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"])))
+    organization_id = organization_id_for_user(db, user.id)
+    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]))) if organization_id else None
     if membership is None:
         raise compass_error(403, "organization_admin_required", "Organization owner or administrator access is required.")
     return user

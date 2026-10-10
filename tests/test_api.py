@@ -232,14 +232,15 @@ def test_organization_provider_analytics_is_scoped_to_owner_membership():
         owner = db.query(User).filter(User.email == owner_email).one()
         member = db.query(User).filter(User.email == member_email).one()
         organization_id = db.query(OrganizationMember.organization_id).filter(OrganizationMember.user_id == owner.id, OrganizationMember.role == "owner").scalar()
+        separate_membership = db.query(OrganizationMember).filter(OrganizationMember.user_id == member.id, OrganizationMember.role == "owner").one()
+        separate_membership.role = "removed"
         db.add(OrganizationMember(user_id=member.id, organization_id=organization_id, role="customer"))
         db.commit()
     finally:
         db.close()
     member_headers = {"Authorization": f"Bearer {member_signup.json()['token']}"}
-    scoped = client.get("/organization/analytics/providers", headers=member_headers)
-    assert scoped.status_code == 200, scoped.text
-    assert scoped.json()["items"] == []
+    denied = client.get("/organization/analytics/providers", headers=member_headers)
+    assert denied.status_code == 403
 
 
 def test_organization_admin_can_assign_and_audit_scoped_api_key():
