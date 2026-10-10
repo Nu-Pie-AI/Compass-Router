@@ -183,10 +183,11 @@ def test_m9_wallet_adjustment_is_atomic_and_idempotent():
 
 def test_m9_settings_are_server_validated_and_audited():
     headers = admin_headers()
-    updated = client.patch("/admin/settings", json={"values": {"maintenance_mode": True, "platform_announcement": "Planned maintenance"}}, headers=headers)
+    updated = client.patch("/admin/settings", json={"values": {"maintenance_mode": True, "platform_announcement": "Planned maintenance", "trial_credit_eligible_domains": ["example.com"]}}, headers=headers)
     assert updated.status_code == 200, updated.text
     values = {row["key"]: row["value"] for row in updated.json()["items"]}
     assert values["maintenance_mode"] is True
+    assert values["trial_credit_eligible_domains"] == ["example.com"]
     invalid = client.patch("/admin/settings", json={"values": {"DATABASE_URL": "not allowed"}}, headers=headers)
     assert invalid.status_code == 400
     db = TestingSessionLocal()
