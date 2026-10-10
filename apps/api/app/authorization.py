@@ -86,8 +86,20 @@ def require_team_access(db: Session, user: User, team_id: str) -> None:
 
 
 def require_team_owner(db: Session, user: User, team_id: str) -> None:
-    if team_id not in team_owner_ids_for_user(db, user):
-        raise compass_error(403, "team_owner_required", "A team owner or administrator is required.")
+    if team_id in team_owner_ids_for_user(db, user):
+        return
+    team = db.get(Team, team_id)
+    if team is not None and team.organization_id:
+        organization_admin = db.scalar(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == team.organization_id,
+                OrganizationMember.user_id == user.id,
+                OrganizationMember.role.in_(["owner", "admin"]),
+            )
+        )
+        if organization_admin is not None:
+            return
+    raise compass_error(403, "team_owner_required", "A team owner or organization administrator is required.")
 
 
 def require_project_access(db: Session, user: User, project_id: str, write: bool = False) -> Project:

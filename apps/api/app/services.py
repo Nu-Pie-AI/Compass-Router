@@ -3606,7 +3606,7 @@ def enforce_model_policy(db: Session, api_key: ApiKey, model_id: str, estimated_
             raise compass_error(429, "model_monthly_spend_limit_exceeded", "Model monthly spending limit exceeded for this team.")
 
 
-def list_api_keys(db: Session, team_id: str | None = None, team_ids: list[str] | None = None, user_id: str | None = None) -> list[dict]:
+def list_api_keys(db: Session, team_id: str | None = None, team_ids: list[str] | None = None, user_id: str | None = None, organization_ids: list[str] | None = None) -> list[dict]:
     if team_ids is not None and not team_ids:
         return []
     stmt = select(ApiKey).order_by(ApiKey.created_at.desc())
@@ -3616,6 +3616,10 @@ def list_api_keys(db: Session, team_id: str | None = None, team_ids: list[str] |
         stmt = stmt.where(ApiKey.team_id.in_(team_ids))
     if user_id:
         stmt = stmt.where(ApiKey.user_id == user_id)
+    if organization_ids is not None:
+        if not organization_ids:
+            return []
+        stmt = stmt.where(ApiKey.organization_id.in_(organization_ids))
     keys = db.scalars(stmt).all()
     if not keys:
         return []

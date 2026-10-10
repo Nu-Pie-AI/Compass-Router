@@ -252,8 +252,7 @@ def admin_user(request: Request, user: User = Depends(current_user), db: Session
 def organization_admin(user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
     if is_admin(user):
         return user
-    organization_id = organization_id_for_user(db, user.id)
-    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]))) if organization_id else None
+    membership = db.scalar(select(OrganizationMember).where(OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"])))
     if membership is None:
         raise compass_error(403, "organization_admin_required", "Organization owner or administrator access is required.")
     return user
@@ -929,13 +928,19 @@ def create_key(body: ApiKeyCreate, user: User = Depends(current_user), db: Sessi
         if member is None:
             raise compass_error(403, "team_membership_required", "An active team membership is required.")
         member_id = member.id
-    return create_api_key(db, user.id, body.team_id, member_id, body.name, body.allowed_models, body.expires_at, body.project_id)
+    result = create_api_key(db, user.id, body.team_id, member_id, body.name, body.allowed_models, body.expires_at, body.project_id)
+    record_audit_log(db, user, "api_key.created", f"api_key:{result['id']}", {"team_id": body.team_id, "project_id": result.get("project_id"), "member_id": member_id, "expires_at": body.expires_at.isoformat() if body.expires_at else None})
+    db.commit()
+    return result
 
 
 @app.get("/api-keys")
 def list_keys(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
     if is_admin(user):
         return list_api_keys(db)
+    organization_ids = list(db.scalars(select(OrganizationMember.organization_id).where(OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]))).all())
+    if organization_ids:
+        return list_api_keys(db, organization_ids=organization_ids)
     visible = list_api_keys(db, team_ids=team_ids_for_user(db, user), user_id=user.id)
     owned = list_api_keys(db, team_ids=team_owner_ids_for_user(db, user))
     return list({row["id"]: row for row in visible + owned}.values())
@@ -951,9 +956,8 @@ def revoke_key(api_key_id: str, user: User = Depends(current_user), db: Session 
             raise compass_error(403, "api_key_access_denied", "You cannot revoke this API key.")
         require_team_owner(db, user, key_record.team_id)
     key = revoke_api_key(db, api_key_id)
-    if is_admin(user):
-        record_audit_log(db, user, "api_key.revoked", f"api_key:{key.id}", {"team_id": key.team_id, "key_id": key.key_id})
-        db.commit()
+    record_audit_log(db, user, "api_key.revoked", f"api_key:{key.id}", {"team_id": key.team_id, "key_id": key.key_id, "member_id": key.member_id})
+    db.commit()
     return {"id": key.id, "status": key.status, "revoked_at": key.revoked_at.isoformat() if key.revoked_at else None}
 
 
@@ -2174,10 +2178,11 @@ def _provider_analytics_rows(db: Session, filters: list) -> dict:
 
 @app.get("/organization/analytics/providers")
 def organization_provider_analytics(date_from: str | None = None, date_to: str | None = None, provider: str | None = None, model: str | None = None, project_id: str | None = None, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
-    organization_id = organization_id_for_user(db, actor.id)
-    if not organization_id:
+    organization_ids = list(db.scalars(select(OrganizationMember.organization_id).where(OrganizationMember.user_id == actor.id, OrganizationMember.role.in_(["owner", "admin"]))).all())
+    if not organization_ids:
         raise compass_error(403, "organization_not_found", "An organization is required for workspace analytics.")
-    filters = _admin_request_filters(date_from, date_to, provider, model, organization_id, project_id)
+    filters = _admin_request_filters(date_from, date_to, provider, model, None, project_id)
+    filters.append(LlmRequest.organization_id.in_(organization_ids))
     return _provider_analytics_rows(db, filters)
 
 

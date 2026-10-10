@@ -323,10 +323,23 @@ No Clerk secret values were printed or committed.
 | VS Code project scope UI | PASS; extension typecheck, build, and tests passed after selector/state changes |
 | Super Admin provider analytics authorization and aggregation | PASS; customer denied and admin metadata aggregation returned successfully |
 | Scoped API-key creation UI | PASS; web production build and typecheck passed with project/member/expiry fields |
-| Full API suite | PASS; `pytest -q tests/test_api.py`, 80 passed, 1 existing Pydantic deprecation warning |
+| Full API suite | PASS; `pytest -q tests/test_api.py`, 81 passed, 1 existing Pydantic deprecation warning |
 | Razorpay sandbox | BLOCKED; external sandbox credentials and approval required |
 | Super Admin provider analytics UI | PASS; web typecheck and production build passed with the aggregation rendered in Operations |
 | Signup-credit expiration safety review | BLOCKED BY DESIGN; current aggregate wallet cannot safely distinguish promotional balance from purchased Credits |
 | VS Code browser/device authorization wiring | PASS; extension typecheck, 10 unit tests, and production bundle passed; live browser approval remains unverified |
 | Organization provider analytics scope | PASS; owner access and regular-member denial verified, with date/provider/model/project/member/API-key dimensions |
 | Customer-facing Credits terminology | PASS; web typecheck and production build passed after replacing active Wallet labels while retaining compatibility identifiers |
+
+## Organization administration hardening - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Multi-organization owner/admin API-key listing | PASS; keys are restricted to organizations where the actor is owner/admin |
+| Multi-organization provider analytics scope | PASS; analytics excludes organizations where the actor is only a regular member |
+| API-key creation/revocation audit metadata | PASS; focused audit regression passed |
+| Focused authorization regression | PASS; 4 tests passed |
+| Full API suite after hardening | PASS; 81 passed, 1 existing Pydantic deprecation warning |
+| Python compile check | PASS |
+| Web typecheck | PASS |
+| Web production build | PASS |

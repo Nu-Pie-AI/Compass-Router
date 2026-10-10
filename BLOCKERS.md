@@ -134,3 +134,9 @@ M4 implementation blockers:
 - Razorpay sandbox verification remains blocked by external sandbox credentials and approval; no live or simulated payment was run.
 - The full API pytest file now passes locally: 80 passed with one existing Pydantic deprecation warning. PostgreSQL/Redis concurrency and live infrastructure verification remain external staging gates.
 - Promotional credit expiration cannot be enabled safely with the current aggregate wallet balance. Add credit-lot/allocation semantics before implementing expiry, so purchased Credits cannot be clawed back accidentally.
+
+## Organization administration hardening - 2026-10-11
+
+- No new implementation blocker. Multi-organization owner/admin API-key and provider-analytics scope is now covered by automated tests.
+- Live tenant-isolation and performance verification against the staging PostgreSQL runtime remains an external staging gate.
+- Existing Clerk, SMTP, Razorpay sandbox, Redis/Neon runtime, Cloud Run, and deployment-approval blockers remain unchanged.

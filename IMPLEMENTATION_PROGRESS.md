@@ -496,7 +496,7 @@ M9 external/live gates:
 - The VS Code extension now reaches the existing browser/device authorization flow: it opens the verified Compass authorization page, polls the short-lived device code, stores the returned device session in VS Code SecretStorage, and preserves manual API-key connection for compatibility.
 - Added organization-scoped provider analytics with date, provider, model, project, member/user, API-key, credential mode, token, upstream-cost, Compass-Credit, and failure dimensions. Organization owners/admins are scoped by server-side organization membership; regular members are denied.
 - Completed the active customer-facing terminology sweep: Credits is used in dashboard, billing, team, marketing, pricing, and Super Admin copy; internal `wallet_*` persistence/API names and the compatibility route remain unchanged.
-- Full backend API regression now passes locally: 80 tests passed with one existing Pydantic deprecation warning.
+- Full backend API regression now passes locally: 81 tests passed with one existing Pydantic deprecation warning.
 - Promotional credit expiration remains intentionally unimplemented: the current aggregate wallet cannot identify whether a later debit consumed promotional or purchased Credits. A future ledger design must model credit lots or equivalent allocation before expiration is enabled.
 
 ## Neon staging verification - 2026-10-09
@@ -508,6 +508,13 @@ Status: VERIFIED FOR DATABASE-ONLY STAGING CHECKS; DEPLOYMENT STILL BLOCKED
 - The initial migration had placed the 44 application tables in `public` while the runtime expects `compass`. Added a scoped forward migration that moves only the known Compass application tables into `compass`.
 - Re-ran `python infra/verify_neon_staging.py`: PASS. Alembic state, pooled/direct routing, TLS, and empty protected customer/financial tables are verified.
 - No production branch, production service, payment credential, wallet record, or deployment was changed.
+
+## Organization administration hardening - 2026-10-11
+
+- Organization owners and administrators can now manage API keys across every organization where they hold an owner/admin membership; ordinary members remain excluded.
+- Organization provider analytics now aggregates only those owner/admin organizations, avoiding first-organization selection errors for multi-organization users.
+- Customer API-key creation and revocation now write audit records with team, project, member, and expiry scope metadata.
+- Focused authorization/audit tests and the full API suite pass; no production service, database, payment, or extension artifact was changed.
 ## M10 - Redis integration and staging verification - 2026-10-09
 
 Status: LIVE STAGING REDIS VERIFICATION COMPLETE; CLOUD RUN DEPLOYMENT STILL BLOCKED

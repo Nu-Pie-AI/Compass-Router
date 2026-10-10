@@ -28,7 +28,7 @@ from app.db import Base, get_db  # noqa: E402
 from app.config import Settings, validate_runtime_config  # noqa: E402
 from app.errors import compass_error  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import ApiKey, ApiKeyModel, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
+from app.models import ApiKey, ApiKeyModel, AuditLog, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
 from app.security import encrypt_secret, hash_api_key, hash_password  # noqa: E402
 from app.recovery import recover_stale_llm_reservations  # noqa: E402
 from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
@@ -237,8 +237,46 @@ def test_organization_provider_analytics_is_scoped_to_owner_membership():
     finally:
         db.close()
     member_headers = {"Authorization": f"Bearer {member_signup.json()['token']}"}
-    denied = client.get("/organization/analytics/providers", headers=member_headers)
-    assert denied.status_code == 403
+    scoped = client.get("/organization/analytics/providers", headers=member_headers)
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["items"] == []
+
+
+def test_organization_admin_can_assign_and_audit_scoped_api_key():
+    owner_email = f"key-org-owner-{time.time_ns()}@example.com"
+    owner_signup = client.post("/auth/signup", json={"email": owner_email, "password": "KeyOrgOwner123!", "organization_name": "Key Org Workspace"})
+    assert owner_signup.status_code == 200, owner_signup.text
+    owner_headers = {"Authorization": f"Bearer {owner_signup.json()['token']}"}
+    team = client.post("/teams", json={"name": "Key Team", "slug": f"key-team-{time.time_ns()}"}, headers=owner_headers)
+    assert team.status_code == 200, team.text
+    member_email = f"key-org-admin-{time.time_ns()}@example.com"
+    member_signup = client.post("/auth/signup", json={"email": member_email, "password": "KeyOrgAdmin123!", "organization_name": "Separate Workspace"})
+    assert member_signup.status_code == 200, member_signup.text
+    db = TestingSessionLocal()
+    try:
+        owner = db.query(User).filter(User.email == owner_email).one()
+        member = db.query(User).filter(User.email == member_email).one()
+        organization_id = db.query(OrganizationMember.organization_id).filter(OrganizationMember.user_id == owner.id, OrganizationMember.role == "owner").scalar()
+        db.add(OrganizationMember(user_id=member.id, organization_id=organization_id, role="admin"))
+        team_member = TeamMember(team_id=team.json()["id"], user_id=member.id, name="Organization Admin", email=member_email, role="developer")
+        db.add(team_member)
+        db.commit()
+        team_member_id = team_member.id
+    finally:
+        db.close()
+    member_headers = {"Authorization": f"Bearer {member_signup.json()['token']}"}
+    created = client.post("/api-keys", json={"name": "Org-admin assigned key", "team_id": team.json()["id"], "member_id": team_member_id, "expires_at": "2030-01-01T00:00:00Z"}, headers=member_headers)
+    assert created.status_code == 200, created.text
+    assert created.json()["project_id"]
+    listed = client.get("/api-keys", headers=member_headers)
+    assert listed.status_code == 200 and any(row["id"] == created.json()["id"] for row in listed.json())
+    revoked = client.post(f"/api-keys/{created.json()['id']}/revoke", headers=member_headers)
+    assert revoked.status_code == 200
+    db = TestingSessionLocal()
+    try:
+        assert db.query(AuditLog).filter(AuditLog.action == "api_key.revoked", AuditLog.target == f"api_key:{created.json()['id']}").count() == 1
+    finally:
+        db.close()
 
 
 def test_production_configuration_rejects_development_defaults():
