@@ -409,6 +409,7 @@ No Clerk secret values were printed or committed.
 | Check | Result |
 |---|---|
 | Optional domain allowlist validation | PASS; Super Admin setting accepts bounded non-empty domain lists |
+| Super Admin settings endpoint persistence/audit | PASS; `/admin/settings` accepts and persists the eligibility setting |
 | Eligible-domain signup grant | PASS |
 | Ineligible-domain signup grant suppression | PASS; wallet remains zero |
 | Existing signup idempotency regression | PASS |
