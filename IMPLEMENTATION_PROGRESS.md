@@ -541,3 +541,9 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Real Clerk browser signup/login/logout, MFA claims, session revocation, webhook delivery, staging Secret Manager, and Cloud Run verification remain open external gates.
 - No production service, production Clerk instance, production database, original repository, or VS Code extension was modified.
 - Neon remains the financial authority; no wallet or database schema changes were made.
+
+## Extension session logout hardening - 2026-10-11
+
+- Added an authenticated device-session revoke endpoint for VS Code.
+- Extension sign-out now attempts server-side device-session/API-key revocation before deleting the local SecretStorage token, while remaining usable during network failure.
+- Added regression coverage proving a locally revoked device token cannot call the Router afterward; admin-wide session revocation remains compatible and idempotent.

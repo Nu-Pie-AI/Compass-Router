@@ -132,7 +132,7 @@ M4 implementation blockers:
 - Signup-credit expiration/eligibility policy is still not modeled in the ledger; the current configurable grant is one-time and idempotent with no expiry.
 - Invitation emails include secure onboarding and extension instructions; SMTP delivery remains dependent on verified staging SMTP configuration.
 - Razorpay sandbox verification remains blocked by external sandbox credentials and approval; no live or simulated payment was run.
-- The full API pytest file now passes locally: 80 passed with one existing Pydantic deprecation warning. PostgreSQL/Redis concurrency and live infrastructure verification remain external staging gates.
+- The full API pytest file now passes locally: 81 passed with one existing Pydantic deprecation warning. PostgreSQL/Redis concurrency and live infrastructure verification remain external staging gates.
 - Promotional credit expiration cannot be enabled safely with the current aggregate wallet balance. Add credit-lot/allocation semantics before implementing expiry, so purchased Credits cannot be clawed back accidentally.
 
 ## Organization administration hardening - 2026-10-11
@@ -140,3 +140,8 @@ M4 implementation blockers:
 - No new implementation blocker. Multi-organization owner/admin API-key and provider-analytics scope is now covered by automated tests.
 - Live tenant-isolation and performance verification against the staging PostgreSQL runtime remains an external staging gate.
 - Existing Clerk, SMTP, Razorpay sandbox, Redis/Neon runtime, Cloud Run, and deployment-approval blockers remain unchanged.
+
+## Extension session logout hardening - 2026-10-11
+
+- Server-side device-session/API-key revocation is implemented and locally tested.
+- Live browser/device authorization, logout, refresh/expiry, and revocation behavior still require staging Clerk and extension verification.

@@ -338,6 +338,22 @@ def revoke_extension_sessions_for_user(db: Session, user_id: str, organization_i
         db.query(ExtensionDevice).filter(ExtensionDevice.id.in_(device_ids)).update({ExtensionDevice.status: "revoked"}, synchronize_session=False)
 
 
+def revoke_extension_session(db: Session, session_id: str) -> bool:
+    session = db.get(ExtensionSession, session_id)
+    if session is None or session.revoked_at is not None:
+        return False
+    session.revoked_at = now()
+    device = db.get(ExtensionDevice, session.device_id)
+    if device is not None:
+        device.status = "revoked"
+    api_key = db.get(ApiKey, session.api_key_id)
+    if api_key is not None and api_key.status == "active":
+        api_key.status = "revoked"
+        api_key.revoked_at = now()
+    db.commit()
+    return True
+
+
 def register_customer(db: Session, email: str, password: str, organization_name: str) -> tuple[User, Organization, Team]:
     normalized_email = email.strip().lower()
     workspace_name = organization_name.strip()

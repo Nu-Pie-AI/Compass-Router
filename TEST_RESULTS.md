@@ -343,3 +343,15 @@ No Clerk secret values were printed or committed.
 | Python compile check | PASS |
 | Web typecheck | PASS |
 | Web production build | PASS |
+
+## Extension session logout hardening - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Device-session revoke endpoint | PASS; device token is rejected immediately after local sign-out request |
+| Admin session revocation compatibility | PASS; existing admin revocation remains safe after device logout |
+| Full API suite | PASS; 81 passed, 1 existing Pydantic deprecation warning |
+| Extension typecheck | PASS |
+| Extension unit tests | PASS; 10 passed |
+| Extension production build | PASS |
+| Live browser/device logout and token revocation | NOT RUN; requires staging Clerk/browser verification |

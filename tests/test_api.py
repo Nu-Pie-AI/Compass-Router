@@ -1853,6 +1853,11 @@ def test_vscode_device_authorization_scopes_project_and_revokes_with_admin_sessi
     request = db.query(LlmRequest).filter(LlmRequest.api_key_id == account.json()["api_key"]["id"]).order_by(LlmRequest.created_at.desc()).first()
     assert request is not None and request.project_id == project.json()["id"] and request.device_session_id
     db.close()
+    local_revoked = client.post("/auth/extension/session/revoke", headers={"Authorization": f"Bearer {device_token}"})
+    assert local_revoked.status_code == 200, local_revoked.text
+    assert local_revoked.json()["status"] == "revoked"
+    assert client.get("/v1/account", headers={"Authorization": f"Bearer {device_token}"}).status_code == 401
+    # Admin revocation remains idempotent after a device has signed out.
     revoked = client.post(f"/admin/users/{signup.json()['user_id']}/revoke-sessions", headers=admin_headers())
     assert revoked.status_code == 200, revoked.text
     assert client.get("/v1/account", headers={"Authorization": f"Bearer {device_token}"}).status_code == 401

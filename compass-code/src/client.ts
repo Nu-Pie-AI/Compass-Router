@@ -61,6 +61,14 @@ export class CompassClient implements ModelProvider {
   }
 
   async disconnect(): Promise<void> {
+    const apiKey = await this.context.secrets.get(secretKey);
+    if (apiKey?.startsWith("cmp_device_")) {
+      try {
+        await this.request<{ status: string }>("/auth/extension/session/revoke", { method: "POST" });
+      } catch {
+        // Local sign-out must still succeed when the server is unreachable.
+      }
+    }
     await this.context.secrets.delete(secretKey);
     await this.context.globalState.update(ollamaEnabledKey, false);
   }
