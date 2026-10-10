@@ -29,7 +29,7 @@ type Model = { id: string; display_name: string; provider: string; status: strin
 type Wallet = { id: string; team_id?: string | null; organization_id?: string | null; currency: string; available_balance_paise: number; reserved_balance_paise: number; status: string; updated_at: string };
 type Audit = { id: string; actor_user_id?: string | null; action: string; target: string; request_id?: string | null; metadata: Record<string, unknown>; created_at: string };
 type RequestRow = { id: string; timestamp: string; organization_id?: string | null; project_id?: string | null; model: string; provider: string; credential_mode?: string; status: string; latency_ms: number; total_tokens: number; provider_cost_paise: number; customer_charge_paise: number; failure_category?: string | null };
-type ProviderAnalytics = { provider: string; model: string; organization_id?: string | null; project_id?: string | null; credential_mode: string; requests: number; input_tokens: number; output_tokens: number; provider_cost_paise: number; customer_charge_paise: number; failed_requests: number };
+type ProviderAnalytics = { provider: string; model: string; organization_id?: string | null; project_id?: string | null; credential_mode: string; usage_finality?: string; requests: number; input_tokens: number; output_tokens: number; provider_cost_paise: number; customer_charge_paise: number; failed_requests: number };
 type RoleAssignment = { id: string; user_id: string; email?: string | null; role: string; status: string; reason: string; created_at: string };
 type Setting = { key: string; value: unknown; updated_at: string };
 

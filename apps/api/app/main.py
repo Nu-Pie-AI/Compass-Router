@@ -2196,15 +2196,16 @@ def _provider_analytics_rows(db: Session, filters: list) -> dict:
             LlmRequest.member_id,
             LlmRequest.api_key_id,
             LlmRequest.credential_mode,
+            LlmRequest.usage_source,
             func.count(LlmRequest.id),
             func.coalesce(func.sum(LlmRequest.input_tokens), 0),
             func.coalesce(func.sum(LlmRequest.output_tokens), 0),
             func.coalesce(func.sum(LlmRequest.provider_cost_paise), 0),
             func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0),
             func.sum(func.cast(LlmRequest.status == "error", Integer)),
-        ).where(*filters).group_by(period, LlmRequest.provider, LlmRequest.resolved_model, LlmRequest.organization_id, LlmRequest.project_id, LlmRequest.user_id, LlmRequest.member_id, LlmRequest.api_key_id, LlmRequest.credential_mode).order_by(func.count(LlmRequest.id).desc())
+        ).where(*filters).group_by(period, LlmRequest.provider, LlmRequest.resolved_model, LlmRequest.organization_id, LlmRequest.project_id, LlmRequest.user_id, LlmRequest.member_id, LlmRequest.api_key_id, LlmRequest.credential_mode, LlmRequest.usage_source).order_by(func.count(LlmRequest.id).desc())
     ).all()
-    return {"items": [{"period": str(row[0]) if row[0] is not None else None, "provider": row[1], "model": row[2], "organization_id": row[3], "project_id": row[4], "user_id": row[5], "member_id": row[6], "api_key_id": row[7], "credential_mode": row[8], "requests": int(row[9] or 0), "input_tokens": int(row[10] or 0), "output_tokens": int(row[11] or 0), "provider_cost_paise": int(row[12] or 0), "customer_charge_paise": int(row[13] or 0), "failed_requests": int(row[14] or 0)} for row in rows], "total": len(rows), "content_policy": "Metadata only; prompt and response content is not retained."}
+    return {"items": [{"period": str(row[0]) if row[0] is not None else None, "provider": row[1], "model": row[2], "organization_id": row[3], "project_id": row[4], "user_id": row[5], "member_id": row[6], "api_key_id": row[7], "credential_mode": row[8], "usage_source": row[9], "usage_finality": "finalized" if row[9] == "provider" else "estimated" if row[9] == "estimate" else "unavailable", "requests": int(row[10] or 0), "input_tokens": int(row[11] or 0), "output_tokens": int(row[12] or 0), "provider_cost_paise": int(row[13] or 0), "customer_charge_paise": int(row[14] or 0), "failed_requests": int(row[15] or 0)} for row in rows], "total": len(rows), "content_policy": "Metadata only; prompt and response content is not retained."}
 
 
 @app.get("/organization/analytics/providers")

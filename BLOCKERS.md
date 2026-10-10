@@ -132,7 +132,7 @@ M4 implementation blockers:
 - Signup-credit expiration/eligibility policy is still not modeled in the ledger; the current configurable grant is one-time and idempotent with no expiry.
 - Invitation emails include secure onboarding and extension instructions; SMTP delivery remains dependent on verified staging SMTP configuration.
 - Razorpay sandbox verification remains blocked by external sandbox credentials and approval; no live or simulated payment was run.
-- The full API pytest file now passes locally: 83 passed with one existing Pydantic deprecation warning. PostgreSQL/Redis concurrency and live infrastructure verification remain external staging gates.
+- The full API pytest file now passes locally: 84 passed with one existing Pydantic deprecation warning. PostgreSQL/Redis concurrency and live infrastructure verification remain external staging gates.
 - Promotional credit expiration cannot be enabled safely with the current aggregate wallet balance. Add credit-lot/allocation semantics before implementing expiry, so purchased Credits cannot be clawed back accidentally.
 
 ## Organization administration hardening - 2026-10-11

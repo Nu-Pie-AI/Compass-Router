@@ -215,6 +215,18 @@ def test_admin_provider_analytics_is_permission_gated_and_tenant_aware():
     assert {"items", "total", "content_policy"}.issubset(response.json())
 
 
+def test_provider_analytics_exposes_usage_finality(monkeypatch):
+    monkeypatch.setattr(LiteLLMClient, "chat_completion", fake_provider)
+    headers, team, _, key = provision_beta_key()
+    response = chat(key, content="analytics finality")
+    assert response.status_code == 200, response.text
+    analytics = client.get("/admin/analytics/providers", headers=admin_headers())
+    assert analytics.status_code == 200, analytics.text
+    items = analytics.json()["items"]
+    assert items
+    assert all(item["usage_finality"] == ("finalized" if item["usage_source"] == "provider" else "estimated" if item["usage_source"] == "estimate" else "unavailable") for item in items)
+
+
 def test_organization_provider_analytics_is_scoped_to_owner_membership():
     owner_email = f"org-analytics-owner-{time.time_ns()}@example.com"
     owner_signup = client.post("/auth/signup", json={"email": owner_email, "password": "OrgAnalytics123!", "organization_name": "Org Analytics Workspace"})

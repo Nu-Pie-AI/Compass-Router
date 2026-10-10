@@ -323,7 +323,7 @@ No Clerk secret values were printed or committed.
 | VS Code project scope UI | PASS; extension typecheck, build, and tests passed after selector/state changes |
 | Super Admin provider analytics authorization and aggregation | PASS; customer denied and admin metadata aggregation returned successfully |
 | Scoped API-key creation UI | PASS; web production build and typecheck passed with project/member/expiry fields |
-| Full API suite | PASS; `pytest -q tests/test_api.py`, 83 passed, 1 existing Pydantic deprecation warning |
+| Full API suite | PASS; `pytest -q tests/test_api.py`, 84 passed, 1 existing Pydantic deprecation warning |
 | Razorpay sandbox | BLOCKED; external sandbox credentials and approval required |
 | Super Admin provider analytics UI | PASS; web typecheck and production build passed with the aggregation rendered in Operations |
 | Signup-credit expiration safety review | BLOCKED BY DESIGN; current aggregate wallet cannot safely distinguish promotional balance from purchased Credits |
@@ -339,7 +339,7 @@ No Clerk secret values were printed or committed.
 | Multi-organization provider analytics scope | PASS; analytics excludes organizations where the actor is only a regular member |
 | API-key creation/revocation audit metadata | PASS; focused audit regression passed |
 | Focused authorization regression | PASS; 4 tests passed |
-| Full API suite after hardening | PASS; 83 passed, 1 existing Pydantic deprecation warning |
+| Full API suite after hardening | PASS; 84 passed, 1 existing Pydantic deprecation warning |
 | Python compile check | PASS |
 | Web typecheck | PASS |
 | Web production build | PASS |
@@ -350,7 +350,7 @@ No Clerk secret values were printed or committed.
 |---|---|
 | Device-session revoke endpoint | PASS; device token is rejected immediately after local sign-out request |
 | Admin session revocation compatibility | PASS; existing admin revocation remains safe after device logout |
-| Full API suite | PASS; 83 passed, 1 existing Pydantic deprecation warning |
+| Full API suite | PASS; 84 passed, 1 existing Pydantic deprecation warning |
 | Extension typecheck | PASS |
 | Extension unit tests | PASS; 10 passed |
 | Extension production build | PASS |
@@ -362,7 +362,7 @@ No Clerk secret values were printed or committed.
 |---|---|
 | Invitation creation/acceptance/removal audit history | PASS; invitation regression verifies all three events |
 | Project/team membership audit paths | PASS; code paths write organization-scoped metadata without credentials |
-| Full API suite after audit changes | PASS; 83 passed, 1 existing Pydantic deprecation warning |
+| Full API suite after audit changes | PASS; 84 passed, 1 existing Pydantic deprecation warning |
 | Python compile check | PASS |
 
 ## Onboarding email guidance - 2026-10-11
@@ -372,7 +372,7 @@ No Clerk secret values were printed or committed.
 | Invitation email OTP and login guidance | PASS |
 | VS Code browser sign-in and project selection guidance | PASS |
 | No-secret email wording | PASS; provider credentials and API keys are explicitly excluded |
-| Full API suite after email changes | PASS; 83 passed, 1 existing Pydantic deprecation warning |
+| Full API suite after email changes | PASS; 84 passed, 1 existing Pydantic deprecation warning |
 
 ## Default project governance - 2026-10-11
 
@@ -380,7 +380,16 @@ No Clerk secret values were printed or committed.
 |---|---|
 | Regular project-admin rename of default `Others` | PASS; denied with `default_project_admin_required` |
 | Organization owner rename of default project | PASS |
-| Full API suite after project-governance change | PASS; 83 passed, 1 existing Pydantic deprecation warning |
+| Full API suite after project-governance change | PASS; 84 passed, 1 existing Pydantic deprecation warning |
+
+## Usage finality analytics - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Provider analytics usage-source grouping | PASS; aggregates expose provider source without changing charges |
+| Estimated/finalized/unavailable classification | PASS; derived from recorded usage source |
+| Admin analytics regression | PASS; all rows expose consistent usage finality |
+| Full API suite after analytics change | PASS; 84 passed, 1 existing Pydantic deprecation warning |
 
 ## Razorpay refund webhook coverage - 2026-10-11
 

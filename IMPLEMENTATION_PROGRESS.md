@@ -567,3 +567,8 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - The server now restricts renaming the organization default `Others` project to organization owners/admins; ordinary project-admin memberships cannot change the fallback label.
 - Added cross-role regression coverage for the denied member path and authorized owner path.
+
+## Usage finality analytics - 2026-10-11
+
+- Provider and organization analytics now group by recorded `usage_source` and expose `usage_finality` as finalized, estimated, or unavailable.
+- Added regression coverage for the classification while keeping provider cost and Compass Credit charge fields separate.
