@@ -637,6 +637,7 @@ def remove_organization_member(user_id: str, actor: User = Depends(organization_
         TeamMember.team_id.in_(team_ids),
         or_(TeamMember.user_id == user_id, and_(TeamMember.user_id.is_(None), func.lower(TeamMember.email) == member_user.email.lower())),
     ).update({TeamMember.is_active: False}, synchronize_session=False)
+    record_audit_log(db, actor, "organization.member_removed", f"user:{user_id}", {"organization_id": organization_id, "email": member_user.email})
     db.commit()
     return {"user_id": user_id, "status": "removed"}
 
@@ -649,7 +650,9 @@ def update_organization_member(user_id: str, body: OrganizationMemberUpdate, act
         raise compass_error(404, "member_not_found", "Organization member not found.")
     if membership.role == "owner":
         raise compass_error(400, "owner_required", "The organization owner role cannot be changed here.")
+    previous_role = membership.role
     membership.role = body.role
+    record_audit_log(db, actor, "organization.member_role_updated", f"user:{user_id}", {"organization_id": organization_id, "from": previous_role, "to": body.role})
     db.commit()
     return {"user_id": user_id, "role": membership.role, "status": "active"}
 
@@ -680,6 +683,7 @@ def assign_project_member(project_id: str, user_id: str, body: ProjectMemberUpda
     else:
         membership.role = body.role
         membership.status = "active"
+    record_audit_log(db, actor, "project.member_assigned", f"project:{project_id}", {"organization_id": organization_id, "user_id": user_id, "role": membership.role})
     db.commit()
     return {"project_id": project_id, "user_id": user_id, "role": membership.role, "status": membership.status}
 
@@ -696,6 +700,7 @@ def remove_project_member(project_id: str, user_id: str, actor: User = Depends(o
     if membership.role == "owner":
         raise compass_error(400, "owner_required", "The project owner cannot be removed here.")
     membership.status = "removed"
+    record_audit_log(db, actor, "project.member_removed", f"project:{project_id}", {"organization_id": organization_id, "user_id": user_id})
     db.commit()
     return {"project_id": project_id, "user_id": user_id, "status": "removed"}
 
@@ -704,6 +709,8 @@ def remove_project_member(project_id: str, user_id: str, actor: User = Depends(o
 def invite_organization_member(body: InvitationCreate, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
     project = require_project_access(db, actor, body.project_id, write=True)
     invitation, token = create_invitation(db, actor, project, body.email, body.role, body.team_id)
+    record_audit_log(db, actor, "organization.invitation_created", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role})
+    db.commit()
     return {"id": invitation.id, "email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role, "status": invitation.status, "expires_at": invitation.expires_at.isoformat(), "accept_token": token}
 
 
@@ -789,6 +796,7 @@ def accept_invitation(token: str, body: InvitationOtpVerify, db: Session = Depen
             team_member.is_active = True
     invitation.status = "accepted"
     invitation.accepted_at = now()
+    record_audit_log(db, user, "organization.invitation_accepted", f"invitation:{invitation.id}", {"organization_id": invitation.organization_id, "project_id": invitation.project_id, "email": invitation.email})
     db.commit()
     return _session_response(db, user)
 
@@ -823,6 +831,7 @@ def remove_team_member(team_id: str, member_id: str, actor: User = Depends(organ
         raise compass_error(400, "owner_required", "The team owner cannot be removed here.")
     member.is_active = False
     db.query(ApiKey).filter(ApiKey.team_id == team_id, ApiKey.member_id == member_id, ApiKey.status == "active").update({ApiKey.status: "revoked", ApiKey.revoked_at: now()}, synchronize_session=False)
+    record_audit_log(db, actor, "team.member_removed", f"team:{team_id}", {"organization_id": organization_id, "member_id": member_id, "email": member.email})
     db.commit()
     return {"member_id": member_id, "status": "removed", "api_keys_revoked": True}
 

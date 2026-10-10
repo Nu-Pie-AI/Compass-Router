@@ -145,3 +145,8 @@ M4 implementation blockers:
 
 - Server-side device-session/API-key revocation is implemented and locally tested.
 - Live browser/device authorization, logout, refresh/expiry, and revocation behavior still require staging Clerk and extension verification.
+
+## Membership audit coverage - 2026-10-11
+
+- Membership and invitation audit events are locally implemented and regression-tested.
+- Live SMTP delivery, Clerk identity verification, and production log/audit retention remain external verification gates.

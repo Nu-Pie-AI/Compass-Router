@@ -355,3 +355,12 @@ No Clerk secret values were printed or committed.
 | Extension unit tests | PASS; 10 passed |
 | Extension production build | PASS |
 | Live browser/device logout and token revocation | NOT RUN; requires staging Clerk/browser verification |
+
+## Membership audit coverage - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Invitation creation/acceptance/removal audit history | PASS; invitation regression verifies all three events |
+| Project/team membership audit paths | PASS; code paths write organization-scoped metadata without credentials |
+| Full API suite after audit changes | PASS; 81 passed, 1 existing Pydantic deprecation warning |
+| Python compile check | PASS |

@@ -547,3 +547,8 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Added an authenticated device-session revoke endpoint for VS Code.
 - Extension sign-out now attempts server-side device-session/API-key revocation before deleting the local SecretStorage token, while remaining usable during network failure.
 - Added regression coverage proving a locally revoked device token cannot call the Router afterward; admin-wide session revocation remains compatible and idempotent.
+
+## Membership audit coverage - 2026-10-11
+
+- Added audit records for invitation creation and acceptance, organization member removal and role changes, project member assignment/removal, and team member removal.
+- Extended the invitation acceptance/removal regression to verify the resulting audit history without exposing invitation or session secrets.

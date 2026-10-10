@@ -1824,6 +1824,12 @@ def test_project_invitation_otp_acceptance_and_member_revocation():
     removed = client.delete(f"/organization/members/{accepted.json()['user_id']}", headers=owner_headers)
     assert removed.status_code == 200, removed.text
     assert client.get("/projects", headers=member_headers).status_code == 401
+    db = TestingSessionLocal()
+    try:
+        actions = {row.action for row in db.query(AuditLog).filter(AuditLog.target.in_([f"invitation:{invitation.json()['id']}", f"user:{accepted.json()['user_id']}"])).all()}
+        assert {"organization.invitation_created", "organization.invitation_accepted", "organization.member_removed"}.issubset(actions)
+    finally:
+        db.close()
 
 
 def test_vscode_device_authorization_scopes_project_and_revokes_with_admin_session_revoke(monkeypatch):
