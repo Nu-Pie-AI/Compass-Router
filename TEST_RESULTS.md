@@ -328,3 +328,4 @@ No Clerk secret values were printed or committed.
 | Super Admin provider analytics UI | PASS; web typecheck and production build passed with the aggregation rendered in Operations |
 | Signup-credit expiration safety review | BLOCKED BY DESIGN; current aggregate wallet cannot safely distinguish promotional balance from purchased Credits |
 | VS Code browser/device authorization wiring | PASS; extension typecheck, 10 unit tests, and production bundle passed; live browser approval remains unverified |
+| Organization provider analytics scope | PASS; owner access and regular-member denial verified, with date/provider/model/project/member/API-key dimensions |

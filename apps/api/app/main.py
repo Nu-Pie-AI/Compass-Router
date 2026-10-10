@@ -2145,12 +2145,21 @@ def admin_requests(page: int = 1, page_size: int = 50, date_from: str | None = N
 def admin_provider_analytics(date_from: str | None = None, date_to: str | None = None, provider: str | None = None, model: str | None = None, organization_id: str | None = None, project_id: str | None = None, actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     require_platform_permission(db, actor, "operations.view")
     filters = _admin_request_filters(date_from, date_to, provider, model, organization_id, project_id)
+    return _provider_analytics_rows(db, filters)
+
+
+def _provider_analytics_rows(db: Session, filters: list) -> dict:
+    period = func.date(LlmRequest.created_at).label("period")
     rows = db.execute(
         select(
+            period,
             LlmRequest.provider,
             LlmRequest.resolved_model,
             LlmRequest.organization_id,
             LlmRequest.project_id,
+            LlmRequest.user_id,
+            LlmRequest.member_id,
+            LlmRequest.api_key_id,
             LlmRequest.credential_mode,
             func.count(LlmRequest.id),
             func.coalesce(func.sum(LlmRequest.input_tokens), 0),
@@ -2158,9 +2167,18 @@ def admin_provider_analytics(date_from: str | None = None, date_to: str | None =
             func.coalesce(func.sum(LlmRequest.provider_cost_paise), 0),
             func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0),
             func.sum(func.cast(LlmRequest.status == "error", Integer)),
-        ).where(*filters).group_by(LlmRequest.provider, LlmRequest.resolved_model, LlmRequest.organization_id, LlmRequest.project_id, LlmRequest.credential_mode).order_by(func.count(LlmRequest.id).desc())
+        ).where(*filters).group_by(period, LlmRequest.provider, LlmRequest.resolved_model, LlmRequest.organization_id, LlmRequest.project_id, LlmRequest.user_id, LlmRequest.member_id, LlmRequest.api_key_id, LlmRequest.credential_mode).order_by(func.count(LlmRequest.id).desc())
     ).all()
-    return {"items": [{"provider": row[0], "model": row[1], "organization_id": row[2], "project_id": row[3], "credential_mode": row[4], "requests": int(row[5] or 0), "input_tokens": int(row[6] or 0), "output_tokens": int(row[7] or 0), "provider_cost_paise": int(row[8] or 0), "customer_charge_paise": int(row[9] or 0), "failed_requests": int(row[10] or 0)} for row in rows], "total": len(rows), "content_policy": "Metadata only; prompt and response content is not retained."}
+    return {"items": [{"period": str(row[0]) if row[0] is not None else None, "provider": row[1], "model": row[2], "organization_id": row[3], "project_id": row[4], "user_id": row[5], "member_id": row[6], "api_key_id": row[7], "credential_mode": row[8], "requests": int(row[9] or 0), "input_tokens": int(row[10] or 0), "output_tokens": int(row[11] or 0), "provider_cost_paise": int(row[12] or 0), "customer_charge_paise": int(row[13] or 0), "failed_requests": int(row[14] or 0)} for row in rows], "total": len(rows), "content_policy": "Metadata only; prompt and response content is not retained."}
+
+
+@app.get("/organization/analytics/providers")
+def organization_provider_analytics(date_from: str | None = None, date_to: str | None = None, provider: str | None = None, model: str | None = None, project_id: str | None = None, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
+    organization_id = organization_id_for_user(db, actor.id)
+    if not organization_id:
+        raise compass_error(403, "organization_not_found", "An organization is required for workspace analytics.")
+    filters = _admin_request_filters(date_from, date_to, provider, model, organization_id, project_id)
+    return _provider_analytics_rows(db, filters)
 
 
 @app.get("/admin/financial/wallets")

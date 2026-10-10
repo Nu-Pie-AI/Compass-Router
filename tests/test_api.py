@@ -215,6 +215,32 @@ def test_admin_provider_analytics_is_permission_gated_and_tenant_aware():
     assert {"items", "total", "content_policy"}.issubset(response.json())
 
 
+def test_organization_provider_analytics_is_scoped_to_owner_membership():
+    owner_email = f"org-analytics-owner-{time.time_ns()}@example.com"
+    owner_signup = client.post("/auth/signup", json={"email": owner_email, "password": "OrgAnalytics123!", "organization_name": "Org Analytics Workspace"})
+    assert owner_signup.status_code == 200, owner_signup.text
+    owner_headers = {"Authorization": f"Bearer {owner_signup.json()['token']}"}
+    own = client.get("/organization/analytics/providers", headers=owner_headers)
+    assert own.status_code == 200, own.text
+    assert own.json()["items"] == []
+
+    member_email = f"org-analytics-member-{time.time_ns()}@example.com"
+    member_signup = client.post("/auth/signup", json={"email": member_email, "password": "OrgAnalyticsMember123!", "organization_name": "Separate Analytics Workspace"})
+    assert member_signup.status_code == 200, member_signup.text
+    db = TestingSessionLocal()
+    try:
+        owner = db.query(User).filter(User.email == owner_email).one()
+        member = db.query(User).filter(User.email == member_email).one()
+        organization_id = db.query(OrganizationMember.organization_id).filter(OrganizationMember.user_id == owner.id, OrganizationMember.role == "owner").scalar()
+        db.add(OrganizationMember(user_id=member.id, organization_id=organization_id, role="customer"))
+        db.commit()
+    finally:
+        db.close()
+    member_headers = {"Authorization": f"Bearer {member_signup.json()['token']}"}
+    denied = client.get("/organization/analytics/providers", headers=member_headers)
+    assert denied.status_code == 403
+
+
 def test_production_configuration_rejects_development_defaults():
     with pytest.raises(RuntimeError, match="Unsafe production configuration"):
         validate_runtime_config(Settings(environment="production"))

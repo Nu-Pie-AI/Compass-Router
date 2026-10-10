@@ -20,6 +20,7 @@ type Model = { id: string; display_name: string; provider: string; provider_mode
 type RouterModel = Model & { enabled: boolean; published: boolean; fallback_model_id?: string | null; provider_status: string; provider_enabled: boolean };
 type RouterProvider = { name: string; enabled: boolean; status: string; commercial_status: "unreviewed" | "approved" | "rejected"; last_health?: { status: string; latency_ms: number; error_rate: number; checked_at: string } | null };
 type RequestRow = { id: string; status: string; error_code?: string | null; model: string; provider: string; credential_mode?: string; provider_cost_paise?: number; tokens: number; input_tokens?: number; output_tokens?: number; cost_paise: number; latency_ms: number; created_at: string };
+type OrganizationProviderAnalytics = { period?: string | null; provider: string; model: string; project_id?: string | null; credential_mode: string; requests: number; input_tokens: number; output_tokens: number; provider_cost_paise: number; customer_charge_paise: number; failed_requests: number };
 type LedgerRow = { id: string; type: string; amount_paise: number; balance_before: number; balance_after: number; reference_id: string; reference_type?: string; created_at?: string };
 type BillingOrder = { id: string; team_id: string; provider: string; provider_order_id: string; payment_id?: string | null; amount_paise: number; refunded_paise: number; currency: string; status: string; failure_code?: string | null; failure_description?: string | null; created_at: string; completed_at?: string | null; can_complete: boolean; can_refund: boolean; checkout_key_id?: string | null };
 type BillingInvoice = { id: string; invoice_number: string; order_id: string; total_paise: number; currency: string; status: string; created_at: string; paid_at?: string | null };
@@ -75,6 +76,7 @@ export function CompassConsole({ view }: { view: string }) {
   const [hydrated, setHydrated] = useState(false);
   const [clerkReady, setClerkReady] = useState(!clerkEnabled);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [organizationProviderAnalytics, setOrganizationProviderAnalytics] = useState<OrganizationProviderAnalytics[]>([]);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [admin, setAdmin] = useState<AdminLocal | null>(null);
   const [oneTimeKey, setOneTimeKey] = useState("");
@@ -137,13 +139,14 @@ export function CompassConsole({ view }: { view: string }) {
 
   const loadData = useCallback(async (activeSession: Session) => {
     const canManage = activeSession.role === "admin" || activeSession.role === "super_admin";
-    const [dash, adminData, providerCatalog, usageRows, opsMetrics, routerModels, routerProviders, overview, users, teams, audit, platform, readiness, events, reconciliation, policies] = await Promise.all([
+    const [dash, adminData, providerCatalog, usageRows, organizationAnalytics, opsMetrics, routerModels, routerProviders, overview, users, teams, audit, platform, readiness, events, reconciliation, policies] = await Promise.all([
       apiFetch<Dashboard>("/dashboard", {}, activeSession.token),
       canManage
         ? apiFetch<AdminLocal>("/admin/local-test", {}, activeSession.token)
         : Promise.resolve(null),
       canManage ? apiFetch<AdminProviderOption[]>("/admin/provider-catalog", {}, activeSession.token) : Promise.resolve(null),
       apiFetch<RequestRow[]>("/usage/requests", {}, activeSession.token),
+      apiFetch<{ items: OrganizationProviderAnalytics[] }>("/organization/analytics/providers", {}, activeSession.token).catch(() => null),
       canManage
         ? apiFetch<AdminMetrics>("/admin/operations/metrics", {}, activeSession.token)
         : Promise.resolve(null),
@@ -176,6 +179,7 @@ export function CompassConsole({ view }: { view: string }) {
     if (workspaceId) window.localStorage.setItem("compass.local.workspaceId", workspaceId);
     const ledgerRows = teamId ? await apiFetch<LedgerRow[]>(`/wallet/ledger?team_id=${teamId}`, {}, activeSession.token) : [];
     setDashboard({ ...dash, recent_requests: usageRows });
+    setOrganizationProviderAnalytics(organizationAnalytics?.items ?? []);
     setLedger(ledgerRows);
     setAdmin(adminData ? { ...adminData, providerCatalog: providerCatalog ?? [], metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], teams: teams ?? [], audit: audit ?? [], platform, readiness, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
     if (teamId && teamId !== selectedTeamId) setSelectedTeamId(teamId);
@@ -442,7 +446,7 @@ export function CompassConsole({ view }: { view: string }) {
         {view === "byok" ? <ByokManager token={session.token} teamId={selectedTeamId} onChanged={refresh} /> : null}
         {view === "teams" ? <TeamsManager dashboard={dashboard} workspaceId={activeWorkspaceId} teamId={selectedTeamId} selectTeam={setSelectedTeamId} refresh={refresh} token={session.token} canManage={canManage} canCreate /> : null}
         {view === "usage" ? <Usage rows={dashboard?.recent_requests ?? []} /> : null}
-        {view === "activity" ? <ActivityPage rows={dashboard?.recent_requests ?? []} /> : null}
+        {view === "activity" ? <ActivityPage rows={dashboard?.recent_requests ?? []} providerAnalytics={organizationProviderAnalytics} /> : null}
         {view === "wallet" ? <WalletPage wallet={dashboard?.teams.find((team) => team.id === selectedTeamId)?.wallet ?? dashboard?.teams[0]?.wallet} ledger={ledger} teamId={selectedTeamId} token={session.token} refresh={refresh} /> : null}
         {view === "admin" ? canManage ? <AdminPage admin={admin} dashboard={dashboard} openWorkspaceDialog={openWorkspaceDialog} busy={busy} providerName={providerName} setProviderName={setProviderName} providerApiKey={providerApiKey} setProviderApiKey={setProviderApiKey} saveProviderCredential={saveProviderCredential} token={session.token} refresh={refresh} /> : <Status>Provider settings are available only to Compass administrators.</Status> : null}
         {view === "dashboard" ? <DashboardPage dashboard={dashboard} openWorkspaceDialog={openWorkspaceDialog} selectedTeamId={selectedTeamId} addCredits={addCredits} busy={busy} canCreate={canCreateWorkspace} canManage={canManage} /> : null}
