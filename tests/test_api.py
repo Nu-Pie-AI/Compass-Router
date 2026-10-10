@@ -280,6 +280,33 @@ def test_organization_admin_can_assign_and_audit_scoped_api_key():
         db.close()
 
 
+def test_only_organization_admin_can_rename_default_project():
+    owner_email = f"default-project-owner-{time.time_ns()}@example.com"
+    owner_signup = client.post("/auth/signup", json={"email": owner_email, "password": "DefaultOwner123!", "organization_name": "Default Project Workspace"})
+    assert owner_signup.status_code == 200, owner_signup.text
+    owner_headers = {"Authorization": f"Bearer {owner_signup.json()['token']}"}
+    project = client.get("/projects", headers=owner_headers).json()[0]
+    member_email = f"default-project-member-{time.time_ns()}@example.com"
+    member_signup = client.post("/auth/signup", json={"email": member_email, "password": "DefaultMember123!", "organization_name": "Separate Default Workspace"})
+    assert member_signup.status_code == 200, member_signup.text
+    db = TestingSessionLocal()
+    try:
+        owner = db.query(User).filter(User.email == owner_email).one()
+        member = db.query(User).filter(User.email == member_email).one()
+        organization_id = db.query(OrganizationMember.organization_id).filter(OrganizationMember.user_id == owner.id, OrganizationMember.role == "owner").scalar()
+        db.add(OrganizationMember(user_id=member.id, organization_id=organization_id, role="customer"))
+        db.add(ProjectMember(project_id=project["id"], user_id=member.id, role="admin", status="active"))
+        db.commit()
+    finally:
+        db.close()
+    member_headers = {"Authorization": f"Bearer {member_signup.json()['token']}"}
+    denied = client.patch(f"/projects/{project['id']}", json={"name": "Member Rename", "description": ""}, headers=member_headers)
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["error"]["code"] == "default_project_admin_required"
+    renamed = client.patch(f"/projects/{project['id']}", json={"name": "Client Projects", "description": ""}, headers=owner_headers)
+    assert renamed.status_code == 200, renamed.text
+
+
 def test_production_configuration_rejects_development_defaults():
     with pytest.raises(RuntimeError, match="Unsafe production configuration"):
         validate_runtime_config(Settings(environment="production"))

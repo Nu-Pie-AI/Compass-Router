@@ -562,3 +562,8 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - Added local signed-webhook coverage for `refund.processed`, duplicate delivery, refund ledger reversal, and processed refund status.
 - No live Razorpay request or production financial balance was touched; sandbox credentials and approval remain external gates.
+
+## Default project governance - 2026-10-11
+
+- The server now restricts renaming the organization default `Others` project to organization owners/admins; ordinary project-admin memberships cannot change the fallback label.
+- Added cross-role regression coverage for the denied member path and authorized owner path.

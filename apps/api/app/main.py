@@ -585,6 +585,16 @@ def create_customer_project(body: ProjectCreate, user: User = Depends(organizati
 @app.patch("/projects/{project_id}")
 def update_customer_project(project_id: str, body: ProjectUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     project = require_project_access(db, user, project_id, write=True)
+    if project.is_default and not is_admin(user):
+        organization_admin_membership = db.scalar(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == project.organization_id,
+                OrganizationMember.user_id == user.id,
+                OrganizationMember.role.in_(["owner", "admin"]),
+            )
+        )
+        if organization_admin_membership is None:
+            raise compass_error(403, "default_project_admin_required", "Only an organization administrator can rename the default project.")
     project.name = body.name.strip()
     project.description = body.description.strip()
     project.updated_at = now()
