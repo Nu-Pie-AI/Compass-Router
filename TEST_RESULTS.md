@@ -323,7 +323,7 @@ No Clerk secret values were printed or committed.
 | VS Code project scope UI | PASS; extension typecheck, build, and tests passed after selector/state changes |
 | Super Admin provider analytics authorization and aggregation | PASS; customer denied and admin metadata aggregation returned successfully |
 | Scoped API-key creation UI | PASS; web production build and typecheck passed with project/member/expiry fields |
-| Full API suite | NOT COMPLETED; long-running Windows test process remains to be isolated |
+| Full API suite | PASS; `pytest -q tests/test_api.py`, 80 passed, 1 existing Pydantic deprecation warning |
 | Razorpay sandbox | BLOCKED; external sandbox credentials and approval required |
 | Super Admin provider analytics UI | PASS; web typecheck and production build passed with the aggregation rendered in Operations |
 | Signup-credit expiration safety review | BLOCKED BY DESIGN; current aggregate wallet cannot safely distinguish promotional balance from purchased Credits |
