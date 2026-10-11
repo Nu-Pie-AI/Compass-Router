@@ -210,6 +210,31 @@ class ApiKeyModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class ApiKeyMemberAssignment(Base):
+    __tablename__ = "api_key_member_assignments"
+    __table_args__ = (UniqueConstraint("api_key_id", "member_id"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    member_id: Mapped[str] = mapped_column(ForeignKey("team_members.id"), index=True)
+    assigned_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String, default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ApiKeyProjectPolicy(Base):
+    __tablename__ = "api_key_project_policies"
+    __table_args__ = (UniqueConstraint("api_key_id", "project_id"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    status: Mapped[str] = mapped_column(String, default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Provider(Base):
     __tablename__ = "providers"
 

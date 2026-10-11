@@ -173,3 +173,10 @@ M4 implementation blockers:
 - Invitation acceptance and onboarding email templates are locally covered, but real invitation delivery, email verification, session persistence/revocation, and member browser access remain unverified.
 - The current aggregate Credits ledger still cannot safely expire only promotional Credits; credit-lot/allocation semantics remain a separate design blocker.
 - No deployment, secret write, live payment, provider request, or production service/database change was performed.
+
+## M13 team API keys and member assignments - 2026-10-11
+
+- Local additive assignment/project-policy APIs are implemented, but managed Clerk-authenticated inference has not yet been wired to the existing provider and Credits accounting path.
+- Real Clerk organization membership, browser managed inference, VS Code device authorization, and immediate revocation behavior require staging credentials and browser verification.
+- PostgreSQL migration execution and tenant/concurrency verification remain staging-only gates; no production migration was run.
+- No live provider inference, payment, deployment, or secret change was performed.

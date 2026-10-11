@@ -2163,6 +2163,27 @@ def test_team_owner_can_manage_team_keys_but_member_cannot():
     assert denied.status_code == 403, denied.text
 
 
+def test_m13_key_member_assignment_is_idempotent_and_team_scoped():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    first = create_member_fixture(headers, team["id"])
+    second = create_member_fixture(headers, team["id"])
+    other_team = create_team_fixture(headers)
+    other_member = create_member_fixture(headers, other_team["id"])
+    key = create_key_fixture(headers, team["id"])
+
+    assigned = client.put(f"/api-keys/{key['id']}/members", json={"member_ids": [first["id"], second["id"]]}, headers=headers)
+    assert assigned.status_code == 200, assigned.text
+    assert {row["id"] for row in assigned.json()["members"]} == {first["id"], second["id"]}
+
+    repeated = client.put(f"/api-keys/{key['id']}/members", json={"member_ids": [first["id"], second["id"], first["id"]]}, headers=headers)
+    assert repeated.status_code == 200, repeated.text
+    assert len(repeated.json()["members"]) == 2
+
+    denied = client.put(f"/api-keys/{key['id']}/members", json={"member_ids": [other_member["id"]]}, headers=headers)
+    assert denied.status_code == 400, denied.text
+
+
 def test_organization_admin_can_change_role_and_project_access():
     owner_email = f"access-owner-{time.time_ns()}@example.com"
     owner = client.post("/auth/signup", json={"email": owner_email, "password": "AccessOwner123!", "organization_name": "Access Workspace"})

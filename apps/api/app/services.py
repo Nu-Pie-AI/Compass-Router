@@ -34,7 +34,9 @@ from .catalog import (
 from .errors import compass_error
 from .models import (
     ApiKey,
+    ApiKeyMemberAssignment,
     ApiKeyModel,
+    ApiKeyProjectPolicy,
     AuditLog,
     ByokCredential,
     CatalogSyncRun,
@@ -1910,6 +1912,10 @@ def create_api_key(db: Session, user_id: str, team_id: str, member_id: str | Non
     key = ApiKey(key_id=key_id, key_prefix=key_prefix, key_hash=key_hash, user_id=user_id, organization_id=team.organization_id, project_id=project_id, team_id=team_id, member_id=member_id, name=name, purpose=purpose, expires_at=expires_at)
     db.add(key)
     db.flush()
+    if member_id is not None:
+        db.add(ApiKeyMemberAssignment(api_key_id=key.id, member_id=member_id, assigned_by=user_id))
+    if project_id is not None:
+        db.add(ApiKeyProjectPolicy(api_key_id=key.id, project_id=project_id))
     for model_id in unique_models:
         db.add(ApiKeyModel(api_key_id=key.id, model_id=model_id))
     db.commit()
@@ -2013,7 +2019,10 @@ def authenticate_api_key(db: Session, bearer: str | None, project_id: str | None
             raise compass_error(403, "project_access_denied", "This API key cannot access the selected project.")
         if team.project_id and team.project_id != project_id:
             raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
-        if key.project_id and project_id != key.project_id:
+        policy_ids = set(db.scalars(select(ApiKeyProjectPolicy.project_id).where(ApiKeyProjectPolicy.api_key_id == key.id, ApiKeyProjectPolicy.status == "active")).all())
+        if policy_ids and project_id not in policy_ids:
+            raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
+        if not policy_ids and key.project_id and project_id != key.project_id:
             raise compass_error(403, "project_access_denied", "This API key is not assigned to the selected project.")
         if key.project_id is None:
             assigned_user_id = key.user_id
@@ -2079,6 +2088,76 @@ def update_api_key_models(db: Session, api_key_id: str, allowed_models: list[str
         "allowed_models": sorted(allowed_model_ids(db, key.id)),
         "models_restricted": bool(unique_models),
     }
+
+
+def replace_api_key_members(db: Session, api_key_id: str, member_ids: list[str], assigned_by: str) -> list[dict]:
+    key = db.get(ApiKey, api_key_id)
+    if key is None or not key.team_id:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    unique_ids = list(dict.fromkeys(member_ids))
+    members = db.scalars(select(TeamMember).where(TeamMember.id.in_(unique_ids), TeamMember.team_id == key.team_id, TeamMember.is_active.is_(True))).all() if unique_ids else []
+    if len(members) != len(unique_ids):
+        raise compass_error(400, "member_team_mismatch", "Every assigned member must be an active member of the key team.")
+    rows = db.scalars(select(ApiKeyMemberAssignment).where(ApiKeyMemberAssignment.api_key_id == key.id)).all()
+    by_member = {row.member_id: row for row in rows}
+    wanted = set(unique_ids)
+    for member_id in unique_ids:
+        row = by_member.get(member_id)
+        if row is None:
+            db.add(ApiKeyMemberAssignment(api_key_id=key.id, member_id=member_id, assigned_by=assigned_by))
+        else:
+            row.status = "active"
+            row.revoked_at = None
+            row.assigned_by = assigned_by
+    for row in rows:
+        if row.member_id not in wanted:
+            row.status = "revoked"
+            row.revoked_at = now()
+    key.member_id = unique_ids[0] if unique_ids else None
+    db.commit()
+    return assigned_api_key_members(db, key.id)
+
+
+def assigned_api_key_members(db: Session, api_key_id: str) -> list[dict]:
+    rows = db.execute(select(ApiKeyMemberAssignment, TeamMember).join(TeamMember, TeamMember.id == ApiKeyMemberAssignment.member_id).where(ApiKeyMemberAssignment.api_key_id == api_key_id, ApiKeyMemberAssignment.status == "active")).all()
+    return [{"id": member.id, "name": member.name, "email": member.email, "role": member.role, "status": member.is_active} for _, member in rows]
+
+
+def replace_api_key_projects(db: Session, api_key_id: str, project_ids: list[str]) -> list[str]:
+    key = db.get(ApiKey, api_key_id)
+    if key is None or not key.organization_id:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    unique_ids = list(dict.fromkeys(project_ids))
+    projects = db.scalars(select(Project).where(Project.id.in_(unique_ids), Project.organization_id == key.organization_id, Project.is_active.is_(True))).all() if unique_ids else []
+    if len(projects) != len(unique_ids):
+        raise compass_error(400, "project_scope_invalid", "Every project must belong to the key organization and be active.")
+    rows = db.scalars(select(ApiKeyProjectPolicy).where(ApiKeyProjectPolicy.api_key_id == key.id)).all()
+    by_project = {row.project_id: row for row in rows}
+    wanted = set(unique_ids)
+    for project_id in unique_ids:
+        row = by_project.get(project_id)
+        if row is None:
+            db.add(ApiKeyProjectPolicy(api_key_id=key.id, project_id=project_id))
+        else:
+            row.status = "active"
+            row.revoked_at = None
+    for row in rows:
+        if row.project_id not in wanted:
+            row.status = "revoked"
+            row.revoked_at = now()
+    key.project_id = unique_ids[0] if unique_ids else None
+    db.commit()
+    return unique_ids
+
+
+def assigned_api_key_projects(db: Session, api_key_id: str) -> list[str]:
+    return list(db.scalars(select(ApiKeyProjectPolicy.project_id).where(ApiKeyProjectPolicy.api_key_id == api_key_id, ApiKeyProjectPolicy.status == "active")).all())
+
+
+def list_assigned_api_keys(db: Session, user_id: str) -> list[dict]:
+    member_ids = select(TeamMember.id).where(TeamMember.user_id == user_id, TeamMember.is_active.is_(True))
+    keys = db.scalars(select(ApiKey).join(ApiKeyMemberAssignment, ApiKeyMemberAssignment.api_key_id == ApiKey.id).where(ApiKeyMemberAssignment.member_id.in_(member_ids), ApiKeyMemberAssignment.status == "active", ApiKey.status == "active").order_by(ApiKey.created_at.desc())).all()
+    return [{"id": key.id, "name": key.name, "key_alias": key.key_prefix, "status": key.status, "expires_at": key.expires_at.isoformat() if key.expires_at else None, "project_id": key.project_id, "project_ids": assigned_api_key_projects(db, key.id), "allowed_models": sorted(allowed_model_ids(db, key.id))} for key in keys]
 
 
 def credit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key: str, reference_id: str, reference_type: str = "manual_test_credit", description: str = "Controlled beta test Credits grant") -> WalletLedger:

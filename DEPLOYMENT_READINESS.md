@@ -99,3 +99,9 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Local web startup now uses the project-local ignored environment required by Clerk edge middleware; server-only `CLERK_SECRET_KEY` is not exposed as a public variable.
 - Auth route selection defaults to Clerk, with legacy forms available only through explicit `LEGACY_AUTH_MODE=true`.
 - Route-level HTTP checks pass for login, signup, and admin-login. This is not a substitute for live identity-provider authentication evidence.
+## M13 readiness - 2026-10-11
+
+- Local API, model compilation, Alembic migration, and regression validation passed.
+- New assignment tables require the M13 Alembic head `h2i3j4k5l6m7` in staging; production migration has not been run.
+- Managed Clerk-authenticated inference, live provider calls, PostgreSQL/Redis runtime, extension flow, and Cloud Run verification remain pending external staging validation.
+- No production service, database, secret, wallet, or payment resource was changed.

@@ -30,3 +30,10 @@ The `decision` capability is reserved for a later verified native provider. No J
 - `GET /admin/financial/wallets`, `GET /admin/financial/ledger`, and `POST /admin/financial/wallet-adjustments` use the existing wallet ledger. Adjustments require an idempotency key, currency, reason, and elevated confirmation for large values.
 - `GET /admin/settings` and `PATCH /admin/settings` expose only a validated non-secret runtime-safe setting allow-list. Deployment secrets remain in environment variables or Secret Manager.
 - Production admin sessions must be Clerk-authenticated; Super Admin operations additionally require verified MFA claims when `PLATFORM_SUPER_ADMIN_REQUIRE_MFA=true`.
+## M13 team API key contracts - 2026-10-11
+
+- `GET /api-keys/assigned` returns safe assigned aliases for the authenticated member and never a raw secret.
+- `GET /api-keys/{id}/members` and `PUT /api-keys/{id}/members` manage active team-member assignments for an authorized team owner/organization admin.
+- `GET /api-keys/{id}/projects` and `PUT /api-keys/{id}/projects` manage active project policies for an authorized team owner/organization admin.
+- `PUT` operations are idempotent for duplicate IDs and reject members/projects outside the key's team or organization.
+- Existing `/v1/*` bearer-key APIs and legacy `api_keys.member_id`/`project_id` fields remain compatible.

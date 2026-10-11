@@ -488,3 +488,11 @@ No Clerk secret values were printed or committed.
 | Cloud Run template validation | PASS; 3 templates |
 | Infrastructure regression tests | PASS; 4 tests |
 | Live extension device/browser authorization | NOT RUN; external Clerk/browser verification required |
+## M13 verification - 2026-10-11
+
+- Python compile check: passed.
+- `git diff --check`: passed.
+- Full local pytest run: `116 passed, 1 warning` after the no-op merge revision joined `a1b2c3d4e5f6` and `g1h2i3j4k5l6`.
+- Migration upgrade/downgrade tests: `2 passed`.
+- M13 assignment regression: duplicate-safe assignment and cross-team rejection passed.
+- No live Clerk, provider, PostgreSQL, Redis, payment, or extension verification was performed.

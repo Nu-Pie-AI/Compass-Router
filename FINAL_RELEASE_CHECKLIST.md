@@ -49,3 +49,12 @@ Status: NOT READY
 - [x] Full local API regression, web lint, typecheck, production build, and portal regression evidence.
 - [ ] Real Clerk signup, email verification, invitation acceptance, MFA, logout, and session revocation in a staging browser.
 - [ ] Live SMTP, provider inference, Razorpay sandbox, PostgreSQL/Redis runtime, Cloud Run, Secret Manager, monitoring, and rollback evidence.
+## M13 additions - 2026-10-11
+
+- [x] Additive member/project API-key policy schema reviewed.
+- [x] Raw machine-key compatibility preserved.
+- [x] Member-safe alias endpoint and scoped assignment endpoints implemented.
+- [x] Alembic migration graph has one head and fresh upgrade/downgrade tests pass.
+- [x] Full local regression passes (`116 passed`, one pre-existing warning).
+- [ ] Wire Clerk-authenticated managed inference through provider/Credits accounting.
+- [ ] Verify live Clerk, extension, provider, PostgreSQL, Redis, and staging deployment behavior.

@@ -38,3 +38,11 @@ Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret
 - Company members do not receive organization-admin controls in the workspace UI; backend organization-admin dependencies remain authoritative.
 - `/super-admin` is protected by the existing platform-admin API boundary; `/admin` delegates organization changes to organization-admin APIs.
 - Local tests do not establish live Clerk token validation, MFA claims, session revocation, invitation identity proof, browser route protection, or deployment IAM. Those remain required before release.
+## M13 team API key controls - 2026-10-11
+
+- Machine key secrets remain one-time responses and are stored as hashes; member assignment endpoints never return raw secrets.
+- Member and project assignment writes require a team owner or organization administrator and validate team/organization scope server-side.
+- Assignment tables use foreign keys, unique key/member and key/project constraints, active/revoked state, and timestamps.
+- Safe member listings expose aliases and policy metadata only.
+- Local regression covers idempotent duplicate assignment and cross-team rejection.
+- Live Clerk identity, managed inference, extension, PostgreSQL, Redis, and log-retention verification remain staging gates.

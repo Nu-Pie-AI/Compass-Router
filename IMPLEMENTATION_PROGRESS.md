@@ -572,6 +572,18 @@ Status: LOCAL ROLE-ROUTING SLICE IMPLEMENTED; REAL CLERK BROWSER VERIFICATION PE
 - Real Clerk signup/login/email verification/logout/session revocation, invitation delivery, MFA, provider inference, Razorpay, PostgreSQL/Redis runtime behavior, and Cloud Run deployment remain external gates.
 - Added `M12_CUSTOMER_REQUIREMENTS_AUDIT.md` with requirement-level evidence and explicit live-verification boundaries.
 
+## M13 team API keys and member assignments - 2026-10-11
+
+Status: ADDITIVE DATA MODEL AND ADMIN POLICY API IMPLEMENTED; MANAGED INFERENCE AND LIVE IDENTITY VERIFICATION PENDING
+
+- Preserved the existing hashed machine-key flow and legacy single-member/single-project columns.
+- Added many-to-many member assignments and project policies with active/revoked state, uniqueness, timestamps, and foreign keys.
+- Added organization/team-owner protected endpoints for replacing and reading key members/projects.
+- Added a member-safe assigned-key listing that exposes aliases and policy metadata but never a raw key.
+- Added an Alembic merge revision because the existing checkout had two heads before M13; both histories are preserved.
+- Added `TEAM_API_KEY_ARCHITECTURE.md`, `TEAM_API_KEY_ROLE_MATRIX.md`, and `TEAM_API_KEY_TEST_PLAN.md`.
+- The next implementation slice is Clerk-authenticated managed inference through the existing provider/Credits accounting path. Live Clerk, extension, provider, PostgreSQL, Redis, and payment verification remain external gates.
+
 ## Razorpay refund webhook coverage - 2026-10-11
 
 - Added local signed-webhook coverage for `refund.processed`, duplicate delivery, refund ledger reversal, and processed refund status.

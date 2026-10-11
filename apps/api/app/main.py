@@ -25,7 +25,7 @@ from .db import get_db, init_db
 from .errors import compass_error
 from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, CatalogSyncRun, ClerkWebhookEvent, EmailOtpChallenge, ExtensionDeviceAuthorization, Invitation, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PricingPolicy, PricingRevision, Project, ProjectMember, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, RoutingPolicyRevision, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
 from .observability import configure_logging, log_request
-from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyModelsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, OrganizationMemberUpdate, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectMemberUpdate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
+from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyMembersUpdate, ApiKeyModelsUpdate, ApiKeyProjectsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, OrganizationMemberUpdate, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectMemberUpdate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
 from .security import authenticate_clerk_request, clerk_user_email, create_session_token, decode_marketplace_sso_token, decode_session_claims, hash_password, verify_password
 from .services import (
     LiteLLMClient,
@@ -68,6 +68,11 @@ from .services import (
     rotate_api_key,
     test_platform_credential,
     update_api_key_models,
+    replace_api_key_members,
+    assigned_api_key_members,
+    replace_api_key_projects,
+    assigned_api_key_projects,
+    list_assigned_api_keys,
     openrouter_catalog_response,
     pricing_policy_row,
     sync_openrouter_catalog,
@@ -1038,6 +1043,57 @@ def update_key_models(api_key_id: str, body: ApiKeyModelsUpdate, user: User = De
             raise compass_error(403, "api_key_access_denied", "You cannot update this API key.")
         require_team_owner(db, user, key.team_id)
     return update_api_key_models(db, api_key_id, body.allowed_models)
+
+
+@app.get("/api-keys/assigned")
+def assigned_keys(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    """Return safe aliases for keys assigned to the signed-in member.
+
+    Raw secrets and key prefixes are intentionally excluded from this member-facing flow.
+    """
+    return list_assigned_api_keys(db, user.id)
+
+
+@app.get("/api-keys/{api_key_id}/members")
+def key_members(api_key_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    key = db.get(ApiKey, api_key_id)
+    if key is None or not key.team_id:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    require_team_owner(db, user, key.team_id)
+    return assigned_api_key_members(db, api_key_id)
+
+
+@app.put("/api-keys/{api_key_id}/members")
+def replace_key_members(api_key_id: str, body: ApiKeyMembersUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    key = db.get(ApiKey, api_key_id)
+    if key is None or not key.team_id:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    require_team_owner(db, user, key.team_id)
+    members = replace_api_key_members(db, api_key_id, body.member_ids, user.id)
+    record_audit_log(db, user, "api_key.members_replaced", f"api_key:{api_key_id}", {"member_ids": [member["id"] for member in members]})
+    db.commit()
+    return {"api_key_id": api_key_id, "members": members}
+
+
+@app.get("/api-keys/{api_key_id}/projects")
+def key_projects(api_key_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[str]:
+    key = db.get(ApiKey, api_key_id)
+    if key is None or not key.team_id:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    require_team_owner(db, user, key.team_id)
+    return assigned_api_key_projects(db, api_key_id)
+
+
+@app.put("/api-keys/{api_key_id}/projects")
+def replace_key_projects(api_key_id: str, body: ApiKeyProjectsUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    key = db.get(ApiKey, api_key_id)
+    if key is None or not key.team_id:
+        raise compass_error(404, "api_key_not_found", "API key not found.")
+    require_team_owner(db, user, key.team_id)
+    project_ids = replace_api_key_projects(db, api_key_id, body.project_ids)
+    record_audit_log(db, user, "api_key.projects_replaced", f"api_key:{api_key_id}", {"project_ids": project_ids})
+    db.commit()
+    return {"api_key_id": api_key_id, "project_ids": project_ids}
 
 
 @app.post("/admin/wallet/topups")

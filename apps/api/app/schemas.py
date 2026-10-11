@@ -177,6 +177,14 @@ class ApiKeyModelsUpdate(BaseModel):
     allowed_models: list[str] = Field(default_factory=list, max_length=20)
 
 
+class ApiKeyMembersUpdate(BaseModel):
+    member_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ApiKeyProjectsUpdate(BaseModel):
+    project_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
