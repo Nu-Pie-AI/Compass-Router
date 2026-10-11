@@ -249,6 +249,83 @@ def create_invitation(db: Session, actor: User, project: Project, email: str, ro
     return invitation, token
 
 
+def create_clerk_organization_invitation(db: Session, actor: User, project: Project, email: str, role: str, team_id: str | None = None, replacing_invitation_id: str | None = None) -> Invitation:
+    """Create a Clerk Organization invitation and retain only its audit linkage.
+
+    Clerk is the delivery and acceptance authority for this path. The legacy
+    Compass token flow remains available only when the feature flag is off or
+    local test mode is enabled.
+    """
+    settings = get_settings()
+    if not settings.clerk_secret_key:
+        raise compass_error(503, "clerk_invitation_unavailable", "Clerk organization invitations require CLERK_SECRET_KEY.")
+    if not actor.clerk_user_id:
+        raise compass_error(409, "clerk_identity_required", "The inviter must have a verified Clerk identity.")
+    team = db.get(Team, team_id) if team_id else None
+    if team_id is not None and (team is None or team.organization_id != project.organization_id or (team.project_id and team.project_id != project.id)):
+        raise compass_error(400, "team_project_mismatch", "The selected team does not belong to this project.")
+    normalized = email.strip().lower()
+    duplicate_query = select(Invitation).where(Invitation.organization_id == project.organization_id, func.lower(Invitation.email) == normalized, Invitation.status == "pending")
+    if replacing_invitation_id:
+        duplicate_query = duplicate_query.where(Invitation.id != replacing_invitation_id)
+    duplicate = db.scalar(duplicate_query)
+    if duplicate is not None:
+        raise compass_error(409, "invitation_exists", "A pending invitation already exists for this email.")
+    organization = db.get(Organization, project.organization_id)
+    if organization is None:
+        raise compass_error(404, "organization_not_found", "Organization not found.")
+    headers = {"Authorization": f"Bearer {settings.clerk_secret_key}", "Content-Type": "application/json", "Accept": "application/json"}
+    origin = settings.compass_web_origin.split(",", 1)[0].strip().rstrip("/")
+    with httpx.Client(base_url="https://api.clerk.com/v1", headers=headers, timeout=15.0) as client:
+        if not organization.clerk_organization_id:
+            response = client.post("/organizations", json={"name": organization.name, "created_by": actor.clerk_user_id})
+            if response.status_code >= 400:
+                raise compass_error(502, "clerk_organization_create_failed", "Clerk organization creation failed.")
+            clerk_organization_id = response.json().get("id")
+            if not isinstance(clerk_organization_id, str) or not clerk_organization_id:
+                raise compass_error(502, "clerk_organization_create_failed", "Clerk did not return an organization ID.")
+            organization.clerk_organization_id = clerk_organization_id
+        payload = {
+            "inviter_user_id": actor.clerk_user_id,
+            "email_address": normalized,
+            "role": "org:admin" if role == "admin" else "org:member",
+            "redirect_url": f"{origin}{settings.clerk_invitation_redirect_url}",
+            "public_metadata": {"compass_organization_id": organization.id, "project_id": project.id, "team_id": team_id, "compass_role": role},
+        }
+        response = client.post(f"/organizations/{organization.clerk_organization_id}/invitations", json=payload)
+        if response.status_code == 429:
+            raise compass_error(429, "clerk_invitation_rate_limited", "Clerk invitation rate limit reached; retry later.")
+        if response.status_code >= 400:
+            raise compass_error(502, "clerk_invitation_failed", "Clerk could not create the organization invitation.")
+        data = response.json()
+    clerk_invitation_id = data.get("id")
+    if not isinstance(clerk_invitation_id, str) or not clerk_invitation_id:
+        raise compass_error(502, "clerk_invitation_failed", "Clerk did not return an invitation ID.")
+    expires_at = now() + timedelta(days=30)
+    expires_raw = data.get("expires_at")
+    if isinstance(expires_raw, (int, float)):
+        expires_at = datetime.fromtimestamp(expires_raw, UTC).replace(tzinfo=None)
+    invitation = Invitation(organization_id=organization.id, project_id=project.id, team_id=team_id, email=normalized, role=role, token_hash=None, clerk_invitation_id=clerk_invitation_id, delivery_provider="clerk", status="pending", invited_by=actor.id, expires_at=expires_at)
+    db.add(invitation)
+    db.flush()
+    return invitation
+
+
+def revoke_clerk_organization_invitation(db: Session, invitation: Invitation, actor: User) -> None:
+    settings = get_settings()
+    organization = db.get(Organization, invitation.organization_id)
+    if not settings.clerk_secret_key or not organization or not organization.clerk_organization_id or not invitation.clerk_invitation_id or not actor.clerk_user_id:
+        raise compass_error(503, "clerk_invitation_unavailable", "Clerk invitation revocation is not configured.")
+    response = httpx.post(
+        f"https://api.clerk.com/v1/organizations/{organization.clerk_organization_id}/invitations/{invitation.clerk_invitation_id}/revoke",
+        headers={"Authorization": f"Bearer {settings.clerk_secret_key}", "Content-Type": "application/json"},
+        json={"requesting_user_id": actor.clerk_user_id},
+        timeout=15.0,
+    )
+    if response.status_code >= 400:
+        raise compass_error(502, "clerk_invitation_revoke_failed", "Clerk could not revoke the organization invitation.")
+
+
 def resend_invitation(db: Session, invitation: Invitation, actor: User) -> Invitation:
     if invitation.status != "pending" or invitation.expires_at < now():
         raise compass_error(409, "invitation_not_pending", "Only pending invitations can be resent.")
@@ -1260,6 +1337,9 @@ def _active_pricing_policy(db: Session) -> PricingPolicy:
             version="development-v1",
             markup_bps=get_settings().model_pricing_markup_bps,
             usd_to_inr_paise_per_usd=get_settings().usd_to_inr_paise_per_usd,
+            fx_buffer_bps=get_settings().pricing_fx_buffer_bps,
+            platform_fee_bps=get_settings().pricing_platform_fee_bps,
+            fx_source="fixed_local_fallback",
             status="active",
             effective_at=now(),
         )
@@ -1274,8 +1354,10 @@ def ensure_default_pricing_policy(db: Session) -> PricingPolicy:
 
 def _customer_price_from_usd_per_token(raw_per_token: object, policy: PricingPolicy) -> int:
     usd_per_token = _decimal_value(raw_per_token)
-    markup = Decimal(10_000 + policy.markup_bps) / Decimal(10_000)
-    paise_per_1k = usd_per_token * Decimal(1_000) * Decimal(policy.usd_to_inr_paise_per_usd) * markup
+    legacy_markup = Decimal(10_000 + policy.markup_bps) / Decimal(10_000)
+    fx_buffer = Decimal(10_000 + policy.fx_buffer_bps) / Decimal(10_000)
+    platform_fee = Decimal(10_000 + policy.platform_fee_bps) / Decimal(10_000)
+    paise_per_1k = usd_per_token * Decimal(1_000) * Decimal(policy.usd_to_inr_paise_per_usd) * fx_buffer * platform_fee * legacy_markup
     return max(0, int(paise_per_1k.to_integral_value(rounding=ROUND_CEILING)))
 
 
@@ -1394,6 +1476,11 @@ def pricing_policy_row(policy: PricingPolicy) -> dict:
         "version": policy.version,
         "markup_bps": policy.markup_bps,
         "usd_to_inr_paise_per_usd": policy.usd_to_inr_paise_per_usd,
+        "fx_buffer_bps": policy.fx_buffer_bps,
+        "platform_fee_bps": policy.platform_fee_bps,
+        "fx_source": policy.fx_source,
+        "fx_fetched_at": policy.fx_fetched_at.isoformat() if policy.fx_fetched_at else None,
+        "formula": "provider_usd_cost * usd_inr * (1 + fx_buffer) * (1 + platform_fee) * (1 + legacy_markup)",
         "status": policy.status,
         "effective_at": policy.effective_at.isoformat(),
     }

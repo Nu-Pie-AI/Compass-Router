@@ -58,3 +58,13 @@ Status: NOT READY
 - [x] Full local regression passes (`116 passed`, one pre-existing warning).
 - [ ] Wire Clerk-authenticated managed inference through provider/Credits accounting.
 - [ ] Verify live Clerk, extension, provider, PostgreSQL, Redis, and staging deployment behavior.
+
+## M14 additions - 2026-10-11
+
+- [x] Add feature-gated Clerk Organization invitation path while preserving local test mode.
+- [x] Add durable Clerk organization/invitation identifiers.
+- [x] Add versioned 5% FX buffer and 5% platform fee policy fields.
+- [x] Reject fixed local FX source in production configuration.
+- [ ] Configure and verify Clerk Organizations, email delivery, webhooks, and browser acceptance.
+- [ ] Configure approved live FX source and refresh/stale-rate worker.
+- [ ] Implement first-class special-token pricing and credit-lot FIFO expiry.

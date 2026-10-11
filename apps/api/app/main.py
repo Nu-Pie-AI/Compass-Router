@@ -41,6 +41,7 @@ from .services import (
     complete_multipart_api,
     create_api_key,
     create_invitation,
+    create_clerk_organization_invitation,
     create_otp_challenge,
     create_project,
     create_team,
@@ -62,6 +63,7 @@ from .services import (
     record_audit_log,
     request_id_context,
     resend_invitation,
+    revoke_clerk_organization_invitation,
     request_rows,
     revoke_byok_api_key,
     revoke_api_key,
@@ -239,6 +241,18 @@ def current_user(request: Request, authorization: str | None = Header(default=No
             raise compass_error(401, "unauthorized", "Invalid session token.") from None
         if user is None:
             raise compass_error(401, "identity_not_provisioned", "Your Clerk account is not provisioned in Compass yet.")
+        clerk_org_id = clerk_claims.get("org_id")
+        if isinstance(clerk_org_id, str) and clerk_org_id:
+            organization = db.scalar(select(Organization).where(Organization.clerk_organization_id == clerk_org_id))
+            if organization is not None:
+                membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization.id, OrganizationMember.user_id == user.id))
+                claim_role = str(clerk_claims.get("org_role") or "")
+                mapped_role = "admin" if claim_role in {"org:admin", "org:owner"} else "customer"
+                if membership is None:
+                    db.add(OrganizationMember(user_id=user.id, organization_id=organization.id, role=mapped_role))
+                    db.commit()
+                elif membership.role == "removed":
+                    raise compass_error(403, "organization_membership_revoked", "Your organization membership has been revoked.")
     access = db.scalar(select(UserAccess).where(UserAccess.user_id == user.id))
     if access is not None and access.status != "active":
         raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
@@ -744,10 +758,20 @@ def remove_project_member(project_id: str, user_id: str, actor: User = Depends(o
 @app.post("/organization/invitations")
 def invite_organization_member(body: InvitationCreate, actor: User = Depends(organization_admin), db: Session = Depends(get_db)) -> dict:
     project = require_project_access(db, actor, body.project_id, write=True)
-    invitation, token = create_invitation(db, actor, project, body.email, body.role, body.team_id)
-    record_audit_log(db, actor, "organization.invitation_created", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role})
+    use_clerk = settings.clerk_organization_invitations_enabled and not settings.local_test_mode
+    if use_clerk:
+        invitation = create_clerk_organization_invitation(db, actor, project, body.email, body.role, body.team_id)
+        token = None
+    else:
+        invitation, token = create_invitation(db, actor, project, body.email, body.role, body.team_id)
+    record_audit_log(db, actor, "organization.invitation_created", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role, "delivery_provider": invitation.delivery_provider})
     db.commit()
-    return {"id": invitation.id, "email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role, "status": invitation.status, "expires_at": invitation.expires_at.isoformat(), "accept_token": token}
+    response = {"id": invitation.id, "email": invitation.email, "project_id": invitation.project_id, "team_id": invitation.team_id, "role": invitation.role, "status": invitation.status, "delivery_provider": invitation.delivery_provider, "expires_at": invitation.expires_at.isoformat()}
+    if token is not None:
+        response["accept_token"] = token
+    if invitation.clerk_invitation_id:
+        response["clerk_invitation_id"] = invitation.clerk_invitation_id
+    return response
 
 
 @app.get("/organization/invitations")
@@ -763,7 +787,19 @@ def resend_organization_invitation(invitation_id: str, actor: User = Depends(org
     invitation = db.scalar(select(Invitation).where(Invitation.id == invitation_id, Invitation.organization_id == organization_id))
     if invitation is None:
         raise compass_error(404, "invitation_not_found", "Invitation not found.")
-    resend_invitation(db, invitation, actor)
+    if invitation.delivery_provider == "clerk":
+        if invitation.status != "pending" or invitation.expires_at < now():
+            raise compass_error(409, "invitation_not_pending", "Only pending invitations can be resent.")
+        project = db.get(Project, invitation.project_id)
+        if project is None:
+            raise compass_error(404, "project_not_found", "Project not found.")
+        new_invitation = create_clerk_organization_invitation(db, actor, project, invitation.email, invitation.role, invitation.team_id, invitation.id)
+        invitation.status = "cancelled"
+        db.flush()
+        invitation = new_invitation
+    else:
+        resend_invitation(db, invitation, actor)
+    db.commit()
     return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at.isoformat()}
 
 
@@ -775,6 +811,8 @@ def cancel_organization_invitation(invitation_id: str, actor: User = Depends(org
         raise compass_error(404, "invitation_not_found", "Invitation not found.")
     if invitation.status == "accepted":
         raise compass_error(409, "invitation_already_accepted", "An accepted invitation cannot be cancelled.")
+    if invitation.delivery_provider == "clerk":
+        revoke_clerk_organization_invitation(db, invitation, actor)
     invitation.status = "cancelled"
     record_audit_log(db, actor, "organization.invitation_cancelled", f"invitation:{invitation.id}", {"email": invitation.email, "project_id": invitation.project_id})
     db.commit()
@@ -1571,9 +1609,9 @@ def admin_create_pricing_policy(body: PricingPolicyCreate, actor: User = Depends
     elif effective_at.tzinfo is not None:
         effective_at = effective_at.astimezone(UTC).replace(tzinfo=None)
     db.query(PricingPolicy).filter(PricingPolicy.status == "active").update({PricingPolicy.status: "retired"}, synchronize_session=False)
-    policy = PricingPolicy(version=body.version, markup_bps=body.markup_bps, usd_to_inr_paise_per_usd=body.usd_to_inr_paise_per_usd, status="active", effective_at=effective_at)
+    policy = PricingPolicy(version=body.version, markup_bps=body.markup_bps, usd_to_inr_paise_per_usd=body.usd_to_inr_paise_per_usd, fx_buffer_bps=body.fx_buffer_bps, platform_fee_bps=body.platform_fee_bps, fx_source=body.fx_source, fx_fetched_at=now() if body.fx_source != "fixed_local_fallback" else None, status="active", effective_at=effective_at)
     db.add(policy)
-    record_audit_log(db, actor, "catalog.pricing_policy_created", f"pricing_policy:{body.version}", {"markup_bps": body.markup_bps, "usd_to_inr_paise_per_usd": body.usd_to_inr_paise_per_usd})
+    record_audit_log(db, actor, "catalog.pricing_policy_created", f"pricing_policy:{body.version}", {"markup_bps": body.markup_bps, "fx_buffer_bps": body.fx_buffer_bps, "platform_fee_bps": body.platform_fee_bps, "fx_source": body.fx_source, "usd_to_inr_paise_per_usd": body.usd_to_inr_paise_per_usd})
     db.commit()
     return pricing_policy_row(policy)
 

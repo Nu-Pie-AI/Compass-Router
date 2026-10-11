@@ -21,3 +21,6 @@ Inference must reserve/check wallet and limits before provider work, record norm
 Implemented: source pricing fields, policy-version association, catalog conversion, persistence, and distinct provider/customer cost arithmetic.
 
 Pending: M6 billing hardening, Razorpay sandbox reconciliation, refund behavior, and production payment approval.
+# M14 pricing policy addendum
+
+Managed pricing uses versioned policies with separate `fx_buffer_bps` and `platform_fee_bps` fields. The initial parity baseline is 500 bps for each, applied once after provider USD cost is converted using the active FX snapshot. BYOK remains zero Compass Credits. The aggregate ledger's existing non-expiring promotional Credits behavior is preserved until credit lots are implemented safely.

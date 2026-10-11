@@ -46,3 +46,10 @@ Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret
 - Safe member listings expose aliases and policy metadata only.
 - Local regression covers idempotent duplicate assignment and cross-team rejection.
 - Live Clerk identity, managed inference, extension, PostgreSQL, Redis, and log-retention verification remain staging gates.
+
+## M14 Clerk and pricing controls - 2026-10-11
+
+- Clerk invitation delivery is server-side and feature-gated; no secret is sent to the browser or stored in the invitation token path.
+- Signed Clerk organization claims are required for organization membership reconciliation; removed Compass memberships are denied.
+- Production rejects fixed local FX configuration so stale hardcoded conversion cannot silently bill customers.
+- Credentials exposed in the user-provided `.env` content must be rotated; no credential values are recorded here.

@@ -180,3 +180,10 @@ M4 implementation blockers:
 - Real Clerk organization membership, browser managed inference, VS Code device authorization, and immediate revocation behavior require staging credentials and browser verification.
 - PostgreSQL migration execution and tenant/concurrency verification remain staging-only gates; no production migration was run.
 - No live provider inference, payment, deployment, or secret change was performed.
+
+## M14 Clerk Organizations and pricing parity - 2026-10-11
+
+- Clerk Organizations must be enabled and configured in the intended Clerk instance; live invitation email, acceptance, resend, revoke, and webhook behavior are unverified.
+- A production-approved FX source and refresh worker are not configured. The fixed FX value is now rejected for production and remains local-only.
+- Cached-input, cache-write, reasoning, audio/image/tool, tiered pricing, and FIFO expiring credit lots are not yet first-class Compass billing semantics.
+- Credentials pasted into the session must be rotated before staging use. No rotation was performed automatically.

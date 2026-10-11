@@ -584,6 +584,16 @@ Status: ADDITIVE DATA MODEL AND ADMIN POLICY API IMPLEMENTED; MANAGED INFERENCE 
 - Added `TEAM_API_KEY_ARCHITECTURE.md`, `TEAM_API_KEY_ROLE_MATRIX.md`, and `TEAM_API_KEY_TEST_PLAN.md`.
 - The next implementation slice is Clerk-authenticated managed inference through the existing provider/Credits accounting path. Live Clerk, extension, provider, PostgreSQL, Redis, and payment verification remain external gates.
 
+## M14 Clerk Organizations and pricing parity - 2026-10-11
+
+Status: LOCAL CLERK INVITATION PATH AND VERSIONED PRICING POLICY FIELDS IMPLEMENTED; LIVE CLERK/FX GATES PENDING
+
+- Added feature-gated Clerk Organization invitation creation, resend, and revoke using the official Clerk Backend API shape.
+- Added durable Clerk organization/invitation identifiers and signed-session organization reconciliation while preserving local test-mode invitations.
+- Added configurable FX buffer and platform fee fields to pricing policies; initial values are 500 bps each and pricing responses expose the formula and source metadata.
+- Added typed environment configuration and production validation that rejects the fixed local FX source.
+- Added M14 audit/test documents. A live FX provider, first-class special-token pricing, FIFO credit lots, browser invitation acceptance, and managed Clerk inference remain incomplete or externally blocked.
+
 ## Razorpay refund webhook coverage - 2026-10-11
 
 - Added local signed-webhook coverage for `refund.processed`, duplicate delivery, refund ledger reversal, and processed refund status.

@@ -496,3 +496,14 @@ No Clerk secret values were printed or committed.
 - Migration upgrade/downgrade tests: `2 passed`.
 - M13 assignment regression: duplicate-safe assignment and cross-team rejection passed.
 - No live Clerk, provider, PostgreSQL, Redis, payment, or extension verification was performed.
+
+## M14 verification - 2026-10-11
+
+- Python compile check: passed after Clerk/pricing changes.
+- `git diff --check`: passed before documentation changes.
+- Live Clerk invitation/email test: not run; requires Clerk Organizations, secret, webhook, and browser approval.
+- Live FX refresh test: not run; no approved FX provider configured.
+- AICredits public reference audit: completed from pricing, pricing documentation, and model catalog pages; no private endpoint or competitor credential was used.
+- Full backend regression after the M14 schema and route changes: `117 passed, 1 warning`.
+- Migration/catalog focused verification after SQLite batch fix: `9 passed`.
+- Web lint: passed. Web typecheck: passed after the production build generated `.next` types. Web production build: passed.

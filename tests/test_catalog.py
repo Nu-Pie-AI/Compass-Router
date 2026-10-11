@@ -99,6 +99,7 @@ def test_production_configuration_does_not_require_openrouter():
             platform_super_admin_clerk_user_id="user_platform_owner",
             clerk_webhook_signing_secret="whsec_test",
             smtp_host="smtp.test",
+                pricing_fx_source="approved_test_source",
             openrouter_api_key=None,
         )
     )

@@ -316,6 +316,9 @@ class PricingPolicyCreate(BaseModel):
     version: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$")
     markup_bps: int = Field(default=0, ge=0, le=100_000)
     usd_to_inr_paise_per_usd: int = Field(ge=1, le=10_000_000)
+    fx_buffer_bps: int = Field(default=500, ge=0, le=100_000)
+    platform_fee_bps: int = Field(default=500, ge=0, le=100_000)
+    fx_source: str = Field(default="fixed_local_fallback", min_length=1, max_length=120)
     effective_at: datetime | None = None
 
 

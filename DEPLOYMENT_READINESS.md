@@ -105,3 +105,10 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - New assignment tables require the M13 Alembic head `h2i3j4k5l6m7` in staging; production migration has not been run.
 - Managed Clerk-authenticated inference, live provider calls, PostgreSQL/Redis runtime, extension flow, and Cloud Run verification remain pending external staging validation.
 - No production service, database, secret, wallet, or payment resource was changed.
+
+## M14 readiness - 2026-10-11
+
+- New migration `i3j4k5l6m7n8_add_m14_clerk_and_pricing_fields.py` is local-only and must be applied to an isolated staging database before deployment.
+- Clerk invitation delivery remains disabled by default until the Clerk instance and redirect URL are verified.
+- Production billing is not ready until an approved FX source replaces the fixed local fallback and its freshness/alerting behavior is tested.
+- No production service, database, secret, wallet, payment, or Cloud Run resource was changed.

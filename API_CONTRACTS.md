@@ -37,3 +37,9 @@ The `decision` capability is reserved for a later verified native provider. No J
 - `GET /api-keys/{id}/projects` and `PUT /api-keys/{id}/projects` manage active project policies for an authorized team owner/organization admin.
 - `PUT` operations are idempotent for duplicate IDs and reject members/projects outside the key's team or organization.
 - Existing `/v1/*` bearer-key APIs and legacy `api_keys.member_id`/`project_id` fields remain compatible.
+
+## M14 invitation and pricing contracts - 2026-10-11
+
+- `POST /organization/invitations` uses Clerk delivery when `CLERK_ORGANIZATION_INVITATIONS_ENABLED=true` outside local test mode; response contains `delivery_provider=clerk` and a Clerk invitation ID, never an application acceptance token.
+- Local test mode retains the legacy `accept_token` response for deterministic tests only.
+- `POST /admin/catalog/pricing-policies` accepts versioned FX buffer, platform fee, and FX source fields; pricing policy responses expose the active formula and FX metadata.

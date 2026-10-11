@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     clerk_authorized_parties: str = ""
     clerk_audience: str | None = None
     clerk_webhook_signing_secret: str | None = None
+    clerk_organization_invitations_enabled: bool = False
+    clerk_invitation_redirect_url: str = "/portal"
     redis_url: str = "redis://localhost:6379/0"
     redis_socket_timeout_seconds: float = 1.5
     redis_connect_timeout_seconds: float = 3.0
@@ -56,6 +58,14 @@ class Settings(BaseSettings):
     openrouter_catalog_sync_max_attempts: int = 3
     openrouter_catalog_backoff_seconds: float = 0.5
     model_pricing_markup_bps: int = 0
+    pricing_fx_source: str = "fixed_local"
+    pricing_fx_refresh_seconds: int = 600
+    pricing_fx_max_age_seconds: int = 1800
+    pricing_fx_buffer_bps: int = 500
+    pricing_platform_fee_bps: int = 500
+    pricing_allow_fixed_fx_fallback: bool = True
+    pricing_low_credits_threshold_paise: int = 1000
+    pricing_verification_max_age_seconds: int = 86400
     together_api_key: str | None = None
     fireworks_api_key: str | None = None
     perplexity_api_key: str | None = None
@@ -132,6 +142,10 @@ def validate_runtime_config(settings: Settings) -> None:
         problems.append("LOCAL_TEST_MODE must be false")
     if settings.billing_payment_mode.strip().lower() != "razorpay":
         problems.append("BILLING_PAYMENT_MODE must be razorpay")
+    if settings.pricing_fx_source.strip().lower() in {"fixed_local", "fixed_local_fallback"}:
+        problems.append("PRICING_FX_SOURCE must use an approved live FX source in production")
+    if settings.pricing_fx_buffer_bps < 0 or settings.pricing_platform_fee_bps < 0:
+        problems.append("Pricing FX buffer and platform fee must be non-negative")
     if not settings.secret_manager_enabled:
         problems.append("SECRET_MANAGER_ENABLED must be true")
     if settings.database_migration_mode.strip().lower() != "alembic":
