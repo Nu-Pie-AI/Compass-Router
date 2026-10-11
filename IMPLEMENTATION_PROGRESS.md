@@ -584,3 +584,9 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Added the Super Admin platform setting `trial_credit_eligible_domains` as an optional email-domain allowlist.
 - Empty or absent allowlists preserve the existing eligible-for-all behavior; configured allowlists grant signup Credits only to matching domains.
 - Added regression coverage for eligible and ineligible domains without changing existing ledger idempotency or financial history.
+
+## Provider analytics presentation - 2026-10-11
+
+- Customer activity and Super Admin operations now render the analytics period and usage finality (`finalized`, `estimated`, or `unavailable`) alongside provider cost and Compass Credits.
+- The additional analytics columns use a dedicated responsive table layout and do not alter request-log presentation.
+- Targeted source lint, web typecheck, and production build passed; repository-wide lint remains noisy because it scans generated `.next-local` output and reports pre-existing generated-code violations.

@@ -423,3 +423,14 @@ No Clerk secret values were printed or committed.
 | Duplicate refund webhook delivery | PASS; second event was idempotently ignored |
 | Refund ledger/status reconciliation | PASS; refund marked processed and one payment event recorded |
 | Live Razorpay sandbox | BLOCKED; external credentials and approval remain required |
+
+## Provider analytics presentation - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Customer activity analytics period and usage finality | PASS; date, estimated/finalized/unavailable usage, provider cost, and Credits are rendered |
+| Super Admin analytics period and usage finality | PASS; operations table renders date, scope, credential mode, usage finality, cost, Credits, and failures |
+| Web source lint | PASS; targeted lint for `AdminConsole.tsx` and `ActivityPage.tsx` |
+| Web typecheck | PASS |
+| Web production build | PASS; 23 routes generated |
+| Repository-wide web lint | BASELINE FAILURE; `eslint .` scans generated `.next-local` artifacts and reports generated-code violations; source-target lint passes |

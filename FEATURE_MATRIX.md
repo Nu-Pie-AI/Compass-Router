@@ -28,7 +28,7 @@ Legend: Implemented, Partial, Mocked, Unverified, Risk.
 | Wallet | Router API and web | wallet, ledger, reserve, settle services | Implemented | Payment gateway completion remains unverified |
 | Payments | Router API and web | order, verify, webhook, refund routes | Partial | Requires production credentials and webhook testing |
 | Invoices | Router API and web | invoice and reconciliation routes | Partial | Accounting workflow needs live validation |
-| Usage and activity | Router API and web | usage and request rows | Implemented | Accuracy depends on provider response metadata |
+| Usage and activity | Router API and web | usage and request rows, provider analytics period/finality presentation | Implemented | Accuracy depends on provider response metadata; live provider verification remains open |
 | Admin controls | Router API and web | admin routes and pages | Partial | Production role and operational audit need verification |
 | Extension device auth | API and extension | device start, poll, approve, token refresh, server-side session revoke, SecretStorage logout | Partial | Live browser/device loop and revocation unverified |
 | Extension chat UI | VS Code extension | src/ui and styles | Implemented | Current UI has a custom agent surface |
