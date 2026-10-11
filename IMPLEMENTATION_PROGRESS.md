@@ -684,6 +684,19 @@ Status: VSIX READY FOR OWNER REVIEW; MARKETPLACE PUBLICATION BLOCKED
 - Check, unit tests, build, package, and Playwright webview suite passed: 10 unit tests and 11 UI tests.
 - Publisher registration, privacy/terms URLs, live Clerk/provider inference, and Marketplace upload remain owner-controlled blockers.
 
+## M18 chat UI and token usage - 2026-10-11
+
+Status: SOURCE FIXES AND AUTOMATED VERIFICATION COMPLETE; LIVE VS CODE HOST SMOKE TEST PENDING
+
+- Reused one assistant transcript item across streaming and tool rounds; added stream-event deduplication.
+- Corrected cumulative stream usage handling so provider totals are counted once per model round.
+- Made Ask mode conversational by default: greetings and general questions send no tools and do not create task plans; repository-oriented prompts can opt into read tools.
+- Removed duplicate visible copy/export actions while retaining them in the conversation menu.
+- Added `M18_CHAT_UI_TOKEN_USAGE_REPORT.md` with root causes, evidence, and remaining live verification.
+- Extension check, 12 unit tests, 11 Playwright UI tests, build, package, diff check, and VSIX secret scan passed.
+- Rebuilt artifact: `compass-code/compass-router-0.1.0.vsix`.
+- No live provider request, Credits settlement, Marketplace publication, or source repository change was performed.
+
 ## M17 publisher confirmation - 2026-10-11
 
 - Owner confirmed Marketplace publisher ID `nu-pie` with display name `Compass (Nu-Pie)`.

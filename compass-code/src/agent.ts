@@ -22,7 +22,7 @@ export type AgentHost = {
 };
 
 const modeInstructions: Record<AgentMode, string> = {
-  ask: "Answer questions about the codebase. Read files when needed. Do not edit files or run commands.",
+  ask: "Answer general and code questions conversationally. Do not edit files or run commands; use read tools only when the request clearly needs workspace evidence.",
   edit: "Inspect the requested code and make only the file edits needed for the request. Do not run commands unless explicitly requested.",
   agent: "Autonomously inspect the repository, plan the work, edit files, run validation, and iterate until the task is complete or permission is required.",
   plan: "Investigate the codebase and produce a concrete implementation plan. Do not edit files or run commands.",
@@ -74,8 +74,6 @@ export class CompassAgent {
 
     this.running = new AbortController();
     this.host.setBusy(true);
-    this.host.setGoalStatus("planning", "Preparing the task plan.");
-    this.host.setPlanStep("plan", "active", "Breaking the request into verifiable steps.");
     const userContent = await this.withEditorContext(prompt.trim(), includeSelection);
     this.host.append({ id: randomId("user"), role: "user", content: prompt.trim() });
     if (!this.messages.length) {
@@ -83,39 +81,45 @@ export class CompassAgent {
     }
     this.messages.push({ role: "user", content: userContent });
 
-    const allowedTools = this.toolsForMode(mode);
+    const allowedTools = this.toolsForMode(mode, prompt);
     const maxTokens = mode === "ask" ? 1536 : mode === "plan" ? 2048 : 3072;
     const maxSteps = vscode.workspace.getConfiguration("compassCode").get<number>("maxAgentSteps", 8);
+    let aggregatePromptTokens = 0;
+    let aggregateCompletionTokens = 0;
     let aggregateTokens = 0;
     let aggregateCost = 0;
     let aggregateLatency = 0;
     let lastRequestId: string | undefined;
     let validationFailed = false;
-    let pendingAssistantId: string | undefined;
+    const pendingAssistantId = randomId("assistant");
+    this.host.append({ id: pendingAssistantId, role: "assistant", content: "", streaming: true, meta: { model } });
 
     try {
       for (let step = 0; step < maxSteps; step += 1) {
-        const assistantId = randomId("assistant");
-        pendingAssistantId = assistantId;
         let assistantText = "";
         const toolCalls = new Map<number, ToolCall>();
         let assistantModel = model;
-        this.host.append({ id: assistantId, role: "assistant", content: "", streaming: true, meta: { model } });
-        for await (const chunk of this.client.stream(model, this.messages.slice(-60), {
+        let roundUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+        let roundCost = 0;
+        const seenStreamEvents = new Set<string>();
+        for await (const chunk of this.client.stream(model, this.requestMessages(), {
           tools: allowedTools,
           signal: this.running.signal,
           maxTokens
         })) {
+          const eventKey = this.streamEventKey(chunk);
+          if (seenStreamEvents.has(eventKey)) continue;
+          seenStreamEvents.add(eventKey);
           assistantModel = chunk.model ?? assistantModel;
-          aggregateTokens += chunk.usage?.total_tokens ?? 0;
-          aggregateCost += chunk.compass?.compass_cost_paise ?? 0;
+          if (chunk.usage) roundUsage = chunk.usage;
+          roundCost = Math.max(roundCost, chunk.compass?.compass_cost_paise ?? 0);
           aggregateLatency = Math.max(aggregateLatency, chunk.compass?.latency_ms ?? 0);
           lastRequestId = chunk.compass?.request_id ?? lastRequestId;
           const delta = chunk.choices?.[0]?.delta;
           const deltaText = this.messageText(delta?.content) || this.messageText((delta as unknown as { reasoning_content?: unknown } | undefined)?.reasoning_content);
           if (deltaText) {
             assistantText += deltaText;
-            this.host.update(assistantId, { content: assistantText, streaming: true });
+            this.host.update(pendingAssistantId, { content: assistantText, streaming: true });
           }
           for (const part of delta?.tool_calls ?? []) {
             const current = toolCalls.get(part.index) ?? {
@@ -134,11 +138,15 @@ export class CompassAgent {
           content: assistantText || null,
           ...(toolCalls.size ? { tool_calls: [...toolCalls.entries()].sort(([left], [right]) => left - right).map(([, call]) => call) } : {})
         };
+        aggregatePromptTokens += roundUsage?.prompt_tokens ?? 0;
+        aggregateCompletionTokens += roundUsage?.completion_tokens ?? 0;
+        aggregateTokens += roundUsage?.total_tokens ?? 0;
+        aggregateCost += roundCost;
         if (assistantText) {
-          this.host.update(assistantId, {
+          this.host.update(pendingAssistantId, {
             content: assistantText,
-            streaming: false,
-            meta: { model: assistantModel, requestId: lastRequestId, tokens: aggregateTokens, costPaise: aggregateCost, latencyMs: aggregateLatency }
+            streaming: true,
+            meta: { model: assistantModel, requestId: lastRequestId, promptTokens: aggregatePromptTokens, completionTokens: aggregateCompletionTokens, tokens: aggregateTokens, costPaise: aggregateCost, latencyMs: aggregateLatency }
           });
         }
         this.messages.push(assistant);
@@ -146,16 +154,20 @@ export class CompassAgent {
         const calls = assistant.tool_calls ?? [];
         if (!calls.length) {
           if (!assistantText) {
-            this.host.update(assistantId, {
+            this.host.update(pendingAssistantId, {
               content: "The selected model returned no text. Check the model route or try again.",
               streaming: false,
-              meta: { model: assistantModel, requestId: lastRequestId, tokens: aggregateTokens, costPaise: aggregateCost, latencyMs: aggregateLatency }
+              meta: { model: assistantModel, requestId: lastRequestId, promptTokens: aggregatePromptTokens, completionTokens: aggregateCompletionTokens, tokens: aggregateTokens, costPaise: aggregateCost, latencyMs: aggregateLatency }
+            });
+          } else {
+            this.host.update(pendingAssistantId, {
+              streaming: false,
+              meta: { model: assistantModel, requestId: lastRequestId, promptTokens: aggregatePromptTokens, completionTokens: aggregateCompletionTokens, tokens: aggregateTokens, costPaise: aggregateCost, latencyMs: aggregateLatency }
             });
           }
           this.host.setPlanStep("complete", "completed", "The model completed the current request.");
           this.host.setGoalStatus(validationFailed ? "failed" : "completed", validationFailed ? "Validation reported failures." : "Task completed.");
           await this.host.refreshAccount();
-          pendingAssistantId = undefined;
           return;
         }
 
@@ -169,13 +181,13 @@ export class CompassAgent {
       this.host.setGoalStatus("failed", `Stopped after ${maxSteps} agent steps.`);
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        if (pendingAssistantId && this.host.has(pendingAssistantId)) {
+        if (this.host.has(pendingAssistantId)) {
           this.host.update(pendingAssistantId, { content: "Task stopped before a response was returned.", streaming: false });
         }
         this.host.append({ id: randomId("status"), role: "status", content: "Task stopped." });
       } else {
         const message = error instanceof Error ? error.message : "Compass task failed.";
-        if (pendingAssistantId) this.host.update(pendingAssistantId, { content: "No response was received from the selected model.", streaming: false });
+        this.host.update(pendingAssistantId, { content: "No response was received from the selected model.", streaming: false });
         this.host.append({ id: randomId("error"), role: "error", content: message });
         this.host.setPlanStep("complete", "failed", message);
         this.host.setGoalStatus("failed", message);
@@ -311,8 +323,9 @@ export class CompassAgent {
     });
   }
 
-  private toolsForMode(mode: AgentMode): ToolDefinition[] {
+  private toolsForMode(mode: AgentMode, prompt: string): ToolDefinition[] {
     if (mode === "ask" || mode === "plan") {
+      if (mode === "ask" && !this.shouldUseReadTools(prompt)) return [];
       return toolDefinitions.filter((tool) => toolKind(tool.function.name) === "read");
     }
     if (mode === "edit") {
@@ -326,17 +339,33 @@ export class CompassAgent {
 
   private systemPrompt(mode: AgentMode): string {
     return [
-      "You are Compass Router, a careful coding agent running inside Visual Studio Code.",
+      "You are Compass Router, a careful coding assistant inside Visual Studio Code.",
       modeInstructions[mode],
-      "Use workspace-relative paths. Inspect existing code before proposing changes.",
+      "Use workspace-relative paths and only use tools when they materially help answer the request.",
       "Honor explicit context references such as @file, @folder, @workspace, @selection, @terminal, @git, and @problems.",
       "Never claim a command, edit, test, or result occurred unless its tool output proves it.",
       "Never request, reveal, or write API keys, passwords, .env contents, or provider secrets.",
       "Never create a Git commit unless the user explicitly asks you to commit.",
       "Keep edits narrowly scoped. Preserve existing user changes and established project patterns.",
-      "When you finish, summarize changed files and validation results concisely.",
-      "When returning complete generated file content, use a fenced code block with a path=relative/path.ext info tag so it can be reviewed and applied."
+      "Keep the answer concise and state only work proven by tool output."
     ].join("\n");
+  }
+
+  private shouldUseReadTools(prompt: string): boolean {
+    const normalized = prompt.trim().toLocaleLowerCase();
+    if (/^(hi|hello|hey|thanks|thank you|good morning|good afternoon|good evening|how are you|what can you do)[!.?,\s]*$/i.test(normalized)) return false;
+    return /@(?:file|folder|workspace|selection|terminal|git|problems)\b|\b(workspace|repository|repo|codebase|file|folder|function|class|module|bug|error|stack trace|logs?|current changes|git diff|implement|edit|fix|review|test|diagnos)\b/i.test(normalized);
+  }
+
+  private streamEventKey(chunk: { id?: string; choices?: Array<{ index: number; delta?: unknown; finish_reason?: string | null }>; usage?: unknown; compass?: unknown }): string {
+    return JSON.stringify({ id: chunk.id ?? "", choices: chunk.choices ?? [], usage: chunk.usage ?? null, compass: chunk.compass ?? null });
+  }
+
+  private requestMessages(): ChatMessage[] {
+    return this.messages.slice(-32).map((message) => ({
+      ...message,
+      content: typeof message.content === "string" ? truncate(message.content, 6000) : message.content,
+    }));
   }
 
   private async withEditorContext(prompt: string, includeSelection: boolean): Promise<string> {

@@ -95,6 +95,8 @@ export type TranscriptItem = {
   meta?: {
     model?: string;
     requestId?: string;
+    promptTokens?: number;
+    completionTokens?: number;
     tokens?: number;
     costPaise?: number;
     latencyMs?: number;

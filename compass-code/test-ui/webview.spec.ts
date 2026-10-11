@@ -108,6 +108,7 @@ test("disconnected state uses the Compass Router onboarding flow", async ({ page
 });
 test("chat exposes task controls, slash commands, context chips, and transcript actions", async ({ page }) => {
   await update(page, {
+    mode: "code",
     goal: {
       id: "goal-1",
       title: "Repair the login flow",

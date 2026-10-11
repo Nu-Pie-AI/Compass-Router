@@ -2,6 +2,7 @@
 
 ## 0.1.0
 
+- M18 chat lifecycle fixes: one assistant response across tool rounds, stream-event deduplication, cumulative usage accounting, and conversational Ask mode without automatic workspace tools.
 - First Compass Router Marketplace packaging target.
 - Browser-based Compass workspace authorization with secure local session storage.
 - Company-scoped model, project, and assigned-key access.

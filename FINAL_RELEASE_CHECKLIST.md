@@ -98,4 +98,12 @@ Status: NOT READY
 - [x] Confirm first version `0.1.0` is not already published.
 - [ ] Add approved Privacy Policy and Terms of Service URLs.
 - [ ] Verify live Clerk/company/key/project/inference/revocation flows.
+
+## M18 chat UI and token usage evidence - 2026-10-11
+
+- [x] One logical assistant response is rendered across streaming/tool rounds.
+- [x] Duplicate stream events and cumulative usage overcounting are covered by agent regression tests.
+- [x] Ask-mode greetings avoid tools and task-plan UI; plan/execution modes retain goal controls.
+- [x] Extension check, 12 unit tests, 11 Playwright tests, build, package, diff check, and VSIX secret scan passed.
+- [ ] Live VS Code Extension Development Host greeting, cancellation, retry, reload, provider attribution, and Credits reconciliation verification.
 - [ ] Owner authorizes Marketplace publication.

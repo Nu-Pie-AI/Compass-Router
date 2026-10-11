@@ -697,6 +697,10 @@ class CompassViewProvider implements vscode.WebviewViewProvider {
   }
 
   private startOrContinueGoal(prompt: string, model: string, mode: AgentMode): void {
+    if (mode === "ask") {
+      this.state.goal = null;
+      return;
+    }
     const now = Date.now();
     const current = this.state.goal;
     if (!current || current.status === "completed" || current.status === "cancelled" || current.status === "failed") {

@@ -210,6 +210,12 @@ M4 implementation blockers:
 - Scheduler and Secret Manager artifacts are prepared and locally validated but not created; owner approval, service-account IAM, and staging Cloud Run authentication are required.
 - M16 local security hardening now rejects legacy human sessions when the API runs in production/staging mode.
 
+## M18 chat UI and token usage blockers - 2026-10-11
+
+- Automated lifecycle and webview tests pass after fixing duplicate assistant placeholders, duplicate stream-event handling, cumulative usage overcounting, and unconditional Ask-mode planning/tools.
+- A real VS Code Extension Development Host smoke test is still required to verify one greeting request against the connected Compass API, server-side usage, cancellation, retry, reload, and live provider attribution.
+- No live provider credentials, payment, Credits settlement, Marketplace publication, or production service mutation was performed for M18.
+
 ## M17 VS Code extension Marketplace readiness - 2026-10-11
 
 - The publisher is confirmed as `nu-pie` / `Compass (Nu-Pie)`, and Marketplace lookup found no existing `nu-pie.compass-router` listing, so `0.1.0` remains available.

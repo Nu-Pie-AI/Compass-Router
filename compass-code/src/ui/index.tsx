@@ -590,8 +590,6 @@ function ChatHeader({ state, onNewTask }: { state: State; onNewTask: () => void 
         </div>
       </div>
       <div className="chat-actions">
-        <Action name="copy" label="Copy conversation" disabled={!state.transcript.length} onClick={() => post({ type: "copyTranscript" })} />
-        <Action name="save" label="Export conversation" disabled={!state.transcript.length} onClick={() => post({ type: "exportTranscript" })} />
         <Action name="add" label="New task" disabled={state.busy} onClick={onNewTask} />
         <div className="menu-wrap">
           <Action name="ellipsis" label="Conversation options" onClick={() => setMenu((value) => !value)} />
@@ -830,7 +828,7 @@ function App() {
           {page === "chat" && (
             <>
               <ChatHeader state={state} onNewTask={() => { post({ type: "newTask" }); setDraft(""); setContextRefs([]); }} />
-              <ProgressStrip goal={state.goal} />
+              {state.mode !== "ask" && <ProgressStrip goal={state.goal} />}
               <div
                 className="transcript"
                 ref={scroll}
@@ -841,7 +839,7 @@ function App() {
                   setJump(!follow.current);
                 }}
               >
-                {state.goal && <Goal goal={state.goal} busy={state.busy} />}
+                {state.mode !== "ask" && state.goal && <Goal goal={state.goal} busy={state.busy} />}
                 {!state.transcript.length && (
                   <div className="empty">
                     <Icon name="compass" />
