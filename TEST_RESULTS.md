@@ -521,6 +521,20 @@ No Clerk secret values were printed or committed.
 - Python compile check: passed after Clerk/pricing changes.
 - `git diff --check`: passed before documentation changes.
 - Live Clerk invitation/email test: not run; requires Clerk Organizations, secret, webhook, and browser approval.
+
+## M16 isolated staging and security verification - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Full Python regression | PASS; 127 passed, one existing Pydantic deprecation warning |
+| Production legacy-session rejection | PASS; organization-admin route rejects legacy session with `clerk_auth_required` |
+| Cloud Run template validation | PASS; 3 templates |
+| Cloud Scheduler FX template validation | PASS; authenticated staging OIDC target, bounded retries, no secret values |
+| Web lint/typecheck/build | PASS |
+| VS Code extension check/test/build | PASS; 10 tests; source unchanged |
+| Local protected web route smoke | PASS; `/login` 200 and `/dashboard` redirects to `/login` |
+| Read-only Neon verifier | BLOCKED; protected customer/financial rows found, no migration attempted |
+| Browser Clerk, invitation, MFA, provider, payment, and Cloud Run flows | NOT RUN; external credentials, browser, isolation, or approval required |
 - Live FX refresh test: not run; no approved FX provider configured.
 - AICredits public reference audit: completed from pricing, pricing documentation, and model catalog pages; no private endpoint or competitor credential was used.
 - Full backend regression after the M14 schema and route changes: `117 passed, 1 warning`.

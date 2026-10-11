@@ -24,3 +24,10 @@ The root `.env.example` contains placeholders/defaults only. Runtime settings lo
 Production rejects the fixed local FX source, requires Alembic, Secret Manager, Clerk, Razorpay, and non-development secrets, and keeps OpenRouter optional. Neon, Upstash, provider keys, Clerk secrets, and Razorpay values must be stored outside Git.
 
 Credentials pasted into the development session must be rotated before staging or production use. Values are intentionally omitted from this report.
+
+## M16 local configuration status - 2026-10-11
+
+- The ignored root `.env` exists and is not tracked. Its key names were audited without printing values.
+- Current local values identify a development runtime: `ENVIRONMENT=development`, legacy migration mode, development billing, and disabled Secret Manager. Do not use this file as a staging deployment source without replacing the relevant values through secure configuration.
+- `.env.example` remains placeholder-only. Neon, Clerk, Upstash, provider, SMTP, Razorpay, and FX job secrets must be supplied through ignored local files or Secret Manager.
+- Previously exposed credentials require rotation and revalidation before staging use.

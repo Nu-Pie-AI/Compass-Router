@@ -118,6 +118,16 @@ def test_portal_context_is_server_derived_for_company_owner_and_platform_admin()
     assert platform_context.json()["portal"] == "super-admin"
 
 
+def test_production_rejects_legacy_human_sessions(monkeypatch):
+    customer_email = f"m16-legacy-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": customer_email, "password": "M16Legacy123!", "organization_name": "M16 Legacy Workspace"})
+    assert signup.status_code == 200, signup.text
+    monkeypatch.setattr(main_module.settings, "environment", "production")
+    response = client.get("/organization/members", headers={"Authorization": f"Bearer {signup.json()['token']}"})
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"]["code"] == "clerk_auth_required"
+
+
 def test_m9_owner_bootstrap_is_configured_clerk_bound_and_idempotent(monkeypatch):
     clerk_id = f"user_m9_owner_{time.time_ns()}"
     email = f"m9-owner-{time.time_ns()}@example.com"

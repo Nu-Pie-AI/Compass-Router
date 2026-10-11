@@ -233,6 +233,8 @@ def current_user(request: Request, authorization: str | None = Header(default=No
             request.state.auth_source = "session"
     except (JWTError, ValueError, KeyError):
         pass
+    if user is not None and settings.environment.strip().lower() in {"production", "prod"}:
+        raise compass_error(401, "clerk_auth_required", "Staging and production human sessions require Clerk authentication.")
     if user is None:
         try:
             clerk_claims = authenticate_clerk_request(request)
@@ -272,7 +274,9 @@ def admin_user(request: Request, user: User = Depends(current_user), db: Session
     return user
 
 
-def organization_admin(user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
+def organization_admin(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
+    if settings.environment.strip().lower() in {"production", "prod"} and getattr(request.state, "auth_source", "") != "clerk":
+        raise compass_error(401, "clerk_organization_auth_required", "Organization administration requires a Clerk-authenticated session.")
     if is_admin(user):
         return user
     organization_id = organization_id_for_user(db, user.id)

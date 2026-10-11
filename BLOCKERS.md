@@ -200,3 +200,12 @@ M4 implementation blockers:
 - A production-approved FX source and refresh worker are not configured. The fixed FX value is now rejected for production and remains local-only.
 - Cached-input, cache-write, reasoning, audio/image/tool, tiered pricing, and FIFO expiring credit lots are not yet first-class Compass billing semantics.
 - Credentials pasted into the session must be rotated before staging use. No rotation was performed automatically.
+
+## M16 isolated staging and security verification - 2026-10-11
+
+- **Critical:** the read-only Neon verifier reached the configured target but found protected customer/financial rows. Project/branch identity is not independently proven from authoritative Neon metadata, so migration `j4k5l6m7n8o9` and all write/concurrency tests remain blocked.
+- The root local configuration is development-mode (`DATABASE_MIGRATION_MODE=legacy`, development billing, and Secret Manager disabled); it is not a staging deployment configuration.
+- Neon, Clerk, and Upstash credentials shown or supplied earlier are treated as compromised and require owner rotation. No automatic rotation was performed.
+- Clerk browser/MFA/session revocation, organization invitation email, real provider inference, Upstash runtime concurrency, Razorpay sandbox, and VS Code device authorization remain externally blocked.
+- Scheduler and Secret Manager artifacts are prepared and locally validated but not created; owner approval, service-account IAM, and staging Cloud Run authentication are required.
+- M16 local security hardening now rejects legacy human sessions when the API runs in production/staging mode.

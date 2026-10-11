@@ -7,3 +7,8 @@ Frankfurter is attempted first, then Fawaz. If both fail, the existing approved 
 Use `GET /admin/pricing/fx` for Super Admin status/history and `POST /admin/pricing/fx/refresh` for an authorized manual refresh. Never log secrets or use destructive Redis flush commands.
 
 The default four-day maximum age allows daily publication gaps for weekends and holidays; review this policy before production use.
+
+Local validation: `python infra/gcp/validate_scheduler_template.py` checks the
+OIDC target, staging placeholders, bounded retries, timezone, and absence of
+credentials. It does not create a Cloud Scheduler job or prove that referenced
+GCP resources exist.

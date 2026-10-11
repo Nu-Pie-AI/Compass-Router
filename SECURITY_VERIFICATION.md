@@ -58,3 +58,11 @@ Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret
 - Signed Clerk organization claims are required for organization membership reconciliation; removed Compass memberships are denied.
 - Production rejects fixed local FX configuration so stale hardcoded conversion cannot silently bill customers.
 - Credentials exposed in the user-provided `.env` content must be rotated; no credential values are recorded here.
+
+## M16 isolated staging and authentication hardening - 2026-10-11
+
+- Production/staging human requests reject legacy password-session tokens before protected route authorization; machine-to-machine Compass API-key routes remain separate.
+- Organization administration is now Clerk-only in production/staging mode, matching the existing platform-admin and member-inference boundaries.
+- Scheduler template validation confirms OIDC authentication, staging-only target placeholders, bounded retry settings, and no plaintext secrets.
+- Repository checks found no committed live credential values outside documented placeholders/test fixtures; ignored local secrets remain outside Git and must be rotated because they were exposed during setup.
+- Neon isolation, PostgreSQL transaction behavior, Redis runtime behavior, Clerk live claims/MFA, provider health, and deployment IAM remain unverified.

@@ -77,3 +77,13 @@ Status: NOT READY
 - [ ] Configure and verify Clerk Organizations, email delivery, webhooks, and browser acceptance.
 - [ ] Configure approved live FX source and refresh/stale-rate worker.
 - [ ] Implement first-class special-token pricing and credit-lot FIFO expiry.
+
+## M16 isolated staging and security evidence - 2026-10-11
+
+- [x] Production legacy human sessions are rejected before protected organization/platform administration.
+- [x] Cloud Scheduler FX refresh template validation is automated and passed.
+- [x] Full local backend, web, extension, Cloud Run-template, Scheduler-template, and diff validation passed.
+- [ ] Prove isolated Neon branch/project identity and empty protected tables.
+- [ ] Apply and verify migration `j4k5l6m7n8o9` on isolated staging only.
+- [ ] Rotate exposed Neon, Clerk, and Upstash credentials.
+- [ ] Verify live Clerk, invitations, MFA, provider inference, Redis, Razorpay sandbox, browser, extension, Secret Manager, and Cloud Run flows.

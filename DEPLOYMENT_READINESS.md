@@ -127,3 +127,11 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Clerk invitation delivery remains disabled by default until the Clerk instance and redirect URL are verified.
 - Production billing is not ready until an approved FX source replaces the fixed local fallback and its freshness/alerting behavior is tested.
 - No production service, database, secret, wallet, payment, or Cloud Run resource was changed.
+
+## M16 isolated staging and security readiness - 2026-10-11
+
+- **NOT READY.** The configured Neon target is reachable but the read-only verifier found protected customer/financial rows; authoritative branch identity is still unproven.
+- Migration `j4k5l6m7n8o9` remains unapplied. No database write or destructive cleanup was attempted.
+- Local source verification is green: 127 backend tests, web lint/typecheck/build, extension check/test/build, Cloud Run templates, Scheduler template, and diff check.
+- Production human authentication now rejects legacy password sessions and requires Clerk before protected organization/platform administration.
+- Secret rotation, isolated Neon provisioning, live Clerk/provider/Redis/Razorpay tests, Secret Manager, Cloud Scheduler, Cloud Run, and browser verification remain release gates.

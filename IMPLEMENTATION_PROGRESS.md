@@ -659,3 +659,15 @@ Status: LOCAL CLERK INVITATION PATH AND VERSIONED PRICING POLICY FIELDS IMPLEMEN
 - Replaced remaining visible Wallet wording in financial error messages, ledger descriptions, admin adjustment feedback, and refund guidance with Credits.
 - Preserved wallet persistence names, compatibility API paths, and error codes to avoid migration and client breakage.
 - Full backend regression remains green at 115 tests; web lint and typecheck also pass.
+
+## M16 isolated staging and security verification - 2026-10-11
+
+Status: LOCAL HARDENING COMPLETE; STAGING ISOLATION AND LIVE VERIFICATION BLOCKED
+
+- Verified branch `staging/safe-deployment-2026-10-09` at commit `9dbe703` before changes and preserved all untracked user artifacts.
+- Re-ran the read-only Neon verifier. It reached the configured target but found protected customer/financial rows, so database identity is not accepted as isolated and migration `j4k5l6m7n8o9` was not run.
+- Hardened production human authentication so legacy password sessions are rejected before protected routes; Clerk is required for platform and organization administration and member flows.
+- Added local validation for the authenticated staging FX Scheduler template.
+- Full backend regression: 127 passed with one existing Pydantic deprecation warning. Web lint/typecheck/build, extension check/test/build, Cloud Run validation, Scheduler validation, and diff check passed.
+- Added `M16_STAGING_VERIFICATION_REPORT.md` with the evidence, blockers, owner actions, and release decision.
+- No production service, database, wallet, payment, secret, Cloud Scheduler, Secret Manager, or Cloud Run resource was changed.

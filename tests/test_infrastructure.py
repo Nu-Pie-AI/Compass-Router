@@ -5,6 +5,7 @@ from pathlib import Path
 from app.observability import JsonFormatter
 from infra.gcp.validate_templates import main
 from infra.gcp.build_release import main as build_release
+from infra.gcp.validate_scheduler_template import validate_template as validate_scheduler_template
 
 
 def test_cloud_run_templates_are_placeholder_only():
@@ -15,6 +16,10 @@ def test_api_template_requires_production_runtime_values():
     from infra.gcp.validate_templates import validate_template
 
     validate_template(Path("infra/gcp/cloudrun-api-service.yaml.template"))
+
+
+def test_fx_scheduler_template_is_authenticated_and_staging_scoped():
+    validate_scheduler_template()
 
 
 def test_release_builder_dry_run_does_not_push_or_write():
