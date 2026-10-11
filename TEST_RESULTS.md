@@ -435,3 +435,14 @@ No Clerk secret values were printed or committed.
 | Web production build | PASS; 23 routes generated |
 | Repository-wide web lint | PASS; ESLint now ignores generated `.next`, `.next-local`, `out`, and `node_modules` artifacts |
 | Full backend regression after analytics UI changes | PASS; 114 passed, 1 existing Pydantic deprecation warning |
+
+## BYOK failure and streaming accounting - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Failed BYOK chat request | PASS; provider failure records BYOK usage without wallet reservation or settlement |
+| Failed BYOK streaming request | PASS; SSE error is recorded with zero Compass Credits and no wallet ledger entries |
+| BYOK wallet invariant | PASS; wallet balance is unchanged and provider credential mode remains `byok` |
+| Streaming transaction finalization | PASS; chat and JSON streaming success, failure, and cancellation paths explicitly commit request/settlement state |
+| Focused regression | PASS; 3 tests passed |
+| Full backend regression | PASS; 115 passed, 1 existing Pydantic deprecation warning |

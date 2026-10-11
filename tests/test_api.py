@@ -1651,6 +1651,74 @@ def test_team_byok_activation_and_routing(monkeypatch):
     assert deleted.json()["status"] == "revoked"
 
 
+def test_byok_failed_and_streaming_requests_never_create_wallet_entries(monkeypatch):
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    raw_secret = "sk-byok-failure-stream-123456"
+    saved = client.post("/byok/credentials", json={"team_id": team["id"], "provider": "openai", "api_key": raw_secret}, headers=headers)
+    assert saved.status_code == 200, saved.text
+    services._litellm_catalog_cache.update(
+        expires_at=time.monotonic() + 60,
+        models=[{
+            "provider": "openai", "provider_model_id": "openai/gpt-byok-failure", "litellm_model_id": "openai/gpt-byok-failure",
+            "display_name": "GPT BYOK failure test", "capabilities": ["chat"], "mode": "chat", "context_window": 32768,
+            "capability_types": ["chat_completion"], "input_cost_per_million_usd": 1.0, "output_cost_per_million_usd": 2.0,
+            "byok_supported": True, "metadata": {},
+        }],
+        sources=[{"provider": "openai", "status": "available", "count": 1, "error": None}],
+    )
+    activated = client.post("/models/activate", json={"team_id": team["id"], "model_id": "openai/gpt-byok-failure"}, headers=headers)
+    assert activated.status_code == 200, activated.text
+    key = create_key_fixture(headers, team["id"], models=["openai/gpt-byok-failure"])["key"]
+    credit(headers, team["id"], 5000, suffix="byok-failure")
+    before_balance = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"]
+
+    async def failed_provider(self, payload):  # noqa: ARG001
+        raise compass_error(503, "provider_unavailable", "BYOK provider unavailable.")
+
+    monkeypatch.setattr(LiteLLMClient, "chat_completion", failed_provider)
+    failed = chat(key, model="openai/gpt-byok-failure")
+    assert failed.status_code == 503, failed.text
+    assert client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"] == before_balance
+
+    class FailedStreamingProvider:
+        async def stream_request(self, endpoint, payload):  # noqa: ARG002
+            raise compass_error(503, "provider_unavailable", "BYOK stream unavailable.")
+            yield "never"
+
+    monkeypatch.setattr(services.get_settings(), "local_test_mode", False)
+    monkeypatch.setattr(services, "provider_client", lambda _route: FailedStreamingProvider())
+    db = TestingSessionLocal()
+    credential = db.query(ByokCredential).filter(ByokCredential.team_id == team["id"]).one()
+    credential.encrypted_secret = encrypt_secret(raw_secret)
+    credential.status = "active"
+    db.commit()
+    db.close()
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "openai/gpt-byok-failure", "messages": [{"role": "user", "content": "Hello Compass"}], "max_tokens": 64, "stream": True},
+        headers={"Authorization": f"Bearer {key}"},
+    ) as streamed:
+        streamed_text = "".join(streamed.iter_text())
+        assert streamed.status_code == 200, streamed_text
+    assert "provider_unavailable" in streamed_text
+    assert client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"] == before_balance
+    db = TestingSessionLocal()
+    try:
+        wallet = db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one()
+        assert db.query(WalletLedger).filter(WalletLedger.wallet_id == wallet.id, WalletLedger.reference_type.in_(["llm_reservation", "llm_settlement"])).count() == 0
+        requests = db.query(LlmRequest).filter(LlmRequest.team_id == team["id"], LlmRequest.resolved_model == "openai/gpt-byok-failure").order_by(LlmRequest.created_at.desc()).all()
+        assert {request.credential_mode for request in requests} == {"byok"}
+        assert all(request.compass_cost_paise == 0 for request in requests)
+    finally:
+        provider = db.query(Provider).filter(Provider.name == "openai").one()
+        db.query(ProviderHealthCheck).filter(ProviderHealthCheck.provider_id == provider.id).delete(synchronize_session=False)
+        provider.status = "healthy"
+        db.commit()
+        db.close()
+
+
 def test_signup_promotion_is_configurable_and_idempotent():
     amount = 1234
     db = TestingSessionLocal()

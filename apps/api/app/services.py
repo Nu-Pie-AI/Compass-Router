@@ -3077,6 +3077,7 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
                 record.usage_source = "none"
                 if reservation_id is not None:
                     settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+                db.commit()
                 return
 
             if usage is None:
@@ -3096,12 +3097,14 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
             db.flush()
             if reservation_id is not None:
                 settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+            db.commit()
         except asyncio.CancelledError:
             latency_ms = int((time.perf_counter() - started) * 1000)
             record = create_request_record(db, api_key, selected, body["model"], "cancelled", latency_ms, "client_disconnected", attempt_rows)
             record.usage_source = "none"
             if reservation_id is not None:
                 settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+            db.commit()
             raise
 
     return events()
@@ -3232,6 +3235,7 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
                 record.usage_source = "none"
                 if reservation_id is not None:
                     settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+                db.commit()
                 return
 
             usage_source = "provider"
@@ -3252,12 +3256,14 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
             db.flush()
             if reservation_id is not None:
                 settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+            db.commit()
         except asyncio.CancelledError:
             latency_ms = int((time.perf_counter() - started) * 1000)
             record = create_request_record(db, api_key, selected, body["model"], "cancelled", latency_ms, "client_disconnected", attempt_rows)
             record.usage_source = "none"
             if reservation_id is not None:
                 settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, record.id)
+            db.commit()
             raise
 
     return events()

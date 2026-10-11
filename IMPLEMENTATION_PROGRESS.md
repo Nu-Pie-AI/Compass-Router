@@ -591,3 +591,9 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - The additional analytics columns use a dedicated responsive table layout and do not alter request-log presentation.
 - Web lint, typecheck, and production build passed; ESLint now ignores generated `.next`, `.next-local`, `out`, and `node_modules` artifacts.
 - Full backend regression after the analytics UI change passed with 114 tests and one existing Pydantic deprecation warning.
+
+## BYOK failure and streaming accounting - 2026-10-11
+
+- Added regression coverage for failed BYOK chat and streaming requests, proving unchanged balance, no reservation/settlement ledger entries, and zero Compass Credits.
+- Streaming chat and JSON API paths now explicitly commit request, provider-health, and settlement state on success, provider failure, and client cancellation; this also prevents open SQLite transactions from leaking across requests.
+- Focused tests and the full backend suite pass: 115 tests, with one existing Pydantic deprecation warning.
