@@ -90,6 +90,8 @@ from .services import (
     _set_local_provider_route,
     api_project_context,
     device_session_context,
+    member_inference_context,
+    resolve_member_inference_key,
     approve_extension_device as approve_extension_device_service,
     poll_extension_device_authorization,
     revoke_extension_sessions_for_user,
@@ -1631,10 +1633,11 @@ def admin_fx_refresh(actor: User = Depends(admin_user), db: Session = Depends(ge
 
 
 @app.post("/internal/jobs/fx-refresh")
-def internal_fx_refresh(x_compass_job_secret: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
+def internal_fx_refresh(request: Request, x_compass_job_secret: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
     """Cloud Scheduler target; the secret stays server-side and is never logged."""
     expected = settings.fx_refresh_job_secret
-    if not expected or not x_compass_job_secret or not hmac.compare_digest(x_compass_job_secret, expected):
+    iam_request = settings.fx_refresh_iam_auth_enabled and request.headers.get("authorization", "").startswith("Bearer ")
+    if not iam_request and (not expected or not x_compass_job_secret or not hmac.compare_digest(x_compass_job_secret, expected)):
         raise HTTPException(status_code=401, detail="Invalid job credentials.")
     from .fx_service import refresh_fx_quote
     return refresh_fx_quote(db)
@@ -1829,6 +1832,48 @@ async def chat_completions(body: ChatCompletionRequest, authorization: str | Non
         full_response = await complete_chat(db, api_key, payload | {"stream": False})
         return StreamingResponse(stream_openai_chunks(full_response), media_type="text/event-stream")
     return await complete_chat(db, api_key, payload)
+
+
+@app.post("/member/v1/chat/completions", dependencies=[Depends(enforce_body_limit)])
+async def member_chat_completions(
+    body: ChatCompletionRequest,
+    request: Request,
+    key_id: str | None = Header(default=None, alias="X-Compass-Key-Id"),
+    project_id: str | None = Header(default=None, alias="X-Compass-Project-Id"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Run inference for a Clerk member without exposing a raw Compass key."""
+    if getattr(request.state, "auth_source", "") != "clerk":
+        raise compass_error(401, "clerk_member_auth_required", "Member inference requires a Clerk-authenticated session.")
+    if not key_id:
+        raise compass_error(400, "member_key_required", "Select an assigned Compass API key alias.")
+    key, member, selected_project = resolve_member_inference_key(db, user, key_id, project_id)
+    project_token = api_project_context.set(selected_project)
+    member_token = member_inference_context.set((user.id, member.id))
+    try:
+        payload = body.model_dump()
+        if not body.stream:
+            return await complete_chat(db, key, payload)
+        if settings.local_test_mode:
+            full_response = await complete_chat(db, key, payload | {"stream": False})
+            return StreamingResponse(stream_openai_chunks(full_response), media_type="text/event-stream")
+        events = await stream_chat(db, key, payload)
+
+        async def guarded_events():
+            nested_project = api_project_context.set(selected_project)
+            nested_member = member_inference_context.set((user.id, member.id))
+            try:
+                async for event in events:
+                    yield event
+            finally:
+                member_inference_context.reset(nested_member)
+                api_project_context.reset(nested_project)
+
+        return StreamingResponse(guarded_events(), media_type="text/event-stream")
+    finally:
+        member_inference_context.reset(member_token)
+        api_project_context.reset(project_token)
 
 
 @app.post("/v1/responses", dependencies=[Depends(enforce_body_limit)])

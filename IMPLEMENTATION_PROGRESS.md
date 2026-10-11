@@ -586,6 +586,13 @@ Status: ADDITIVE DATA MODEL AND ADMIN POLICY API IMPLEMENTED; MANAGED INFERENCE 
 
 ## M15 FX provider integration - 2026-10-11
 
+## M15 + M13.1 completion/integration - 2026-10-11
+
+- Added Clerk-authenticated member inference with server-side key assignment and project/model authorization.
+- Member usage attribution now uses the authenticated member identity while reusing existing Credits and BYOK settlement paths.
+- Neon migration was not applied because the read-only verifier found protected customer/financial rows in the configured branch.
+- Frankfurter succeeds from this environment with the explicit adapter User-Agent; Fawaz fallback also passed read-only validation.
+
 - Added Decimal-based Frankfurter primary and documented Fawaz fallback adapters.
 - Added durable `fx_rate_quotes` history, approved quote validation, Redis cache acceleration, distributed refresh locking, and Super Admin status/manual refresh endpoints.
 - Added an authenticated Cloud Scheduler target without creating scheduler infrastructure.

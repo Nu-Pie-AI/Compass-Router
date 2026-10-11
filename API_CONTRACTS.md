@@ -32,6 +32,10 @@ The `decision` capability is reserved for a later verified native provider. No J
 - Production admin sessions must be Clerk-authenticated; Super Admin operations additionally require verified MFA claims when `PLATFORM_SUPER_ADMIN_REQUIRE_MFA=true`.
 ## M13 team API key contracts - 2026-10-11
 
+### Clerk member inference
+
+`POST /member/v1/chat/completions` requires a Clerk session and `X-Compass-Key-Id`. It accepts only a safe key ID/alias selection, never a raw Compass key. `X-Compass-Project-Id` is required when the key has multiple authorized projects. The server verifies active assignment, key status/expiry, team and organization scope, project membership, model policy, limits, and billing mode before calling the existing gateway. `stream: true` uses the existing SSE path.
+
 - `GET /api-keys/assigned` returns safe assigned aliases for the authenticated member and never a raw secret.
 - `GET /api-keys/{id}/members` and `PUT /api-keys/{id}/members` manage active team-member assignments for an authorized team owner/organization admin.
 - `GET /api-keys/{id}/projects` and `PUT /api-keys/{id}/projects` manage active project policies for an authorized team owner/organization admin.

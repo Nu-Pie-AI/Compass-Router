@@ -51,6 +51,15 @@ Status: NOT READY
 - [ ] Live SMTP, provider inference, Razorpay sandbox, PostgreSQL/Redis runtime, Cloud Run, Secret Manager, monitoring, and rollback evidence.
 ## M13 additions - 2026-10-11
 
+## M15 + M13.1 additions - 2026-10-11
+
+- [ ] Verify isolated Neon staging branch is empty of protected customer/financial data.
+- [ ] Apply and verify migration `j4k5l6m7n8o9` in staging only.
+- [x] Validate member key assignment authorization locally without exposing raw keys.
+- [ ] Verify real Clerk member inference and streaming with staging credentials.
+- [ ] Create approved Cloud Scheduler OIDC job and dedicated IAM service account.
+- [ ] Rotate previously exposed Neon, Clerk, and Upstash credentials.
+
 - [x] Additive member/project API-key policy schema reviewed.
 - [x] Raw machine-key compatibility preserved.
 - [x] Member-safe alias endpoint and scoped assignment endpoints implemented.

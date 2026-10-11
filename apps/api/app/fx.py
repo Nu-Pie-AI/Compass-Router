@@ -58,7 +58,7 @@ class FrankfurterAdapter:
         for _ in range(self.attempts):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
-                    response = client.get(url, headers={"Accept": "application/json"})
+                    response = client.get(url, headers={"Accept": "application/json", "User-Agent": "Compass-Router-fx-refresh/1.0"})
                 response.raise_for_status()
                 return _quote_from_payload(response.json(), provider=self.name, source_reference=url)
             except (httpx.HTTPError, ValueError, FxProviderError) as exc:
@@ -80,7 +80,7 @@ class FawazAdapter:
         for _ in range(self.attempts):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
-                    response = client.get(url, headers={"Accept": "application/json"})
+                    response = client.get(url, headers={"Accept": "application/json", "User-Agent": "Compass-Router-fx-refresh/1.0"})
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("usd"), dict):

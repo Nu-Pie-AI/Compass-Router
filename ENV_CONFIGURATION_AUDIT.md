@@ -1,5 +1,9 @@
 # M14 Environment Configuration Audit
 
+## M15/M13.1 additions
+
+`FX_REFRESH_IAM_AUTH_ENABLED` defaults to false. Enable it only on a private Cloud Run service requiring Google-authenticated OIDC requests from the dedicated Scheduler service account. `FX_REFRESH_JOB_SECRET` remains a Secret Manager value for local or application-secret authentication and is never committed.
+
 ## Added typed settings
 
 - `CLERK_ORGANIZATION_INVITATIONS_ENABLED`

@@ -499,6 +499,18 @@ No Clerk secret values were printed or committed.
 
 ## M15 verification - 2026-10-11
 
+## M15 + M13.1 integration verification - 2026-10-11
+
+- Member assignment/inference authorization regression: passed, 1 test.
+- Neon read-only verifier: blocked by protected-table population; no migration executed.
+- Frankfurter v2/v1 read-only connectivity with explicit User-Agent: passed.
+- Fawaz read-only connectivity: passed.
+- Cloud Scheduler and live Clerk/provider browser flows: not run.
+- Full backend pytest: passed, 125 tests, one existing Pydantic deprecation warning.
+- Web lint, typecheck, and production build: passed.
+- VS Code extension check, tests, and build: passed, 10 tests.
+- Cloud Run template validation: passed.
+
 - FX adapter unit tests: passed, 7 tests.
 - Catalog, migration, and database configuration focused tests: passed, 11 tests.
 - Live public FX smoke test: Fawaz endpoint passed read-only schema check; Frankfurter returned HTTP 403 from this environment. No customer inference or paid operation was attempted.

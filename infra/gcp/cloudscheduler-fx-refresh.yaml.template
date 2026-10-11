@@ -1,0 +1,16 @@
+# Preparation artifact only. Create only after owner approval.
+name: projects/${GCP_PROJECT_ID}/locations/${REGION}/jobs/compass-router-fx-refresh-staging
+schedule: "0 2 * * *"
+timeZone: "Asia/Kolkata"
+description: "Daily Compass Router staging FX reference-rate refresh"
+httpTarget:
+  uri: "${API_STAGING_URL}/internal/jobs/fx-refresh"
+  httpMethod: POST
+  oidcToken:
+    serviceAccountEmail: "${FX_SCHEDULER_SERVICE_ACCOUNT}"
+    audience: "${API_STAGING_URL}"
+retryConfig:
+  retryCount: 3
+  maxRetryDuration: "3600s"
+  maxBackoffDuration: "900s"
+  minBackoffDuration: "30s"

@@ -31,7 +31,7 @@ from app.main import app  # noqa: E402
 from app.models import ApiKey, ApiKeyModel, AuditLog, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, ExtensionSession, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
 from app.security import encrypt_secret, hash_api_key, hash_password  # noqa: E402
 from app.recovery import recover_stale_llm_reservations  # noqa: E402
-from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
+from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, resolve_member_inference_key, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
 import app.services as services  # noqa: E402
 import app.email_worker as email_worker  # noqa: E402
 import app.main as main_module  # noqa: E402
@@ -2182,6 +2182,46 @@ def test_m13_key_member_assignment_is_idempotent_and_team_scoped():
 
     denied = client.put(f"/api-keys/{key['id']}/members", json={"member_ids": [other_member["id"]]}, headers=headers)
     assert denied.status_code == 400, denied.text
+
+
+def test_m13_member_inference_resolves_server_side_key_and_requires_clerk(monkeypatch):
+    owner_email = f"member-inference-owner-{time.time_ns()}@example.com"
+    owner = client.post("/auth/signup", json={"email": owner_email, "password": "MemberOwner123!", "organization_name": "Member Inference Workspace"})
+    assert owner.status_code == 200, owner.text
+    owner_headers = {"Authorization": f"Bearer {owner.json()['token']}"}
+    team = client.get("/teams", headers=owner_headers).json()[0]
+    project = client.get("/projects", headers=owner_headers).json()[0]
+    member_email = f"member-inference-{time.time_ns()}@example.com"
+    member = client.post("/auth/signup", json={"email": member_email, "password": "MemberUser123!", "organization_name": "Separate Workspace"})
+    assert member.status_code == 200, member.text
+    member_headers = {"Authorization": f"Bearer {member.json()['token']}"}
+    invitation = client.post("/organization/invitations", json={"project_id": project["id"], "team_id": team["id"], "email": member_email}, headers=owner_headers)
+    assert invitation.status_code == 200, invitation.text
+    token = invitation.json()["accept_token"]
+    otp = client.post(f"/auth/invitations/{token}/request-otp")
+    accepted = client.post(f"/auth/invitations/{token}/accept", json={"challenge_id": otp.json()["challenge_id"], "email": member_email, "code": otp.json()["debug_otp"], "name": "Member Inference"})
+    assert accepted.status_code == 200, accepted.text
+    member_row = next(row for row in client.get(f"/teams/{team['id']}/members", headers=owner_headers).json() if row["email"] == member_email)
+    created = client.post("/api-keys", json={"name": "Member inference key", "team_id": team["id"], "project_id": project["id"], "member_id": member_row["id"]}, headers=owner_headers)
+    assert created.status_code == 200, created.text
+
+    db = TestingSessionLocal()
+    try:
+        member_user = db.query(User).filter(User.email == member_email).one()
+        resolved_key, resolved_member, selected_project = resolve_member_inference_key(db, member_user, created.json()["id"], project["id"])
+        assert resolved_key.id == created.json()["id"]
+        assert resolved_member.id == member_row["id"]
+        assert selected_project == project["id"]
+    finally:
+        db.close()
+
+    denied = client.post(
+        "/member/v1/chat/completions",
+        headers={**member_headers, "X-Compass-Key-Id": created.json()["id"], "X-Compass-Project-Id": project["id"]},
+        json={"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert denied.status_code == 401, denied.text
+    assert denied.json()["detail"]["error"]["code"] == "clerk_member_auth_required"
 
 
 def test_organization_admin_can_change_role_and_project_access():

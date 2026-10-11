@@ -78,6 +78,7 @@ from .provider_adapters import ProviderAdapterError, ProviderAdapterRegistry, Pr
 request_id_context: ContextVar[str | None] = ContextVar("compass_request_id", default=None)
 api_project_context: ContextVar[str | None] = ContextVar("compass_api_project", default=None)
 device_session_context: ContextVar[str | None] = ContextVar("compass_device_session", default=None)
+member_inference_context: ContextVar[tuple[str, str] | None] = ContextVar("compass_member_inference", default=None)
 
 
 def _credential_reference(provider_name: str, secret: str, scope: str) -> str:
@@ -2247,6 +2248,47 @@ def list_assigned_api_keys(db: Session, user_id: str) -> list[dict]:
     return [{"id": key.id, "name": key.name, "key_alias": key.key_prefix, "status": key.status, "expires_at": key.expires_at.isoformat() if key.expires_at else None, "project_id": key.project_id, "project_ids": assigned_api_key_projects(db, key.id), "allowed_models": sorted(allowed_model_ids(db, key.id))} for key in keys]
 
 
+def resolve_member_inference_key(db: Session, user: User, key_id: str, project_id: str | None = None) -> tuple[ApiKey, TeamMember, str]:
+    """Resolve a Clerk-authenticated member's safe key selection server-side."""
+    assignment = db.scalar(
+        select(ApiKeyMemberAssignment)
+        .join(TeamMember, TeamMember.id == ApiKeyMemberAssignment.member_id)
+        .where(
+            ApiKeyMemberAssignment.api_key_id == key_id,
+            ApiKeyMemberAssignment.status == "active",
+            TeamMember.user_id == user.id,
+            TeamMember.is_active.is_(True),
+        )
+    )
+    key = db.get(ApiKey, key_id)
+    if assignment is None or key is None or key.status != "active":
+        raise compass_error(403, "member_key_not_assigned", "This Compass API key is not assigned to your account.")
+    if key.expires_at is not None and key.expires_at < now():
+        raise compass_error(403, "member_key_expired", "This assigned Compass API key has expired.")
+    team = db.get(Team, key.team_id) if key.team_id else None
+    if team is None or not team.is_active or key.organization_id != team.organization_id:
+        raise compass_error(403, "member_key_unavailable", "The assigned Compass API key is unavailable.")
+    scoped_projects = assigned_api_key_projects(db, key.id)
+    selected_project = project_id or key.project_id or (scoped_projects[0] if len(scoped_projects) == 1 else None) or team.project_id
+    if not selected_project:
+        raise compass_error(400, "project_selection_required", "Select an authorized project before sending an inference request.")
+    project = db.get(Project, selected_project)
+    if project is None or not project.is_active or project.organization_id != team.organization_id:
+        raise compass_error(403, "project_access_denied", "The selected project is not authorized for this key.")
+    if scoped_projects and selected_project not in scoped_projects:
+        raise compass_error(403, "project_access_denied", "The selected project is not authorized for this key.")
+    if key.project_id and selected_project != key.project_id and not scoped_projects:
+        raise compass_error(403, "project_access_denied", "The selected project is not authorized for this key.")
+    member_project = db.scalar(select(ProjectMember.id).where(ProjectMember.project_id == selected_project, ProjectMember.user_id == user.id, ProjectMember.status == "active"))
+    if member_project is None:
+        organization_member = db.scalar(select(OrganizationMember.id).where(OrganizationMember.organization_id == project.organization_id, OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]), OrganizationMember.role != "removed"))
+        if organization_member is None:
+            raise compass_error(403, "project_access_denied", "You are not a member of the selected project.")
+    key.last_used_at = now()
+    db.flush()
+    return key, assignment.member_id and db.get(TeamMember, assignment.member_id), selected_project
+
+
 def credit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key: str, reference_id: str, reference_type: str = "manual_test_credit", description: str = "Controlled beta test Credits grant") -> WalletLedger:
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
     if wallet is None:
@@ -3070,6 +3112,9 @@ def provider_client(route: ResolvedRoute):
 
 def create_request_record(db: Session, api_key: ApiKey, route: ResolvedRoute, requested_model: str, status: str, latency_ms: int, error_code: str | None = None, attempts: list[dict] | None = None) -> LlmRequest:
     effective_project_id = api_project_context.get() or api_key.project_id
+    member_context = member_inference_context.get()
+    effective_user_id = member_context[0] if member_context else api_key.user_id
+    effective_member_id = member_context[1] if member_context else api_key.member_id
     quote_id = None
     quote_rate = None
     if route.credential_mode != "byok":
@@ -3079,7 +3124,7 @@ def create_request_record(db: Session, api_key: ApiKey, route: ResolvedRoute, re
             quote_id = quote.id
             quote_rate = quote.rate
     policy = db.scalar(select(PricingPolicy).where(PricingPolicy.status == "active").order_by(PricingPolicy.effective_at.desc()).limit(1))
-    record = LlmRequest(user_id=api_key.user_id, organization_id=api_key.organization_id, project_id=effective_project_id, team_id=api_key.team_id, member_id=api_key.member_id, api_key_id=api_key.id, device_session_id=device_session_context.get(), requested_model=requested_model, resolved_model=route.resolved_model_id, provider=route.provider.name, credential_mode=route.credential_mode, status=status, error_code=error_code, latency_ms=latency_ms, fx_quote_id=quote_id, fx_rate=quote_rate, pricing_policy_version=policy.version if policy else None)
+    record = LlmRequest(user_id=effective_user_id, organization_id=api_key.organization_id, project_id=effective_project_id, team_id=api_key.team_id, member_id=effective_member_id, api_key_id=api_key.id, device_session_id=device_session_context.get(), requested_model=requested_model, resolved_model=route.resolved_model_id, provider=route.provider.name, credential_mode=route.credential_mode, status=status, error_code=error_code, latency_ms=latency_ms, fx_quote_id=quote_id, fx_rate=quote_rate, pricing_policy_version=policy.version if policy else None)
     db.add(record)
     db.flush()
     attempt_rows = attempts or [{"provider": route.provider.name, "provider_model_id": route.resolved_model_id, "status": status, "error_code": error_code, "latency_ms": latency_ms}]

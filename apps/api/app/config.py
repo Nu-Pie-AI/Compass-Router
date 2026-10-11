@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     fx_cache_ttl_seconds: int = 172800
     fx_refresh_lock_seconds: int = 300
     fx_refresh_job_secret: str | None = None
+    fx_refresh_iam_auth_enabled: bool = False
     together_api_key: str | None = None
     fireworks_api_key: str | None = None
     perplexity_api_key: str | None = None

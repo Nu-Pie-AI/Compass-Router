@@ -183,6 +183,12 @@ M4 implementation blockers:
 
 ## M15 FX integration - 2026-10-11
 
+## M15 + M13.1 staging validation - 2026-10-11
+
+- Neon verifier reached the configured database but found protected customer/financial data; migration `j4k5l6m7n8o9` is blocked until the owner proves this is an isolated staging branch or provides a clean staging database.
+- Cloud Scheduler and Secret Manager resources were not created. The OIDC template is prepared but requires owner approval, dedicated service-account IAM, private Cloud Run ingress, and `FX_REFRESH_IAM_AUTH_ENABLED=true`.
+- Live Clerk session/invitation/member inference and real provider inference remain unverified.
+
 - Cloud Scheduler has not been created or connected; this requires explicit infrastructure approval and a Secret Manager value for `FX_REFRESH_JOB_SECRET`.
 - Fawaz read-only smoke verification passed; Frankfurter returned HTTP 403 from this environment and needs a permitted egress path before primary-source verification.
 - Commercial approval remains required for using daily reference rates in paid customer pricing.

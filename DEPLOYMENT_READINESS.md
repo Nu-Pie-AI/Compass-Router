@@ -108,6 +108,13 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 
 ## M15 readiness - 2026-10-11
 
+## M15 + M13.1 readiness - 2026-10-11
+
+- Member inference code is locally validated but not staging-verified with real Clerk sessions or provider inference.
+- Do not apply the M15 migration until Neon staging identity and protected-table contents are reviewed.
+- Scheduler OIDC template is prepared; no service account, IAM binding, Secret Manager value, or Cloud Scheduler job was created.
+- Backend, web, extension, and Cloud Run template validation are locally green; live Clerk/member inference and provider inference are still external gates.
+
 - Local FX adapter, validation, quote history, cache, and fail-closed code is present.
 - Apply migration `j4k5l6m7n8o9_add_fx_quotes_and_request_snapshots.py` only to an isolated staging database after review.
 - Configure `FX_REFRESH_JOB_SECRET` in Secret Manager and schedule the internal refresh target before production managed billing.

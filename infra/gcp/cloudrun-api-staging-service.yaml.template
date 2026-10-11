@@ -47,6 +47,12 @@ spec:
               value: "true"
             - name: PLATFORM_SUPER_ADMIN_CLERK_USER_ID
               value: ${PLATFORM_SUPER_ADMIN_CLERK_USER_ID}
+            - name: FX_PROVIDER
+              value: frankfurter
+            - name: FX_FALLBACK_PROVIDER
+              value: fawaz
+            - name: FX_REFRESH_IAM_AUTH_ENABLED
+              value: "true"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -117,3 +123,8 @@ spec:
                 secretKeyRef:
                   name: ${SMTP_PASSWORD_SECRET}
                   key: ${SMTP_PASSWORD_SECRET_VERSION}
+            - name: FX_REFRESH_JOB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ${FX_REFRESH_JOB_SECRET}
+                  key: ${FX_REFRESH_JOB_SECRET_VERSION}

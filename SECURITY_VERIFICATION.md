@@ -40,6 +40,11 @@ Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret
 - Local tests do not establish live Clerk token validation, MFA claims, session revocation, invitation identity proof, browser route protection, or deployment IAM. Those remain required before release.
 ## M13 team API key controls - 2026-10-11
 
+- Clerk member inference is separate from machine API-key inference and rejects legacy session tokens.
+- Member requests resolve key assignment server-side and attribute usage to the authenticated Clerk user/member.
+- Raw Compass/provider credentials are not returned to the member browser or extension path.
+- The refresh job supports constant-time application-secret checks; OIDC mode is permitted only behind authenticated Cloud Run ingress with `FX_REFRESH_IAM_AUTH_ENABLED=true`.
+
 - Machine key secrets remain one-time responses and are stored as hashes; member assignment endpoints never return raw secrets.
 - Member and project assignment writes require a team owner or organization administrator and validate team/organization scope server-side.
 - Assignment tables use foreign keys, unique key/member and key/project constraints, active/revoked state, and timestamps.
