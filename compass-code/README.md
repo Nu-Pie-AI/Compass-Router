@@ -1,19 +1,19 @@
-# Compass Router
+# Compass Router for VS Code
 
-Compass Router is the VS Code coding agent for Compass Router. It uses real Compass model calls and a typed, permission-gated workspace tool registry for asking questions, planning changes, reviewing edits, running validation, and iterating on repository tasks.
+Compass Router is an AI coding assistant for Visual Studio Code. It provides team-managed model access, project tracking, unified Credits, and approval-gated workspace tools for asking questions, planning changes, reviewing edits, running validation, and iterating on repository tasks.
 
 `VS Code sidebar -> Compass Router agent -> Compass API -> configured provider routes`
 
 ## Install
 
-1. Download the latest `.vsix` from the [Compass releases](https://github.com/Nu-Pie-AI/Compass/releases).
+1. Download the reviewed `.vsix` from the [Compass releases](https://github.com/Nu-Pie-AI/Compass/releases).
 2. In VS Code, run **Extensions: Install from VSIX...** and select the downloaded package.
 3. Open the Compass Router view from the activity bar.
-4. Connect with a Compass API key created in your workspace.
+4. Sign in with the browser flow or connect with a Compass key alias assigned to your workspace member account.
 
 The published extension uses the hosted Compass API by default. For a self-hosted deployment, change `compassCode.apiBaseUrl` in VS Code settings. The API key is stored through VS Code SecretStorage and is never written to workspace files. The selected model is persisted as `compassCode.defaultModel` and refreshed from the provider on reconnect.
 
-The connection screen also supports OpenAI-compatible endpoints and local Ollama endpoints. Ollama can run without an API key; other providers use SecretStorage for the entered key.
+The connection screen also supports OpenAI-compatible endpoints and local Ollama endpoints for developer-managed direct connections. Ollama can run without an API key; other providers use SecretStorage for the entered key. Compass Router workspace requests use assigned Compass authorization and remain subject to company, project, model, and Credits policy.
 
 ## Agent workflow
 
@@ -48,7 +48,7 @@ npm.cmd run build
 npm.cmd run package
 ```
 
-The generated package is `compass-code-0.3.5.vsix` (or the current package version).
+The generated package is `compass-router-0.1.0.vsix` (or the current package version).
 
 ## Source
 

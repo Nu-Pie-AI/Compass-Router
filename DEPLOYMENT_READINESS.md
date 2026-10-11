@@ -135,3 +135,9 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Local source verification is green: 127 backend tests, web lint/typecheck/build, extension check/test/build, Cloud Run templates, Scheduler template, and diff check.
 - Production human authentication now rejects legacy password sessions and requires Clerk before protected organization/platform administration.
 - Secret rotation, isolated Neon provisioning, live Clerk/provider/Redis/Razorpay tests, Secret Manager, Cloud Scheduler, Cloud Run, and browser verification remain release gates.
+
+## M17 extension release readiness - 2026-10-11
+
+- Compass Router VSIX `0.1.0` is locally built, audited, and installable.
+- Extension package readiness does not imply backend staging readiness: Neon isolation, Clerk live verification, provider inference, and Cloud Run remain blocked as documented in M16.
+- Marketplace publication remains blocked until publisher identity, legal URLs, live integration evidence, and owner approval are complete.

@@ -87,3 +87,14 @@ Status: NOT READY
 - [ ] Apply and verify migration `j4k5l6m7n8o9` on isolated staging only.
 - [ ] Rotate exposed Neon, Clerk, and Upstash credentials.
 - [ ] Verify live Clerk, invitations, MFA, provider inference, Redis, Razorpay sandbox, browser, extension, Secret Manager, and Cloud Run flows.
+
+## M17 VS Code extension release evidence - 2026-10-11
+
+- [x] Compass Router package metadata and version `0.1.0` prepared.
+- [x] Approved 128x128 icon, README, CHANGELOG, SUPPORT, and MIT LICENSE included.
+- [x] VSIX generated, contents inspected, secret scan passed, and local installation passed.
+- [x] Extension check, 10 unit tests, build, and 11 Playwright webview tests passed.
+- [ ] Confirm Marketplace publisher registration and identity.
+- [ ] Add approved Privacy Policy and Terms of Service URLs.
+- [ ] Verify live Clerk/company/key/project/inference/revocation flows.
+- [ ] Owner authorizes Marketplace publication.

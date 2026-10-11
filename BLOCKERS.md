@@ -209,3 +209,10 @@ M4 implementation blockers:
 - Clerk browser/MFA/session revocation, organization invitation email, real provider inference, Upstash runtime concurrency, Razorpay sandbox, and VS Code device authorization remain externally blocked.
 - Scheduler and Secret Manager artifacts are prepared and locally validated but not created; owner approval, service-account IAM, and staging Cloud Run authentication are required.
 - M16 local security hardening now rejects legacy human sessions when the API runs in production/staging mode.
+
+## M17 VS Code extension Marketplace readiness - 2026-10-11
+
+- The VSIX is packaged and locally installable, but the Marketplace publisher ID must be confirmed by the owner. The current manifest value `nu-pie` is not treated as confirmed registration.
+- Approved Privacy Policy and Terms of Service URLs are missing. No public legal URLs were invented.
+- Live Clerk authentication, company/key/project authorization, provider inference, streaming, revocation, and Extension Development Host verification with a real account remain unverified.
+- Marketplace publication requires explicit owner authorization and secure publisher authentication; no `vsce publish` or upload was attempted.

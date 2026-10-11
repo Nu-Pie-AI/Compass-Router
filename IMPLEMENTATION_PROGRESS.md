@@ -671,3 +671,15 @@ Status: LOCAL HARDENING COMPLETE; STAGING ISOLATION AND LIVE VERIFICATION BLOCKE
 - Full backend regression: 127 passed with one existing Pydantic deprecation warning. Web lint/typecheck/build, extension check/test/build, Cloud Run validation, Scheduler validation, and diff check passed.
 - Added `M16_STAGING_VERIFICATION_REPORT.md` with the evidence, blockers, owner actions, and release decision.
 - No production service, database, wallet, payment, secret, Cloud Scheduler, Secret Manager, or Cloud Run resource was changed.
+
+## M17 VS Code extension branding and packaging - 2026-10-11
+
+Status: VSIX READY FOR OWNER REVIEW; MARKETPLACE PUBLICATION BLOCKED
+
+- Updated public extension metadata to package name `compass-router`, display name `Compass Router`, description, and version `0.1.0`.
+- Preserved all `compassCode.*` internal identifiers, command IDs, settings, and storage compatibility.
+- Added the approved 128x128 Compass icon to the production copy, plus `CHANGELOG.md` and `SUPPORT.md`.
+- Generated `compass-code/compass-router-0.1.0.vsix` with `vsce`; audited the manifest, file list, metadata, assets, and secret patterns.
+- Local VS Code installation passed as `nu-pie.compass-router@0.1.0`.
+- Check, unit tests, build, package, and Playwright webview suite passed: 10 unit tests and 11 UI tests.
+- Publisher registration, privacy/terms URLs, live Clerk/provider inference, and Marketplace upload remain owner-controlled blockers.

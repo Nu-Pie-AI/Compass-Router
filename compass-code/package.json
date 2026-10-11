@@ -1,8 +1,8 @@
 {
-  "name": "compass-code",
+  "name": "compass-router",
   "displayName": "Compass Router",
-  "description": "A Compass Router coding agent for Visual Studio Code.",
-  "version": "0.3.5",
+  "description": "AI coding assistant with team-managed model access, project tracking, and unified Credits.",
+  "version": "0.1.0",
   "publisher": "nu-pie",
   "icon": "media/compass-marketplace.png",
   "license": "MIT",
