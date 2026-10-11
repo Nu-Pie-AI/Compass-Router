@@ -590,3 +590,4 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Customer activity and Super Admin operations now render the analytics period and usage finality (`finalized`, `estimated`, or `unavailable`) alongside provider cost and Compass Credits.
 - The additional analytics columns use a dedicated responsive table layout and do not alter request-log presentation.
 - Web lint, typecheck, and production build passed; ESLint now ignores generated `.next`, `.next-local`, `out`, and `node_modules` artifacts.
+- Full backend regression after the analytics UI change passed with 114 tests and one existing Pydantic deprecation warning.

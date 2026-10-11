@@ -434,3 +434,4 @@ No Clerk secret values were printed or committed.
 | Web typecheck | PASS |
 | Web production build | PASS; 23 routes generated |
 | Repository-wide web lint | PASS; ESLint now ignores generated `.next`, `.next-local`, `out`, and `node_modules` artifacts |
+| Full backend regression after analytics UI changes | PASS; 114 passed, 1 existing Pydantic deprecation warning |
