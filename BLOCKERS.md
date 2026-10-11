@@ -212,7 +212,7 @@ M4 implementation blockers:
 
 ## M17 VS Code extension Marketplace readiness - 2026-10-11
 
-- The VSIX is packaged and locally installable, but the Marketplace publisher ID must be confirmed by the owner. The current manifest value `nu-pie` is not treated as confirmed registration.
+- The publisher is confirmed as `nu-pie` / `Compass (Nu-Pie)`, and Marketplace lookup found no existing `nu-pie.compass-router` listing, so `0.1.0` remains available.
 - Approved Privacy Policy and Terms of Service URLs are missing. No public legal URLs were invented.
 - Live Clerk authentication, company/key/project authorization, provider inference, streaming, revocation, and Extension Development Host verification with a real account remain unverified.
 - Marketplace publication requires explicit owner authorization and secure publisher authentication; no `vsce publish` or upload was attempted.

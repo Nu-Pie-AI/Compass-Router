@@ -15,7 +15,8 @@
 
 ## Owner completion required
 
-- [ ] Confirm the registered Marketplace publisher ID and ownership.
+- [x] Confirm the registered Marketplace publisher ID and ownership: `nu-pie` / `Compass (Nu-Pie)`.
+- [x] Confirm `nu-pie.compass-router` is not currently published; `0.1.0` remains available.
 - [ ] Provide approved Privacy Policy URL.
 - [ ] Provide approved Terms of Service URL.
 - [ ] Confirm public repository and product website links are approved for publication.

@@ -94,7 +94,8 @@ Status: NOT READY
 - [x] Approved 128x128 icon, README, CHANGELOG, SUPPORT, and MIT LICENSE included.
 - [x] VSIX generated, contents inspected, secret scan passed, and local installation passed.
 - [x] Extension check, 10 unit tests, build, and 11 Playwright webview tests passed.
-- [ ] Confirm Marketplace publisher registration and identity.
+- [x] Confirm Marketplace publisher registration and identity: `nu-pie` / `Compass (Nu-Pie)`.
+- [x] Confirm first version `0.1.0` is not already published.
 - [ ] Add approved Privacy Policy and Terms of Service URLs.
 - [ ] Verify live Clerk/company/key/project/inference/revocation flows.
 - [ ] Owner authorizes Marketplace publication.

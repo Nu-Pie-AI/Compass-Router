@@ -683,3 +683,9 @@ Status: VSIX READY FOR OWNER REVIEW; MARKETPLACE PUBLICATION BLOCKED
 - Local VS Code installation passed as `nu-pie.compass-router@0.1.0`.
 - Check, unit tests, build, package, and Playwright webview suite passed: 10 unit tests and 11 UI tests.
 - Publisher registration, privacy/terms URLs, live Clerk/provider inference, and Marketplace upload remain owner-controlled blockers.
+
+## M17 publisher confirmation - 2026-10-11
+
+- Owner confirmed Marketplace publisher ID `nu-pie` with display name `Compass (Nu-Pie)`.
+- Marketplace lookup found no existing `nu-pie.compass-router` listing; version `0.1.0` remains the first public release target.
+- No Marketplace upload or publish command was executed.
