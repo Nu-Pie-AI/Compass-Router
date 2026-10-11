@@ -497,6 +497,13 @@ No Clerk secret values were printed or committed.
 - M13 assignment regression: duplicate-safe assignment and cross-team rejection passed.
 - No live Clerk, provider, PostgreSQL, Redis, payment, or extension verification was performed.
 
+## M15 verification - 2026-10-11
+
+- FX adapter unit tests: passed, 7 tests.
+- Catalog, migration, and database configuration focused tests: passed, 11 tests.
+- Live public FX smoke test: Fawaz endpoint passed read-only schema check; Frankfurter returned HTTP 403 from this environment. No customer inference or paid operation was attempted.
+- Neon migration, Upstash cache verification, Cloud Scheduler, and production billing verification: not run.
+
 ## M14 verification - 2026-10-11
 
 - Python compile check: passed after Clerk/pricing changes.

@@ -106,6 +106,14 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Managed Clerk-authenticated inference, live provider calls, PostgreSQL/Redis runtime, extension flow, and Cloud Run verification remain pending external staging validation.
 - No production service, database, secret, wallet, or payment resource was changed.
 
+## M15 readiness - 2026-10-11
+
+- Local FX adapter, validation, quote history, cache, and fail-closed code is present.
+- Apply migration `j4k5l6m7n8o9_add_fx_quotes_and_request_snapshots.py` only to an isolated staging database after review.
+- Configure `FX_REFRESH_JOB_SECRET` in Secret Manager and schedule the internal refresh target before production managed billing.
+- Live endpoint, Neon, Upstash, Cloud Scheduler, and commercial-use verification remain external gates.
+- No deployment, paid resource creation, production database, financial record, or secret change was performed.
+
 ## M14 readiness - 2026-10-11
 
 - New migration `i3j4k5l6m7n8_add_m14_clerk_and_pricing_fields.py` is local-only and must be applied to an isolated staging database before deployment.

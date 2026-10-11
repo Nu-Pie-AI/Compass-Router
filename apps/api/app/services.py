@@ -2649,6 +2649,10 @@ def enforce_team_limits(db: Session, team_id: str, estimated_tokens: int, estima
             raise compass_error(429, "rate_limit_exceeded", "Team request rate limit exceeded.")
         if minute_tokens + estimated_tokens > limits.tokens_per_minute:
             raise compass_error(429, "token_limit_exceeded", "Team token rate limit exceeded.")
+    if estimated_cost_paise > 0 and settings.environment.strip().lower() in {"production", "prod"}:
+        from .fx_service import active_fx_quote
+        if active_fx_quote(db) is None:
+            raise compass_error(503, "pricing_unavailable", "Managed pricing is temporarily unavailable because no fresh FX quote is approved.")
     day_start = now().replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = day_start.replace(day=1)
     daily_spend = db.scalar(select(func.coalesce(func.sum(LlmRequest.compass_cost_paise), 0)).where(LlmRequest.team_id == team_id, LlmRequest.created_at >= day_start, LlmRequest.status == "success")) or 0
@@ -3066,7 +3070,16 @@ def provider_client(route: ResolvedRoute):
 
 def create_request_record(db: Session, api_key: ApiKey, route: ResolvedRoute, requested_model: str, status: str, latency_ms: int, error_code: str | None = None, attempts: list[dict] | None = None) -> LlmRequest:
     effective_project_id = api_project_context.get() or api_key.project_id
-    record = LlmRequest(user_id=api_key.user_id, organization_id=api_key.organization_id, project_id=effective_project_id, team_id=api_key.team_id, member_id=api_key.member_id, api_key_id=api_key.id, device_session_id=device_session_context.get(), requested_model=requested_model, resolved_model=route.resolved_model_id, provider=route.provider.name, credential_mode=route.credential_mode, status=status, error_code=error_code, latency_ms=latency_ms)
+    quote_id = None
+    quote_rate = None
+    if route.credential_mode != "byok":
+        from .fx_service import active_fx_quote
+        quote = active_fx_quote(db)
+        if quote is not None:
+            quote_id = quote.id
+            quote_rate = quote.rate
+    policy = db.scalar(select(PricingPolicy).where(PricingPolicy.status == "active").order_by(PricingPolicy.effective_at.desc()).limit(1))
+    record = LlmRequest(user_id=api_key.user_id, organization_id=api_key.organization_id, project_id=effective_project_id, team_id=api_key.team_id, member_id=api_key.member_id, api_key_id=api_key.id, device_session_id=device_session_context.get(), requested_model=requested_model, resolved_model=route.resolved_model_id, provider=route.provider.name, credential_mode=route.credential_mode, status=status, error_code=error_code, latency_ms=latency_ms, fx_quote_id=quote_id, fx_rate=quote_rate, pricing_policy_version=policy.version if policy else None)
     db.add(record)
     db.flush()
     attempt_rows = attempts or [{"provider": route.provider.name, "provider_model_id": route.resolved_model_id, "status": status, "error_code": error_code, "latency_ms": latency_ms}]

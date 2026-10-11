@@ -66,6 +66,20 @@ class Settings(BaseSettings):
     pricing_allow_fixed_fx_fallback: bool = True
     pricing_low_credits_threshold_paise: int = 1000
     pricing_verification_max_age_seconds: int = 86400
+    fx_provider: str = "frankfurter"
+    fx_fallback_provider: str = "fawaz"
+    fx_base_currency: str = "USD"
+    fx_quote_currency: str = "INR"
+    fx_refresh_seconds: int = 86400
+    fx_max_quote_age_seconds: int = 345600
+    fx_request_timeout_seconds: float = 10.0
+    fx_request_attempts: int = 2
+    fx_max_deviation_bps: int = 500
+    fx_frankfurter_url: str = "https://api.frankfurter.dev"
+    fx_fawaz_url: str = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest"
+    fx_cache_ttl_seconds: int = 172800
+    fx_refresh_lock_seconds: int = 300
+    fx_refresh_job_secret: str | None = None
     together_api_key: str | None = None
     fireworks_api_key: str | None = None
     perplexity_api_key: str | None = None
@@ -146,6 +160,10 @@ def validate_runtime_config(settings: Settings) -> None:
         problems.append("PRICING_FX_SOURCE must use an approved live FX source in production")
     if settings.pricing_fx_buffer_bps < 0 or settings.pricing_platform_fee_bps < 0:
         problems.append("Pricing FX buffer and platform fee must be non-negative")
+    if settings.fx_provider != "frankfurter" or settings.fx_fallback_provider != "fawaz":
+        problems.append("Production FX providers must use the reviewed Frankfurter/Fawaz adapters")
+    if settings.fx_max_quote_age_seconds < 86400:
+        problems.append("FX_MAX_QUOTE_AGE_SECONDS must allow daily publication gaps")
     if not settings.secret_manager_enabled:
         problems.append("SECRET_MANAGER_ENABLED must be true")
     if settings.database_migration_mode.strip().lower() != "alembic":

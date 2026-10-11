@@ -348,6 +348,22 @@ class PricingPolicy(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class FxRateQuoteRecord(Base):
+    __tablename__ = "fx_rate_quotes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    base_currency: Mapped[str] = mapped_column(String, index=True)
+    quote_currency: Mapped[str] = mapped_column(String, index=True)
+    rate: Mapped[Decimal] = mapped_column(Numeric(24, 12))
+    provider: Mapped[str] = mapped_column(String, index=True)
+    publication_date: Mapped[datetime] = mapped_column(DateTime, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    validation_status: Mapped[str] = mapped_column(String, index=True)
+    source_reference: Mapped[str] = mapped_column(Text)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class PricingRevision(Base):
     __tablename__ = "pricing_revisions"
 
@@ -513,6 +529,9 @@ class LlmRequest(Base):
     usage_source: Mapped[str] = mapped_column(String, default="provider")
     provider_cost_paise: Mapped[int] = mapped_column(Integer, default=0)
     compass_cost_paise: Mapped[int] = mapped_column(Integer, default=0)
+    fx_quote_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(24, 12), nullable=True)
+    pricing_policy_version: Mapped[str | None] = mapped_column(String, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

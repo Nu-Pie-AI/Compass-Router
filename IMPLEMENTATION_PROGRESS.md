@@ -584,6 +584,14 @@ Status: ADDITIVE DATA MODEL AND ADMIN POLICY API IMPLEMENTED; MANAGED INFERENCE 
 - Added `TEAM_API_KEY_ARCHITECTURE.md`, `TEAM_API_KEY_ROLE_MATRIX.md`, and `TEAM_API_KEY_TEST_PLAN.md`.
 - The next implementation slice is Clerk-authenticated managed inference through the existing provider/Credits accounting path. Live Clerk, extension, provider, PostgreSQL, Redis, and payment verification remain external gates.
 
+## M15 FX provider integration - 2026-10-11
+
+- Added Decimal-based Frankfurter primary and documented Fawaz fallback adapters.
+- Added durable `fx_rate_quotes` history, approved quote validation, Redis cache acceleration, distributed refresh locking, and Super Admin status/manual refresh endpoints.
+- Added an authenticated Cloud Scheduler target without creating scheduler infrastructure.
+- Added production fail-closed behavior for managed pricing when no fresh quote is approved; BYOK remains independent.
+- Migration head is `j4k5l6m7n8o9`; it has not been applied to staging or production.
+
 ## M14 Clerk Organizations and pricing parity - 2026-10-11
 
 Status: LOCAL CLERK INVITATION PATH AND VERSIONED PRICING POLICY FIELDS IMPLEMENTED; LIVE CLERK/FX GATES PENDING

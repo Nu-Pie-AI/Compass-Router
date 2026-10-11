@@ -1616,6 +1616,30 @@ def admin_create_pricing_policy(body: PricingPolicyCreate, actor: User = Depends
     return pricing_policy_row(policy)
 
 
+@app.get("/admin/pricing/fx")
+def admin_fx_status(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    from .fx_service import fx_status
+    require_platform_permission(db, actor, "models.view")
+    return fx_status(db)
+
+
+@app.post("/admin/pricing/fx/refresh")
+def admin_fx_refresh(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    from .fx_service import refresh_fx_quote
+    require_platform_permission(db, actor, "models.manage")
+    return refresh_fx_quote(db, force=True)
+
+
+@app.post("/internal/jobs/fx-refresh")
+def internal_fx_refresh(x_compass_job_secret: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
+    """Cloud Scheduler target; the secret stays server-side and is never logged."""
+    expected = settings.fx_refresh_job_secret
+    if not expected or not x_compass_job_secret or not hmac.compare_digest(x_compass_job_secret, expected):
+        raise HTTPException(status_code=401, detail="Invalid job credentials.")
+    from .fx_service import refresh_fx_quote
+    return refresh_fx_quote(db)
+
+
 @app.post("/models/activate")
 async def activate_model(body: ModelActivationRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     require_team_owner(db, user, body.team_id)

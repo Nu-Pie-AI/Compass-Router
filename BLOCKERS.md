@@ -181,6 +181,13 @@ M4 implementation blockers:
 - PostgreSQL migration execution and tenant/concurrency verification remain staging-only gates; no production migration was run.
 - No live provider inference, payment, deployment, or secret change was performed.
 
+## M15 FX integration - 2026-10-11
+
+- Cloud Scheduler has not been created or connected; this requires explicit infrastructure approval and a Secret Manager value for `FX_REFRESH_JOB_SECRET`.
+- Fawaz read-only smoke verification passed; Frankfurter returned HTTP 403 from this environment and needs a permitted egress path before primary-source verification.
+- Commercial approval remains required for using daily reference rates in paid customer pricing.
+- The M15 migration is local-only; no Neon migration or production database change was performed.
+
 ## M14 Clerk Organizations and pricing parity - 2026-10-11
 
 - Clerk Organizations must be enabled and configured in the intended Clerk instance; live invitation email, acceptance, resend, revoke, and webhook behavior are unverified.
