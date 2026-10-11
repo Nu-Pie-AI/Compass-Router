@@ -336,7 +336,7 @@ export function AdminConsole() {
   useEffect(() => {
     const saved = window.localStorage.getItem("compass.local.session");
     if (!saved) {
-      router.replace("/admin-login?callbackUrl=/admin");
+      router.replace("/admin-login?callbackUrl=/super-admin");
       return;
     }
     try {
@@ -344,7 +344,7 @@ export function AdminConsole() {
       void Promise.resolve().then(() => setSession(parsed));
     } catch {
       window.localStorage.removeItem("compass.local.session");
-      router.replace("/admin-login?callbackUrl=/admin");
+      router.replace("/admin-login?callbackUrl=/super-admin");
     }
   }, [router]);
 
