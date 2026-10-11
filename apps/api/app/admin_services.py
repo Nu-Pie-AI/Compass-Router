@@ -122,14 +122,14 @@ def revoke_platform_role(db: Session, actor: User, assignment_id: str, reason: s
 def adjust_wallet(db: Session, actor: User, team_id: str, amount_paise: int, currency: str, reason: str, idempotency_key: str) -> dict:
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
     if wallet is None:
-        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+        raise compass_error(404, "wallet_not_found", "Credits account not found.")
     if wallet.currency != currency:
         raise compass_error(400, "currency_mismatch", "The requested currency does not match the wallet.")
     existing = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
     if existing is not None:
         return {"ledger_id": existing.id, "team_id": team_id, "balance_paise": existing.balance_after, "idempotent": True}
     if amount_paise < 0 and wallet.balance_paise + amount_paise < 0:
-        raise compass_error(402, "insufficient_balance", "The adjustment would make the wallet balance negative.")
+        raise compass_error(402, "insufficient_balance", "The adjustment would make the Credits balance negative.")
     before = wallet.balance_paise
     wallet.balance_paise += amount_paise
     wallet.updated_at = now()

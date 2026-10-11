@@ -2081,10 +2081,10 @@ def update_api_key_models(db: Session, api_key_id: str, allowed_models: list[str
     }
 
 
-def credit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key: str, reference_id: str, reference_type: str = "manual_test_credit", description: str = "Controlled beta test wallet credit") -> WalletLedger:
+def credit_wallet(db: Session, team_id: str, amount_paise: int, idempotency_key: str, reference_id: str, reference_type: str = "manual_test_credit", description: str = "Controlled beta test Credits grant") -> WalletLedger:
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
     if wallet is None:
-        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+        raise compass_error(404, "wallet_not_found", "Credits account not found.")
     existing = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
     if existing:
         return existing
@@ -2111,7 +2111,7 @@ def debit_wallet(
     if existing:
         return existing
     if wallet is None or wallet.balance_paise < amount_paise:
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
     before = wallet.balance_paise
     wallet.balance_paise -= amount_paise
     wallet.updated_at = now()
@@ -2138,7 +2138,7 @@ def settle_wallet_reservation(db: Session, team_id: str, reservation_id: str, ac
     """Release the estimate and apply the final charge in one locked transaction."""
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id).with_for_update())
     if wallet is None:
-        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+        raise compass_error(404, "wallet_not_found", "Credits account not found.")
     reservation_key = f"llm-reservation:{reservation_id}"
     reservation = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == reservation_key))
     if reservation is None:
@@ -2174,7 +2174,7 @@ def settle_wallet_reservation(db: Session, team_id: str, reservation_id: str, ac
         return existing_release
     if wallet.balance_paise < actual_paise:
         db.rollback()
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient for the final provider charge.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient for the final provider charge.")
     before_charge = wallet.balance_paise
     wallet.balance_paise -= actual_paise
     wallet.updated_at = now()
@@ -2920,7 +2920,7 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
     reservation_id = new_id() if not byok_route else None
     if reservation_id is not None:
         reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
@@ -3001,7 +3001,7 @@ async def stream_chat(db: Session, api_key: ApiKey, body: dict):
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, routes[0].model.id, estimated_cost)
     if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
 
     reservation_id = new_id() if not byok_route else None
     if reservation_id is not None:
@@ -3166,7 +3166,7 @@ async def stream_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: st
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, routes[0].model.id, estimated_cost)
     if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
 
     reservation_id = new_id() if not byok_route else None
     if reservation_id is not None:
@@ -3290,7 +3290,7 @@ async def complete_json_api(db: Session, api_key: ApiKey, body: dict, endpoint: 
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
     reservation_id = new_id() if not byok_route else None
     if reservation_id is not None:
         reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
@@ -3367,7 +3367,7 @@ async def complete_binary_api(db: Session, api_key: ApiKey, body: dict, endpoint
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
     reservation_id = new_id() if not byok_route else None
     if reservation_id is not None:
         reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
@@ -3434,7 +3434,7 @@ async def complete_multipart_api(db: Session, api_key: ApiKey, model_id: str, fo
     enforce_api_key_limits(db, api_key, estimated_cost)
     enforce_model_policy(db, api_key, route.model.id, estimated_cost)
     if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
-        raise compass_error(402, "insufficient_balance", "Wallet balance is insufficient.")
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
     reservation_id = new_id() if not byok_route else None
     if reservation_id is not None:
         reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)

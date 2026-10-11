@@ -454,3 +454,13 @@ No Clerk secret values were printed or committed.
 | Expired VS Code device session | PASS; an expired session token is rejected by `/v1/account` |
 | Refresh/revocation compatibility | PASS; the same regression still verifies rotation and explicit local logout |
 | Focused regression | PASS; 1 test passed |
+
+## Customer Credits terminology sweep - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Visible web/API financial wording | PASS; user-facing balance, recharge, refund, adjustment, and insufficiency messages use Credits |
+| Compatibility identifiers | PASS; existing wallet tables, route paths, error codes, and internal field names remain unchanged |
+| Focused financial/auth tests | PASS; 10 passed, 76 deselected, 1 existing Pydantic deprecation warning |
+| Web lint and typecheck | PASS |
+| Full backend regression | PASS; 115 passed, 1 existing Pydantic deprecation warning |

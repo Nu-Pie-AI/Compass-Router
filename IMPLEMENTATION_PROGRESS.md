@@ -602,3 +602,9 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - Added regression coverage proving an expired VS Code device session is rejected while refresh rotation and explicit local logout remain intact.
 - Focused extension-session regression passed.
+
+## Customer Credits terminology sweep - 2026-10-11
+
+- Replaced remaining visible Wallet wording in financial error messages, ledger descriptions, admin adjustment feedback, and refund guidance with Credits.
+- Preserved wallet persistence names, compatibility API paths, and error codes to avoid migration and client breakage.
+- Full backend regression remains green at 115 tests; web lint and typecheck also pass.

@@ -678,7 +678,7 @@ export function AdminConsole() {
       await loadSection("finance");
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Wallet adjustment failed.",
+        reason instanceof Error ? reason.message : "Credits adjustment failed.",
       );
     } finally {
       setBusy(false);

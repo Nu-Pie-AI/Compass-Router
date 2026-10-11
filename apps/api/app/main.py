@@ -1043,7 +1043,7 @@ def wallet(team_id: str, user: User = Depends(current_user), db: Session = Depen
     require_team_access(db, user, team_id)
     account = db.scalar(select(WalletAccount).where(WalletAccount.team_id == team_id))
     if account is None:
-        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+        raise compass_error(404, "wallet_not_found", "Credits account not found.")
     return {"team_id": team_id, "currency": account.currency, "balance_paise": account.balance_paise}
 
 
@@ -1142,7 +1142,7 @@ def _settle_payment_order(db: Session, order: PaymentOrder, payment_id: str, pay
         raise compass_error(409, "payment_order_not_settleable", "This payment order cannot be credited in its current state.")
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == locked_order.team_id).with_for_update())
     if wallet is None:
-        raise compass_error(404, "wallet_not_found", "Wallet not found.")
+        raise compass_error(404, "wallet_not_found", "Credits account not found.")
     idempotency_key = f"payment:{locked_order.id}"
     ledger = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
     if ledger is None:
@@ -1157,7 +1157,7 @@ def _settle_payment_order(db: Session, order: PaymentOrder, payment_id: str, pay
             balance_after=wallet.balance_paise,
             reference_type="payment_order",
             reference_id=payment_id,
-            description="Wallet recharge completed through payment provider",
+        description="Credits recharge completed through payment provider",
             idempotency_key=idempotency_key,
         )
         db.add(ledger)
@@ -1179,7 +1179,7 @@ def _apply_refund(db: Session, refund: PaymentRefund, provider_refund_id: str | 
     order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == locked_refund.order_id).with_for_update())
     wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == locked_refund.team_id).with_for_update())
     if order is None or wallet is None:
-        raise compass_error(404, "wallet_not_found", "Wallet or payment order not found.")
+        raise compass_error(404, "wallet_not_found", "Credits account or payment order not found.")
     idempotency_key = f"refund:{locked_refund.id}"
     ledger = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
     if ledger is None:
@@ -1194,7 +1194,7 @@ def _apply_refund(db: Session, refund: PaymentRefund, provider_refund_id: str | 
             balance_after=wallet.balance_paise,
             reference_type="payment_refund",
             reference_id=locked_refund.id,
-            description="Wallet recharge refund processed",
+            description="Credits recharge refund processed",
             idempotency_key=idempotency_key,
         ))
     locked_refund.provider_refund_id = provider_refund_id or locked_refund.provider_refund_id

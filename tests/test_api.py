@@ -1654,6 +1654,12 @@ def test_team_byok_activation_and_routing(monkeypatch):
 def test_byok_failed_and_streaming_requests_never_create_wallet_entries(monkeypatch):
     headers = admin_headers()
     team = create_team_fixture(headers)
+    db = TestingSessionLocal()
+    openai = db.query(Provider).filter(Provider.name == "openai").one()
+    db.query(ProviderHealthCheck).filter(ProviderHealthCheck.provider_id == openai.id).delete(synchronize_session=False)
+    openai.status = "healthy"
+    db.commit()
+    db.close()
     raw_secret = "sk-byok-failure-stream-123456"
     saved = client.post("/byok/credentials", json={"team_id": team["id"], "provider": "openai", "api_key": raw_secret}, headers=headers)
     assert saved.status_code == 200, saved.text
@@ -1674,7 +1680,7 @@ def test_byok_failed_and_streaming_requests_never_create_wallet_entries(monkeypa
     before_balance = client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"]
 
     async def failed_provider(self, payload):  # noqa: ARG001
-        raise compass_error(503, "provider_unavailable", "BYOK provider unavailable.")
+        raise compass_error(503, "provider_authentication", "BYOK provider authentication failed.")
 
     monkeypatch.setattr(LiteLLMClient, "chat_completion", failed_provider)
     failed = chat(key, model="openai/gpt-byok-failure")
