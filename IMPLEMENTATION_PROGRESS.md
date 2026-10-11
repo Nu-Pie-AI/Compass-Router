@@ -597,3 +597,8 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Added regression coverage for failed BYOK chat and streaming requests, proving unchanged balance, no reservation/settlement ledger entries, and zero Compass Credits.
 - Streaming chat and JSON API paths now explicitly commit request, provider-health, and settlement state on success, provider failure, and client cancellation; this also prevents open SQLite transactions from leaking across requests.
 - Focused tests and the full backend suite pass: 115 tests, with one existing Pydantic deprecation warning.
+
+## Extension session expiry - 2026-10-11
+
+- Added regression coverage proving an expired VS Code device session is rejected while refresh rotation and explicit local logout remain intact.
+- Focused extension-session regression passed.

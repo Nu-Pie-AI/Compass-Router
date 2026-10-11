@@ -446,3 +446,11 @@ No Clerk secret values were printed or committed.
 | Streaming transaction finalization | PASS; chat and JSON streaming success, failure, and cancellation paths explicitly commit request/settlement state |
 | Focused regression | PASS; 3 tests passed |
 | Full backend regression | PASS; 115 passed, 1 existing Pydantic deprecation warning |
+
+## Extension session expiry - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Expired VS Code device session | PASS; an expired session token is rejected by `/v1/account` |
+| Refresh/revocation compatibility | PASS; the same regression still verifies rotation and explicit local logout |
+| Focused regression | PASS; 1 test passed |

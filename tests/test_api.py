@@ -1,7 +1,7 @@
 import os
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -28,7 +28,7 @@ from app.db import Base, get_db  # noqa: E402
 from app.config import Settings, validate_runtime_config  # noqa: E402
 from app.errors import compass_error  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import ApiKey, ApiKeyModel, AuditLog, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
+from app.models import ApiKey, ApiKeyModel, AuditLog, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, ExtensionSession, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
 from app.security import encrypt_secret, hash_api_key, hash_password  # noqa: E402
 from app.recovery import recover_stale_llm_reservations  # noqa: E402
 from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
@@ -2045,6 +2045,17 @@ def test_vscode_device_authorization_scopes_project_and_revokes_with_admin_sessi
     assert client.get("/v1/account", headers={"Authorization": f"Bearer {device_token}"}).status_code == 401
     assert client.get("/v1/account", headers={"Authorization": f"Bearer {refreshed_token}"}).status_code == 200
     device_token = refreshed_token
+    db = TestingSessionLocal()
+    session = db.query(ExtensionSession).filter(ExtensionSession.token_hash == hash_api_key(device_token)).one()
+    session.expires_at = services.now() - timedelta(seconds=1)
+    db.commit()
+    db.close()
+    assert client.get("/v1/account", headers={"Authorization": f"Bearer {device_token}"}).status_code == 401
+    db = TestingSessionLocal()
+    session = db.query(ExtensionSession).filter(ExtensionSession.token_hash == hash_api_key(device_token)).one()
+    session.expires_at = services.now() + timedelta(days=30)
+    db.commit()
+    db.close()
     local_revoked = client.post("/auth/extension/session/revoke", headers={"Authorization": f"Bearer {device_token}"})
     assert local_revoked.status_code == 200, local_revoked.text
     assert local_revoked.json()["status"] == "revoked"
