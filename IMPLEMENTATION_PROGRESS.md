@@ -589,4 +589,4 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 
 - Customer activity and Super Admin operations now render the analytics period and usage finality (`finalized`, `estimated`, or `unavailable`) alongside provider cost and Compass Credits.
 - The additional analytics columns use a dedicated responsive table layout and do not alter request-log presentation.
-- Targeted source lint, web typecheck, and production build passed; repository-wide lint remains noisy because it scans generated `.next-local` output and reports pre-existing generated-code violations.
+- Web lint, typecheck, and production build passed; ESLint now ignores generated `.next`, `.next-local`, `out`, and `node_modules` artifacts.

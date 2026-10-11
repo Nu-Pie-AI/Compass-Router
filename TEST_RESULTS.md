@@ -433,4 +433,4 @@ No Clerk secret values were printed or committed.
 | Web source lint | PASS; targeted lint for `AdminConsole.tsx` and `ActivityPage.tsx` |
 | Web typecheck | PASS |
 | Web production build | PASS; 23 routes generated |
-| Repository-wide web lint | BASELINE FAILURE; `eslint .` scans generated `.next-local` artifacts and reports generated-code violations; source-target lint passes |
+| Repository-wide web lint | PASS; ESLint now ignores generated `.next`, `.next-local`, `out`, and `node_modules` artifacts |
