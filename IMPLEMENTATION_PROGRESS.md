@@ -558,6 +558,20 @@ Status: CODE COMPLETE LOCALLY; LIVE CLERK VERIFICATION BLOCKED
 - Expanded invitation and resend email templates with email OTP, Compass Router login, VS Code browser sign-in, project selection, authorized-key access, expiry, and support instructions.
 - Templates explicitly state that API keys and provider credentials are never sent by email.
 
+## M12 role portals and Clerk onboarding boundary - 2026-10-11
+
+Status: LOCAL ROLE-ROUTING SLICE IMPLEMENTED; REAL CLERK BROWSER VERIFICATION PENDING
+
+- Added server-derived portal context at `/auth/portal`; the response resolves `super-admin`, `admin`, or `dashboard` from Compass platform permissions and organization membership, never from browser-editable role state.
+- Added `/portal` as the post-Clerk-authentication landing route. Clerk login and signup now redirect there, and it forwards users to the correct portal.
+- Preserved the existing M9 Product Owner control center at `/super-admin`.
+- Reassigned `/admin` to the company workspace administration surface, including projects, invitations, member/project access, and organization-scoped controls. Existing API `/admin/*` governance endpoints are unchanged.
+- Added organization-role-aware UI behavior so members can use assigned workspace resources without seeing company member-management controls.
+- Added regression coverage for company-owner and platform-admin portal resolution.
+- Validation: full API suite `116 passed, 1 existing Pydantic deprecation warning`; web lint, typecheck, production build, and `git diff --check` passed. Build includes `/portal`, `/admin`, and `/super-admin`.
+- Real Clerk signup/login/email verification/logout/session revocation, invitation delivery, MFA, provider inference, Razorpay, PostgreSQL/Redis runtime behavior, and Cloud Run deployment remain external gates.
+- Added `M12_CUSTOMER_REQUIREMENTS_AUDIT.md` with requirement-level evidence and explicit live-verification boundaries.
+
 ## Razorpay refund webhook coverage - 2026-10-11
 
 - Added local signed-webhook coverage for `refund.processed`, duplicate delivery, refund ledger reversal, and processed refund status.

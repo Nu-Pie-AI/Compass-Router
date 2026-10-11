@@ -31,3 +31,10 @@ Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret
 - Human Clerk sessions and Compass API keys remain separate authentication domains.
 - Clerk webhook verification is Svix-based with persisted idempotency state.
 - Live Clerk browser, MFA, revocation, webhook, Secret Manager, and Cloud Run evidence remains outstanding.
+
+## M12 portal authorization - 2026-10-11
+
+- Portal selection is resolved server-side from active Compass platform permissions and organization membership.
+- Company members do not receive organization-admin controls in the workspace UI; backend organization-admin dependencies remain authoritative.
+- `/super-admin` is protected by the existing platform-admin API boundary; `/admin` delegates organization changes to organization-admin APIs.
+- Local tests do not establish live Clerk token validation, MFA claims, session revocation, invitation identity proof, browser route protection, or deployment IAM. Those remain required before release.

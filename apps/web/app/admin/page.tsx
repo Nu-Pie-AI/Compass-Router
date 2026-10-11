@@ -1,5 +1,5 @@
-import { AdminConsole } from "../../components/AdminConsole";
+import { CompanyAdminPortal } from "../../components/CompanyAdminPortal";
 
 export default function Admin() {
-  return <AdminConsole />;
+  return <CompanyAdminPortal />;
 }

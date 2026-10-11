@@ -261,8 +261,25 @@ def organization_admin(user: User = Depends(current_user), db: Session = Depends
     return user
 
 
+def _portal_context(db: Session, user: User) -> tuple[str, str | None]:
+    """Resolve navigation from server-side platform and organization roles."""
+    if has_platform_permission(db, user, "admin.view"):
+        return "super-admin", None
+    organization_id = organization_id_for_user(db, user.id)
+    membership = db.scalar(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user.id,
+            OrganizationMember.role != "removed",
+        )
+    ) if organization_id else None
+    organization_role = membership.role if membership else None
+    return ("admin" if organization_role in {"owner", "admin"} else "dashboard"), organization_role
+
+
 def _session_response(db: Session, user: User) -> SessionResponse:
-    return SessionResponse(token=create_session_token(user.id, user.session_version), user_id=user.id, email=user.email, organization_id=organization_id_for_user(db, user.id), role=user.role)
+    portal, organization_role = _portal_context(db, user)
+    return SessionResponse(token=create_session_token(user.id, user.session_version), user_id=user.id, email=user.email, organization_id=organization_id_for_user(db, user.id), role=user.role, portal=portal, organization_role=organization_role)
 
 
 def _login_guard(db: Session, email: str) -> LoginAttempt:
@@ -336,13 +353,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> SessionRespons
     if not settings.public_signup_enabled:
         raise compass_error(403, "signup_disabled", "Account signup is disabled for this Compass environment.")
     user, organization, _ = register_customer(db, body.email, body.password, body.organization_name)
-    return SessionResponse(
-        token=create_session_token(user.id, user.session_version),
-        user_id=user.id,
-        email=user.email,
-        organization_id=organization.id,
-        role=user.role,
-    )
+    return _session_response(db, user)
 
 
 @app.post("/auth/signup/request-otp")
@@ -384,13 +395,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> SessionResponse:
         raise compass_error(403, "account_suspended", "This account has been suspended by the product owner.")
     db.delete(attempt)
     db.commit()
-    return SessionResponse(
-        token=create_session_token(user.id, user.session_version),
-        user_id=user.id,
-        email=user.email,
-        organization_id=organization_id_for_user(db, user.id),
-        role=user.role,
-    )
+    return _session_response(db, user)
 
 
 @app.post("/auth/login/request-otp")
@@ -424,6 +429,12 @@ def logout(user: User = Depends(current_user), db: Session = Depends(get_db)) ->
     user.session_version += 1
     db.commit()
     return {"signed_out": True}
+
+
+@app.get("/auth/portal")
+def auth_portal(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    portal, organization_role = _portal_context(db, user)
+    return {"portal": portal, "organization_id": organization_id_for_user(db, user.id), "organization_role": organization_role, "platform_roles": sorted(platform_roles(db, user))}
 
 
 @app.post("/auth/clerk/bootstrap", response_model=SessionResponse)

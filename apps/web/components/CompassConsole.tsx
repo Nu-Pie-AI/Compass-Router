@@ -14,7 +14,7 @@ import { ByokManager } from "./ByokManager";
 import { ActivityPage } from "./ActivityPage";
 import { OrganizationAccessManager } from "./OrganizationAccessManager";
 
-type Session = { token: string; user_id: string; email: string; organization_id?: string | null; role: string };
+type Session = { token: string; user_id: string; email: string; organization_id?: string | null; role: string; portal?: string; organization_role?: string | null };
 type ApiKey = { id: string; name: string; key: string; status: string; team_id?: string | null; allowed_models?: string[]; models_restricted?: boolean; last_used_at?: string | null; expires_at?: string | null };
 type Model = { id: string; display_name: string; provider: string; provider_model_id?: string; capabilities?: string[]; context_window?: number; input_price_paise_per_1k: number; output_price_paise_per_1k: number; status: string };
 type RouterModel = Model & { enabled: boolean; published: boolean; fallback_model_id?: string | null; provider_status: string; provider_enabled: boolean };
@@ -427,6 +427,7 @@ export function CompassConsole({ view }: { view: string }) {
   if (!session) return <div className="console-auth-loading">Continuing with Compass sign-in...</div>;
 
   const canManage = session.role === "admin" || session.role === "super_admin";
+  const canManageOrganization = canManage || session.organization_role === "owner" || session.organization_role === "admin";
   const canCreateWorkspace = Boolean(session);
   const activeWorkspaceId = selectedWorkspaceId || dashboard?.workspaces[0]?.id || "";
   function changeWorkspace(workspaceId: string) {
@@ -451,7 +452,7 @@ export function CompassConsole({ view }: { view: string }) {
         {view === "admin" ? canManage ? <AdminPage admin={admin} dashboard={dashboard} openWorkspaceDialog={openWorkspaceDialog} busy={busy} providerName={providerName} setProviderName={setProviderName} providerApiKey={providerApiKey} setProviderApiKey={setProviderApiKey} saveProviderCredential={saveProviderCredential} token={session.token} refresh={refresh} /> : <Status>Provider settings are available only to Compass administrators.</Status> : null}
         {view === "dashboard" ? <DashboardPage dashboard={dashboard} openWorkspaceDialog={openWorkspaceDialog} selectedTeamId={selectedTeamId} addCredits={addCredits} busy={busy} canCreate={canCreateWorkspace} canManage={canManage} /> : null}
         {view === "profile" ? <ProfilePage session={session} dashboard={dashboard} /> : null}
-        {view === "workspaces" ? <><WorkspaceDirectory dashboard={dashboard} selectedWorkspaceId={activeWorkspaceId} selectWorkspace={changeWorkspace} openWorkspaceDialog={openWorkspaceDialog} canCreate={canCreateWorkspace} /><OrganizationAccessManager token={session.token} /></> : null}
+        {view === "workspaces" ? <><WorkspaceDirectory dashboard={dashboard} selectedWorkspaceId={activeWorkspaceId} selectWorkspace={changeWorkspace} openWorkspaceDialog={openWorkspaceDialog} canCreate={canCreateWorkspace} />{canManageOrganization ? <OrganizationAccessManager token={session.token} /> : <Status>Workspace administration is available to company administrators. You can still use your assigned projects and models from the workspace.</Status>}</> : null}
       </div>
     </ConsoleShell>
     {canCreateWorkspace ? <WorkspaceDialog open={workspaceDialogOpen} name={workspaceName} notes={workspaceNotes} busy={busy} setOpen={setWorkspaceDialogOpen} setName={setWorkspaceName} setNotes={setWorkspaceNotes} onSubmit={createWorkspace} /> : null}

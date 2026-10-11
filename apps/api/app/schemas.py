@@ -141,6 +141,8 @@ class SessionResponse(BaseModel):
     email: EmailStr
     organization_id: str | None = None
     role: str
+    portal: str = "dashboard"
+    organization_role: str | None = None
 
 
 class TeamCreate(BaseModel):

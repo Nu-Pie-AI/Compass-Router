@@ -5,6 +5,8 @@ const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
   "/admin(.*)",
   "/extension/authorize(.*)",
+  "/portal(.*)",
+  "/super-admin(.*)",
 ]);
 
 const clerkHandler = clerkMiddleware(async (auth, request) => {

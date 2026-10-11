@@ -103,6 +103,21 @@ def test_m9_admin_access_is_denied_to_customer_and_exposes_legacy_admin_permissi
     assert "finance.adjust" in access.json()["permissions"]
 
 
+def test_portal_context_is_server_derived_for_company_owner_and_platform_admin():
+    customer_email = f"portal-owner-{time.time_ns()}@example.com"
+    signup = client.post("/auth/signup", json={"email": customer_email, "password": "PortalOwner123!", "organization_name": "Portal Workspace"})
+    assert signup.status_code == 200, signup.text
+    assert signup.json()["portal"] == "admin"
+    assert signup.json()["organization_role"] == "owner"
+    owner_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+    owner_context = client.get("/auth/portal", headers=owner_headers)
+    assert owner_context.status_code == 200, owner_context.text
+    assert owner_context.json()["portal"] == "admin"
+    platform_context = client.get("/auth/portal", headers=admin_headers())
+    assert platform_context.status_code == 200, platform_context.text
+    assert platform_context.json()["portal"] == "super-admin"
+
+
 def test_m9_owner_bootstrap_is_configured_clerk_bound_and_idempotent(monkeypatch):
     clerk_id = f"user_m9_owner_{time.time_ns()}"
     email = f"m9-owner-{time.time_ns()}@example.com"

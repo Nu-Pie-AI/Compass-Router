@@ -165,3 +165,11 @@ M4 implementation blockers:
 
 - Invitation and resend templates now contain the required setup guidance without secrets.
 - Actual SMTP delivery, bounce handling, and template rendering remain unverified until staging SMTP credentials are configured.
+
+## M12 role portals and Clerk onboarding boundary - 2026-10-11
+
+- Local portal routing is implemented and tested: `/portal` derives the destination from server-side Compass authorization, `/super-admin` preserves platform governance, and `/admin` is the organization administration surface.
+- This does not prove a live Clerk journey. A staging Clerk instance with configured origins, verified email delivery, MFA policy, owner subject, webhook signing secret, and browser access is still required.
+- Invitation acceptance and onboarding email templates are locally covered, but real invitation delivery, email verification, session persistence/revocation, and member browser access remain unverified.
+- The current aggregate Credits ledger still cannot safely expire only promotional Credits; credit-lot/allocation semantics remain a separate design blocker.
+- No deployment, secret write, live payment, provider request, or production service/database change was performed.

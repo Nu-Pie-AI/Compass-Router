@@ -464,3 +464,27 @@ No Clerk secret values were printed or committed.
 | Focused financial/auth tests | PASS; 10 passed, 76 deselected, 1 existing Pydantic deprecation warning |
 | Web lint and typecheck | PASS |
 | Full backend regression | PASS; 115 passed, 1 existing Pydantic deprecation warning |
+
+## M12 role portals and portal resolution - 2026-10-11
+
+| Check | Result |
+|---|---|
+| Server-derived company-owner portal | PASS; signup and `/auth/portal` resolve `/admin` without trusting browser role state |
+| Server-derived platform portal | PASS; platform administrator resolves `/super-admin` |
+| Focused portal regression | PASS; 2 tests passed |
+| Full backend regression | PASS; 116 passed, 1 existing Pydantic deprecation warning |
+| Web lint | PASS |
+| Web typecheck | PASS |
+| Web production build | PASS; `/portal`, `/admin`, and `/super-admin` generated |
+| Real Clerk browser signup, invitation, MFA, logout, and session revocation | NOT RUN; staging Clerk interaction required |
+
+## M12 extension and infrastructure validation - 2026-10-11
+
+| Check | Result |
+|---|---|
+| VS Code extension typecheck | PASS; `npm.cmd run check` |
+| VS Code extension tests | PASS; 10 tests |
+| VS Code extension build | PASS |
+| Cloud Run template validation | PASS; 3 templates |
+| Infrastructure regression tests | PASS; 4 tests |
+| Live extension device/browser authorization | NOT RUN; external Clerk/browser verification required |

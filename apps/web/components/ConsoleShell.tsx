@@ -46,7 +46,7 @@ const marketplaceUrl = process.env.NEXT_PUBLIC_MARKETPLACE_URL ?? "http://localh
 export function ConsoleShell({ children, view, title, subtitle, workspaces, workspaceId, onWorkspaceChange, onRefresh, session, onLogout, onCreateWorkspace }: {
   children: React.ReactNode; view: string; title: string; subtitle: string;
   workspaces: Workspace[]; workspaceId: string; onWorkspaceChange: (id: string) => void; onRefresh: () => void;
-  session: { email: string; role: string }; onLogout: () => void; onCreateWorkspace?: () => void;
+  session: { email: string; role: string; organization_role?: string | null }; onLogout: () => void; onCreateWorkspace?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -60,6 +60,7 @@ export function ConsoleShell({ children, view, title, subtitle, workspaces, work
   const sidebarRef = useRef<HTMLElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const canManage = session.role === "admin" || session.role === "super_admin";
+  const canManageOrganization = canManage || session.organization_role === "owner" || session.organization_role === "admin";
   const visibleManageLinks = canManage ? manageLinks : manageLinks.filter((item) => item.href !== "/admin");
   const destinations = canManage ? allDestinations : allDestinations.filter((item) => item.href !== "/admin");
   const results = destinations.filter((item) => item.label.toLowerCase().includes(search.toLowerCase()));
@@ -110,7 +111,7 @@ export function ConsoleShell({ children, view, title, subtitle, workspaces, work
         {searchOpen ? <nav className="console-search-results" aria-label="Search results">{results.length ? results.map((item) => <Link key={item.href} href={item.href} onClick={() => setSearchOpen(false)}>{item.label}</Link>) : <p>No matching pages.</p>}</nav> : null}
       </div>
       <nav className="console-top-links" aria-label="Product navigation">{topLinks.map((item) => <Link key={item.href} href={item.href} className={isActive(item.href) ? "is-active" : undefined} aria-current={isActive(item.href) ? "page" : undefined}>{item.label}</Link>)}<a href={marketplaceUrl} className="console-marketplace-link console-marketplace-button"><Store size={15} aria-hidden="true" />Marketplace</a></nav>
-      <details className="console-account"><summary><span className="account-avatar">{session.email.slice(0, 1).toUpperCase()}</span><span className="account-label">{accountName}</span><ChevronDown size={15} /></summary><div><Link className={isActive("/profile") ? "is-active" : undefined} aria-current={isActive("/profile") ? "page" : undefined} href="/profile">Profile</Link><Link className={isActive("/workspaces") ? "is-active" : undefined} aria-current={isActive("/workspaces") ? "page" : undefined} href="/workspaces">Workspaces</Link>{canManage ? <Link className={isActive("/admin") ? "is-active" : undefined} aria-current={isActive("/admin") ? "page" : undefined} href="/admin">Provider settings</Link> : null}<button type="button" onClick={onLogout}>Sign out</button></div></details>
+      <details className="console-account"><summary><span className="account-avatar">{session.email.slice(0, 1).toUpperCase()}</span><span className="account-label">{accountName}</span><ChevronDown size={15} /></summary><div><Link className={isActive("/profile") ? "is-active" : undefined} aria-current={isActive("/profile") ? "page" : undefined} href="/profile">Profile</Link><Link className={isActive("/workspaces") ? "is-active" : undefined} aria-current={isActive("/workspaces") ? "page" : undefined} href="/workspaces">Workspaces</Link>{canManageOrganization ? <Link className={isActive("/admin") ? "is-active" : undefined} aria-current={isActive("/admin") ? "page" : undefined} href="/admin">Company admin</Link> : null}{canManage ? <Link className={isActive("/super-admin") ? "is-active" : undefined} aria-current={isActive("/super-admin") ? "page" : undefined} href="/super-admin">Super Admin</Link> : null}<button type="button" onClick={onLogout}>Sign out</button></div></details>
     </header>
     {menuOpen ? <button className="console-backdrop" aria-label="Close navigation" onClick={() => setMenuOpen(false)} /> : null}
     <aside id="console-sidebar" ref={sidebarRef} className={`console-sidebar ${menuOpen ? "is-open" : ""}`}>

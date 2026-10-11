@@ -39,3 +39,13 @@ Status: NOT READY
 - [ ] Real Clerk MFA/step-up and owner bootstrap verification.
 - [ ] Real Clerk webhook delivery and redelivery verification.
 - [ ] Staging Secret Manager, Cloud Run, browser, and tenant-isolation verification.
+
+## M12 role portal evidence - 2026-10-11
+
+- [x] Server-derived portal resolution for platform administrators, company administrators, and members.
+- [x] Product Owner control center available at `/super-admin` without removing the existing M9 implementation.
+- [x] Company administration surface available at `/admin` with organization-scoped project, invitation, and member controls.
+- [x] Clerk login and signup redirect to `/portal` for role-aware routing.
+- [x] Full local API regression, web lint, typecheck, production build, and portal regression evidence.
+- [ ] Real Clerk signup, email verification, invitation acceptance, MFA, logout, and session revocation in a staging browser.
+- [ ] Live SMTP, provider inference, Razorpay sandbox, PostgreSQL/Redis runtime, Cloud Run, Secret Manager, monitoring, and rollback evidence.
