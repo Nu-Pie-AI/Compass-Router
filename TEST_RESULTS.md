@@ -622,3 +622,14 @@ No Clerk secret values were printed or committed.
 | VS Code extension check | PASS; typecheck, 12 unit tests, and build |
 | Web login endpoint | PASS; HTTP 200 |
 | Authenticated Clerk bootstrap and role redirects | NOT VERIFIED; live Clerk session/token was unavailable |
+
+## Clerk login rendering repair - 2026-10-12
+
+| Check | Result |
+| --- | --- |
+| Web lint/typecheck | PASS |
+| Production Next.js build | PASS |
+| Fresh local browser at `127.0.0.1:23000/login` | PASS |
+| Clerk initialization | PASS; sign-in UI rendered after initialization |
+| Visible sign-in controls | PASS; Google, Microsoft, email/username, Continue, and Sign up |
+| Authenticated login and role redirect | NOT RUN; no credentials entered |

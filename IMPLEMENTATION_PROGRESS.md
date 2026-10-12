@@ -762,4 +762,11 @@ Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLO
 - Applied and verified Alembic head `j4k5l6m7n8o9` on Neon staging. Clerk organization, invitation, pricing, FX quote, and request snapshot fields now exist.
 - Preserved all audited record counts and financial aggregates. FastAPI was restarted from the production copy and `/health` returned 200.
 - Valid authenticated Clerk role redirects remain pending live browser credentials/session verification.
+
+## Clerk login rendering repair - 2026-10-12
+
+- Replaced the `ClerkLoading`/`ClerkLoaded` wrapper-only rendering path with direct `useAuth().isLoaded` gating.
+- This prevents the hydrated login page from becoming an empty slot when Clerk wrapper children have not committed.
+- Rebuilt and restarted the actual Next.js standalone server on port 23000.
+- Fresh browser verification now shows the complete Clerk sign-in form. No credentials were entered.
 - Full backend regression now passes 132 tests.

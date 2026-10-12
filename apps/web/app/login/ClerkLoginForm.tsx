@@ -1,6 +1,6 @@
 "use client";
 
-import { ClerkLoaded, ClerkLoading, SignIn, useAuth } from "@clerk/nextjs";
+import { SignIn, useAuth } from "@clerk/nextjs";
 import { Compass } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -19,16 +19,15 @@ export default function ClerkLoginForm() {
       <section className="clerk-login-layout" aria-labelledby="login-title">
         <div className="console-login-brand"><Compass size={24} aria-hidden="true" />Compass Router</div>
         <div className="console-login-copy"><span>WORKSPACE ACCESS</span><h1 id="login-title">Welcome back</h1><p>Sign in securely with your Compass account.</p></div>
-        {timedOut ? (
+        {!isLoaded && timedOut ? (
           <div className="console-login-error" role="alert">
             Secure sign-in could not load. Check your connection to Clerk, then reload this page.
             <button className="console-primary" type="button" onClick={() => window.location.reload()}>Reload sign in</button>
           </div>
+        ) : !isLoaded ? (
+          <div className="console-auth-loading" role="status">Loading secure sign-in...</div>
         ) : (
-          <>
-            <ClerkLoading><div className="console-auth-loading">Loading secure sign-in...</div></ClerkLoading>
-            <ClerkLoaded><SignIn routing="hash" signUpUrl="/signup" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} /></ClerkLoaded>
-          </>
+          <SignIn routing="hash" signUpUrl="/signup" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} />
         )}
       </section>
     </main>
