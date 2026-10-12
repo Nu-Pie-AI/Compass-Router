@@ -458,15 +458,21 @@ def test_clerk_bootstrap_is_idempotent_and_supports_session_protection(monkeypat
         db.close()
 
 
-def test_clerk_does_not_silently_claim_existing_compass_account(monkeypatch):
+def test_clerk_links_existing_unbound_compass_account(monkeypatch):
     email = f"clerk-link-{time.time_ns()}@example.com"
     signup = client.post("/auth/signup", json={"email": email, "password": "ClerkLink123!", "organization_name": "Existing Workspace"})
     assert signup.status_code == 200, signup.text
 
     monkeypatch.setattr(main_module, "authenticate_clerk_request", lambda _request: {"sub": f"user_clerk_{time.time_ns()}", "email": email})
     response = client.post("/auth/clerk/bootstrap", headers={"Authorization": "Bearer clerk-session"})
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["error"]["code"] == "identity_link_required"
+    assert response.status_code == 200, response.text
+    db = TestingSessionLocal()
+    try:
+        user = db.scalar(select(User).where(User.email == email))
+        assert user is not None
+        assert user.clerk_user_id is not None
+    finally:
+        db.close()
 
 
 def test_clerk_webhook_rejects_bad_signature(monkeypatch):

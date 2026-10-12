@@ -573,9 +573,9 @@ def _grant_signup_credits(db: Session, team_id: str, user_id: str) -> None:
 def provision_clerk_customer(db: Session, clerk_user_id: str, email: str) -> tuple[User, Organization | None, bool]:
     """Idempotently map a Clerk identity to a Compass customer.
 
-    Existing email accounts are never silently linked to a different Clerk identity.
-    That requires an explicit support/admin linking flow so ownership cannot transfer
-    through a mutable email address.
+    A verified Clerk identity may claim an existing Compass row only when that row
+    has no Clerk identity yet. Rows already bound to another Clerk identity are
+    never reassigned through email matching.
     """
     normalized_email = email.strip().lower()
     mapped = db.scalar(select(User).where(User.clerk_user_id == clerk_user_id))
@@ -591,7 +591,18 @@ def provision_clerk_customer(db: Session, clerk_user_id: str, email: str) -> tup
 
     existing = db.scalar(select(User).where(User.email == normalized_email))
     if existing is not None:
-        raise compass_error(409, "identity_link_required", "This email already has a Compass account. Sign in with the existing account before linking Clerk.")
+        if existing.clerk_user_id is not None:
+            raise compass_error(409, "identity_email_conflict", "The verified Clerk email belongs to another Compass account.")
+        existing.clerk_user_id = clerk_user_id
+        existing.email_verified_at = existing.email_verified_at or now()
+        db.commit()
+        organization = db.scalar(
+            select(Organization)
+            .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
+            .where(OrganizationMember.user_id == existing.id)
+            .limit(1)
+        )
+        return existing, organization, False
 
     workspace_name = f"{normalized_email.split('@', 1)[0][:80]} Workspace"
     user, organization, _ = register_customer(db, normalized_email, f"clerk-only:{secrets.token_urlsafe(32)}", workspace_name)

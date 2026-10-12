@@ -45,6 +45,7 @@ export default function ClerkSessionBridge() {
       if (!cancelled) {
         window.localStorage.removeItem("compass.local.session");
         window.dispatchEvent(new Event("compass-clerk-session"));
+        window.dispatchEvent(new Event("compass-clerk-session-error"));
       }
     });
     return () => { cancelled = true; };

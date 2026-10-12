@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Session = { portal?: string };
@@ -11,6 +11,7 @@ function destinationFor(session: Session) {
 
 export default function PortalPage() {
   const router = useRouter();
+  const [error, setError] = useState(false);
   const resolving = useRef(false);
   useEffect(() => {
     let cancelled = false;
@@ -35,9 +36,14 @@ export default function PortalPage() {
       }
       timer = window.setTimeout(resolvePortal, 250);
     };
+    const showError = () => setError(true);
     window.addEventListener("compass-clerk-session", resolvePortal);
+    window.addEventListener("compass-clerk-session-error", showError);
     resolvePortal();
-    return () => { cancelled = true; window.removeEventListener("compass-clerk-session", resolvePortal); if (timer) window.clearTimeout(timer); };
+    return () => { cancelled = true; window.removeEventListener("compass-clerk-session", resolvePortal); window.removeEventListener("compass-clerk-session-error", showError); if (timer) window.clearTimeout(timer); };
   }, [router]);
+  if (error) {
+    return <main className="console-auth-loading" role="alert"><p>This Clerk account is already linked to a different Compass account.</p><p>Sign out of Clerk and use the original account, or ask an administrator to link this account.</p><button className="console-primary" type="button" onClick={() => router.replace("/login?callbackUrl=%2Fportal")}>Return to sign in</button></main>;
+  }
   return <main className="console-auth-loading">Opening your Compass workspace...</main>;
 }
