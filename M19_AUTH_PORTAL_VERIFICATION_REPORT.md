@@ -40,6 +40,7 @@ The production copy contains `/login`, `/portal`, `/admin`, `/super-admin`, and 
 
 - Real Clerk sign-in, MFA, logout, session revocation, and role bootstrap require a live browser session and reachable FastAPI backend.
 - FastAPI could not be started because Docker Desktop is unavailable and the required PostgreSQL, Redis, and LiteLLM services are not running. No production or external database was changed.
+- The public API configured as the extension default is an older deployment: `/health` returns successfully, but its OpenAPI does not expose `/auth/extension/device/start`, `/auth/extension/device/poll`, or the extension session routes. The device-start request therefore returns HTTP 404.
 - The browser automation inventory had no interactive browser session available for completing Clerk credentials or OTP.
 
 Previously exposed Clerk, Neon, and Upstash credentials remain rotation requirements. No credential values are included in this report.

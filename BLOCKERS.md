@@ -228,3 +228,4 @@ M4 implementation blockers:
 - Root cause of the observed legacy login and `/super-admin` 404 was a stale Next.js process serving the original repository on port `23000`. It was stopped; the production-copy frontend now serves that port.
 - Clerk login rendering and unauthenticated route protection pass on both local hostnames. Real Clerk login, MFA, logout, role bootstrap, and API-backed portal access are not claimed because FastAPI dependencies are unavailable while Docker Desktop/PostgreSQL/Redis/LiteLLM are stopped.
 - Previously exposed Clerk, Neon, and Upstash credentials still require rotation. No values were printed or changed by this verification.
+- The extension's configured public API is behind the production-copy source: `/auth/extension/device/start` returns HTTP 404 and the deployed OpenAPI lacks the extension device/session routes. The API must be redeployed from the production copy before device login can work; no deployment was performed.
