@@ -222,3 +222,9 @@ M4 implementation blockers:
 - Approved Privacy Policy and Terms of Service URLs are missing. No public legal URLs were invented.
 - Live Clerk authentication, company/key/project authorization, provider inference, streaming, revocation, and Extension Development Host verification with a real account remain unverified.
 - Marketplace publication requires explicit owner authorization and secure publisher authentication; no `vsce publish` or upload was attempted.
+
+## M19 Clerk and role portal blockers - 2026-10-12
+
+- Root cause of the observed legacy login and `/super-admin` 404 was a stale Next.js process serving the original repository on port `23000`. It was stopped; the production-copy frontend now serves that port.
+- Clerk login rendering and unauthenticated route protection pass on both local hostnames. Real Clerk login, MFA, logout, role bootstrap, and API-backed portal access are not claimed because FastAPI dependencies are unavailable while Docker Desktop/PostgreSQL/Redis/LiteLLM are stopped.
+- Previously exposed Clerk, Neon, and Upstash credentials still require rotation. No values were printed or changed by this verification.

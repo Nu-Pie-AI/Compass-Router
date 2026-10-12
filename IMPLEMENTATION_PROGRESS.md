@@ -684,6 +684,18 @@ Status: VSIX READY FOR OWNER REVIEW; MARKETPLACE PUBLICATION BLOCKED
 - Check, unit tests, build, package, and Playwright webview suite passed: 10 unit tests and 11 UI tests.
 - Publisher registration, privacy/terms URLs, live Clerk/provider inference, and Marketplace upload remain owner-controlled blockers.
 
+## M19 Clerk and role portal verification - 2026-10-12
+
+Status: STALE FRONTEND PROCESS CORRECTED; LIVE CLERK AND API-BACKED ROLE FLOW PENDING
+
+- Confirmed port `23000` was serving the original `Compass-Litellm-Router\apps\web`, which caused the legacy login UI and `/super-admin` 404 observation.
+- Stopped only the confirmed stale process tree and started `Compass-Router-Production\apps\web` on `127.0.0.1:23000`.
+- Verified the production route manifest contains `/login`, `/portal`, `/admin`, `/super-admin`, and `/dashboard`.
+- Verified Clerk login rendering and unauthenticated protected-route redirects on both `localhost:23000` and `127.0.0.1:23000` with headless Playwright.
+- Web lint, typecheck, production build, focused Clerk/portal backend tests, and diff check passed.
+- Added `M19_AUTH_PORTAL_VERIFICATION_REPORT.md`.
+- Real Clerk sign-in, MFA, logout, role bootstrap, and API-backed portal access remain blocked by unavailable FastAPI dependencies and live interactive credentials.
+
 ## M18 chat UI and token usage - 2026-10-11
 
 Status: SOURCE FIXES AND AUTOMATED VERIFICATION COMPLETE; LIVE VS CODE HOST SMOKE TEST PENDING
