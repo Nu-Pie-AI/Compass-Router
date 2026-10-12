@@ -733,3 +733,10 @@ Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLO
 - Made `/login` and `/signup` dynamic/no-store and explicitly gated SignIn on Clerk loading completion.
 - Fresh browser verification now observes the actual email/password controls, successful Clerk initialization requests, no failed requests, and no console errors.
 - Interactive Clerk credentials and verification code remain the only missing step for testing the real login redirect to `/portal`.
+
+### M20.2 Clerk bootstrap CORS - 2026-10-12
+
+- Added explicit approved local origin support for `localhost:23000` and `127.0.0.1:23000`.
+- Moved CORS to the outer application middleware layer so bootstrap errors retain browser-readable CORS headers.
+- Restarted and verified the actual FastAPI process on port 28000.
+- Bootstrap is now blocked by the protected Neon schema missing `organizations.clerk_organization_id`; no migration or database mutation was performed.

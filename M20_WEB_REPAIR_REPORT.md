@@ -49,3 +49,26 @@ Evidence:
 - Fresh Playwright browser: email input 1, password input 1, SignIn heading 1.
 - Console errors: none. Failed requests: none. Redirect loop: none.
 - Interactive login: not completed; requires the user's Clerk credentials/verification code.
+
+## M20.2 Clerk bootstrap CORS - 2026-10-12
+
+Root causes found in the live API:
+
+1. The local environment did not explicitly include `http://127.0.0.1:23000` in `COMPASS_WEB_ORIGIN`.
+2. CORS was registered inside the request-context middleware. An unhandled bootstrap database exception could therefore return without CORS headers, causing Chrome to report a misleading CORS failure.
+3. The configured Neon schema is missing `organizations.clerk_organization_id`, which is required by the current bootstrap path and belongs to migration `i3j4k5l6m7n8`.
+
+Repair:
+
+- Added the approved `127.0.0.1:23000` origin to local/example configuration.
+- Registered `CORSMiddleware` outside the request-context middleware so preflight, auth failures, and error responses receive consistent CORS headers.
+- Added deterministic CORS regression tests for approved origins, rejected origins, authorization/content-type headers, and authentication failure responses.
+- Restarted the actual FastAPI process on port 28000 from the production copy.
+
+Live evidence:
+
+- Approved `localhost:23000` preflight: HTTP 200 with allow-origin and credentials headers.
+- Approved `127.0.0.1:23000` preflight: HTTP 200 with allow-origin and credentials headers.
+- Unapproved origin preflight: HTTP 400 with no allow-origin header.
+- Bootstrap with invalid token: HTTP 401 with CORS headers.
+- Real authenticated bootstrap and `/portal` role redirect remain blocked until the missing Neon migration is reviewed and authorized, and the owner completes Clerk verification.

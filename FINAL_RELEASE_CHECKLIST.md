@@ -124,3 +124,12 @@ Status: NOT READY
 - [x] ClerkLoading/ClerkLoaded gating and visible timeout recovery.
 - [x] Fresh-browser email/password control verification with no failed Clerk requests.
 - [ ] Owner completes real Clerk sign-in, verification, MFA, logout, and `/portal` role redirect.
+
+### M20.2 bootstrap CORS
+
+- [x] Approved localhost and 127.0.0.1 preflight responses.
+- [x] Authorization and JSON content-type headers accepted by preflight.
+- [x] Unapproved origins rejected.
+- [x] Authentication failure preserves CORS headers.
+- [ ] Apply and verify the required Clerk organization schema migration on an authorized isolated staging database.
+- [ ] Complete real Clerk bootstrap and role portal redirects.

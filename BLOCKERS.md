@@ -240,3 +240,10 @@ M4 implementation blockers:
 
 - The browser-only blank Clerk area was traced to stale caching of the statically prerendered `/login` page after rebuilds. Auth routes now return no-store responses and explicitly wait for Clerk initialization.
 - Fresh browser initialization is verified. Interactive sign-in, email verification, MFA, and role resolution still require the owner to complete the Clerk flow manually.
+
+## M20.2 Clerk bootstrap blocker - 2026-10-12
+
+- CORS is repaired for both approved local origins and the current FastAPI process has been restarted.
+- The live bootstrap request reached the database and failed because the configured Neon schema lacks `organizations.clerk_organization_id`, introduced by migration `i3j4k5l6m7n8`.
+- Do not run that migration against the current Neon target until its staging identity and protected customer/financial data status are conclusively reviewed and the owner authorizes the schema change.
+- Until then, real Clerk bootstrap, `/portal` role resolution, Super Admin redirect, Company Admin redirect, and Member redirect cannot be claimed as complete.

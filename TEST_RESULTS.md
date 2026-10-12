@@ -567,3 +567,15 @@ No Clerk secret values were printed or committed.
 | Failed Clerk/network requests | PASS; none observed |
 | Clerk security tests | PASS; 3 passed |
 | Interactive credential login and `/portal` role redirect | NOT RUN; requires user-controlled Clerk verification |
+
+## M20.2 Clerk bootstrap CORS - 2026-10-12
+
+| Check | Result |
+|---|---|
+| Approved `localhost:23000` preflight | PASS; HTTP 200 |
+| Approved `127.0.0.1:23000` preflight | PASS; HTTP 200 |
+| Unapproved-origin preflight | PASS; HTTP 400 and no allow-origin header |
+| Bootstrap auth failure with CORS | PASS; HTTP 401 with CORS headers |
+| Focused CORS/bootstrap regression | PASS; 4 passed, one existing Pydantic warning |
+| Actual FastAPI process restart | PASS; current source serving port 28000 |
+| Authenticated Clerk bootstrap | BLOCKED; current Neon schema lacks `organizations.clerk_organization_id` |

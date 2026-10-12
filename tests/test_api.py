@@ -21,6 +21,7 @@ os.environ["LOCAL_TEST_MODE"] = "true"
 os.environ["PROVIDER_EXECUTION_MODE"] = "proxy"
 os.environ["DEFAULT_TEAM_TOKEN_LIMIT_PER_MINUTE"] = "250000"
 os.environ["PUBLIC_SIGNUP_ENABLED"] = "true"
+os.environ["COMPASS_WEB_ORIGIN"] = "http://localhost:23000,http://127.0.0.1:23000"
 
 from app.config import get_settings  # noqa: E402
 get_settings.cache_clear()
@@ -54,6 +55,46 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
+
+
+def test_clerk_bootstrap_cors_preflight_allows_approved_origins_and_headers():
+    for origin in ("http://localhost:23000", "http://127.0.0.1:23000"):
+        response = client.options(
+            "/auth/clerk/bootstrap",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
+        assert response.headers["access-control-allow-credentials"] == "true"
+        assert "authorization" in response.headers["access-control-allow-headers"]
+        assert "content-type" in response.headers["access-control-allow-headers"]
+
+
+def test_clerk_bootstrap_cors_rejects_unapproved_origin():
+    response = client.options(
+        "/auth/clerk/bootstrap",
+        headers={
+            "Origin": "http://unapproved.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_clerk_bootstrap_post_preserves_cors_on_authentication_failure():
+    response = client.post(
+        "/auth/clerk/bootstrap",
+        headers={"Origin": "http://localhost:23000", "Authorization": "Bearer invalid"},
+    )
+    assert response.status_code == 401
+    assert response.headers["access-control-allow-origin"] == "http://localhost:23000"
+    assert response.headers["access-control-allow-credentials"] == "true"
 
 
 async def fake_provider(self, payload):  # noqa: ARG001

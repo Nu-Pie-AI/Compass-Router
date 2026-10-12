@@ -146,16 +146,6 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Compass AI Router", version="0.2.0-beta", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.compass_web_origin.split(",") if origin.strip()],
-    allow_origin_regex=r"https://compass-router-web-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 @app.middleware("http")
 async def request_context_and_security_headers(request: Request, call_next):
     supplied = request.headers.get("X-Request-ID", "")
@@ -193,6 +183,18 @@ async def request_context_and_security_headers(request: Request, call_next):
         request_id_context.reset(token)
         api_project_context.reset(project_token)
         device_session_context.reset(device_token)
+
+
+# Keep CORS outside the request middleware so preflight and error responses
+# receive the same browser headers as successful endpoint responses.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip().rstrip("/") for origin in settings.compass_web_origin.split(",") if origin.strip()],
+    allow_origin_regex=r"https://compass-router-web-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(RequestValidationError)
