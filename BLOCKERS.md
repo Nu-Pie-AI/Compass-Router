@@ -261,3 +261,11 @@ M4 implementation blockers:
 - These records appear clustered in the development-time window, but their ownership and disposability are not provable from metadata alone. The SQL connection does not independently expose the Neon project/branch name.
 - Migration to repository head `j4k5l6m7n8o9` is blocked pending Neon console identity confirmation, explicit preservation/migration approval, and a verified restore point or backup. No database write was performed.
 - Full evidence is in `NEON_MIGRATION_SAFETY_REPORT.md`.
+
+## Neon staging migration completion - 2026-10-12
+
+- Owner-confirmed Neon Console identity matches project `Compass Router`, branch `staging`, parent `production`, region AWS US East 2 (Ohio).
+- Created and verified permanent recovery branch `staging-pre-migration-20261012` before migration; counts and revision matched the staging snapshot.
+- Fixed two pending migration issues: missing PostgreSQL `compass` schema qualification and non-idempotent handling after partially created objects. No existing rows were changed.
+- Applied the chain successfully through `j4k5l6m7n8o9`; `organizations.clerk_organization_id` now exists.
+- Valid authenticated Clerk bootstrap, `/portal`, Super Admin, Company Admin, and Member browser flows remain open because no live Clerk session/token was available to this run. The unauthenticated bootstrap check returns `401` with approved CORS.

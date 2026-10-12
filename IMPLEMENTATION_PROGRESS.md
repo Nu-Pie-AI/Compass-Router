@@ -753,4 +753,13 @@ Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLO
 - Found protected populated records, including a provider credential reference and a created payment order. Development-time timestamps do not prove that rows are disposable.
 - Did not create a backup/restore point, apply migrations, restart for authenticated bootstrap, or run any database-mutating operation because Neon branch identity and recoverability are not conclusively established.
 - Added `NEON_MIGRATION_SAFETY_REPORT.md`; migration and real role-based login remain blocked pending owner confirmation and recovery approval.
+
+## Neon staging migration completion - 2026-10-12
+
+- Verified the owner-confirmed Neon project/branch in Neon Console and created permanent recovery branch `staging-pre-migration-20261012` from `staging`.
+- Read-only verification confirmed backup counts and revision before migration. No secrets or row contents were exposed.
+- Corrected pending migrations `g1h2i3j4k5l6`, `i3j4k5l6m7n8`, and `j4k5l6m7n8o9` to use the `compass` PostgreSQL schema and safely converge after the first partially applied attempt.
+- Applied and verified Alembic head `j4k5l6m7n8o9` on Neon staging. Clerk organization, invitation, pricing, FX quote, and request snapshot fields now exist.
+- Preserved all audited record counts and financial aggregates. FastAPI was restarted from the production copy and `/health` returned 200.
+- Valid authenticated Clerk role redirects remain pending live browser credentials/session verification.
 - Full backend regression now passes 132 tests.

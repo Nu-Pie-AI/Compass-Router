@@ -151,6 +151,13 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Neon SQL metadata confirms database `neondb` and application schema `compass`, but does not independently prove the Neon project/branch. Owner confirmation in Neon and a verified restore point are required before applying the chain.
 - No migration, backup write, financial operation, or production service change was performed. Evidence is recorded in `NEON_MIGRATION_SAFETY_REPORT.md`.
 
+## Neon staging migration completion - 2026-10-12
+
+- Neon staging identity is confirmed in the Neon Console: Compass Router / staging, parent production, AWS US East 2 (Ohio).
+- A permanent pre-migration recovery branch `staging-pre-migration-20261012` was created and verified.
+- Alembic head `j4k5l6m7n8o9` is applied. Existing record counts and financial aggregates are preserved; no production branch or Cloud Run service was touched.
+- FastAPI was restarted and is healthy. The remaining release gate is live Clerk verification: authenticated bootstrap, `/portal`, `/super-admin`, `/admin`, and member routing with real authorized identities.
+
 - Local web readiness is improved: the standalone build includes static assets, the Clerk login has a visible load failure state, and the route/control audit documents actual evidence.
 - Local Playwright route coverage, API health, backend regression, lint, typecheck, build, and diff checks pass.
 - Overall release remains NOT READY until live Clerk role flows, isolated staging database/Redis verification, provider inference and streaming, SMTP, Razorpay sandbox, Secret Manager, and Cloud Run checks are completed.

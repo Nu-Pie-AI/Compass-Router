@@ -604,3 +604,21 @@ No Clerk secret values were printed or committed.
 | Neon project/branch identity proof | BLOCKED; not exposed by SQL metadata and not independently confirmed in Neon console |
 | Migration execution | NOT RUN; no backup/restore point or database mutation performed |
 | Authenticated Clerk bootstrap and role portal tests | BLOCKED by missing schema and migration safety gate |
+
+## Neon staging migration completion - 2026-10-12
+
+| Check | Result |
+| --- | --- |
+| Neon Console project/branch confirmation | PASS; Compass Router / staging, parent production, AWS US East 2 |
+| Recovery branch creation | PASS; `staging-pre-migration-20261012`, permanent retention |
+| Recovery branch snapshot verification | PASS; revision and audited row counts matched staging |
+| Migration qualification/idempotency repair | PASS; migration tests 2 passed |
+| Alembic staging upgrade | PASS; applied through `j4k5l6m7n8o9` |
+| Clerk organization schema | PASS; `organizations.clerk_organization_id` exists |
+| Record and financial aggregate preservation | PASS; counts unchanged, payment total 50,000 paise, refunds 0, wallet/ledger totals 0 |
+| FastAPI restart and health | PASS; port 28000 health HTTP 200 |
+| Missing-token bootstrap/CORS | PASS; HTTP 401 with approved origin header |
+| Full backend regression | PASS; 132 passed, one existing Pydantic warning |
+| VS Code extension check | PASS; typecheck, 12 unit tests, and build |
+| Web login endpoint | PASS; HTTP 200 |
+| Authenticated Clerk bootstrap and role redirects | NOT VERIFIED; live Clerk session/token was unavailable |

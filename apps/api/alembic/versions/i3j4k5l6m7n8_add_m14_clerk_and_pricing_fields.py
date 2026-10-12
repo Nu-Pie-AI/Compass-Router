@@ -18,28 +18,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("organizations", sa.Column("clerk_organization_id", sa.String(), nullable=True))
-    op.create_index("ix_organizations_clerk_organization_id", "organizations", ["clerk_organization_id"], unique=True)
-    op.add_column("invitations", sa.Column("clerk_invitation_id", sa.String(), nullable=True))
-    op.add_column("invitations", sa.Column("delivery_provider", sa.String(), nullable=False, server_default="compass"))
-    with op.batch_alter_table("invitations") as batch:
+    schema = "compass" if op.get_bind().dialect.name == "postgresql" else None
+    op.add_column("organizations", sa.Column("clerk_organization_id", sa.String(), nullable=True), schema=schema)
+    op.create_index("ix_organizations_clerk_organization_id", "organizations", ["clerk_organization_id"], unique=True, schema=schema)
+    op.add_column("invitations", sa.Column("clerk_invitation_id", sa.String(), nullable=True), schema=schema)
+    op.add_column("invitations", sa.Column("delivery_provider", sa.String(), nullable=False, server_default="compass"), schema=schema)
+    with op.batch_alter_table("invitations", schema=schema) as batch:
         batch.alter_column("token_hash", existing_type=sa.String(), nullable=True)
-    op.create_index("ix_invitations_clerk_invitation_id", "invitations", ["clerk_invitation_id"], unique=True)
-    op.add_column("pricing_policies", sa.Column("fx_buffer_bps", sa.Integer(), nullable=False, server_default="500"))
-    op.add_column("pricing_policies", sa.Column("platform_fee_bps", sa.Integer(), nullable=False, server_default="500"))
-    op.add_column("pricing_policies", sa.Column("fx_source", sa.String(), nullable=False, server_default="fixed_local_fallback"))
-    op.add_column("pricing_policies", sa.Column("fx_fetched_at", sa.DateTime(), nullable=True))
+    op.create_index("ix_invitations_clerk_invitation_id", "invitations", ["clerk_invitation_id"], unique=True, schema=schema)
+    op.add_column("pricing_policies", sa.Column("fx_buffer_bps", sa.Integer(), nullable=False, server_default="500"), schema=schema)
+    op.add_column("pricing_policies", sa.Column("platform_fee_bps", sa.Integer(), nullable=False, server_default="500"), schema=schema)
+    op.add_column("pricing_policies", sa.Column("fx_source", sa.String(), nullable=False, server_default="fixed_local_fallback"), schema=schema)
+    op.add_column("pricing_policies", sa.Column("fx_fetched_at", sa.DateTime(), nullable=True), schema=schema)
 
 
 def downgrade() -> None:
-    op.drop_column("pricing_policies", "fx_fetched_at")
-    op.drop_column("pricing_policies", "fx_source")
-    op.drop_column("pricing_policies", "platform_fee_bps")
-    op.drop_column("pricing_policies", "fx_buffer_bps")
-    op.drop_index("ix_invitations_clerk_invitation_id", table_name="invitations")
-    with op.batch_alter_table("invitations") as batch:
+    schema = "compass" if op.get_bind().dialect.name == "postgresql" else None
+    op.drop_column("pricing_policies", "fx_fetched_at", schema=schema)
+    op.drop_column("pricing_policies", "fx_source", schema=schema)
+    op.drop_column("pricing_policies", "platform_fee_bps", schema=schema)
+    op.drop_column("pricing_policies", "fx_buffer_bps", schema=schema)
+    op.drop_index("ix_invitations_clerk_invitation_id", table_name="invitations", schema=schema)
+    with op.batch_alter_table("invitations", schema=schema) as batch:
         batch.alter_column("token_hash", existing_type=sa.String(), nullable=False)
-    op.drop_column("invitations", "delivery_provider")
-    op.drop_column("invitations", "clerk_invitation_id")
-    op.drop_index("ix_organizations_clerk_organization_id", table_name="organizations")
-    op.drop_column("organizations", "clerk_organization_id")
+    op.drop_column("invitations", "delivery_provider", schema=schema)
+    op.drop_column("invitations", "clerk_invitation_id", schema=schema)
+    op.drop_index("ix_organizations_clerk_organization_id", table_name="organizations", schema=schema)
+    op.drop_column("organizations", "clerk_organization_id", schema=schema)

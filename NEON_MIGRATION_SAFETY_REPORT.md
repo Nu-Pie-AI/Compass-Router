@@ -56,15 +56,26 @@ The upgrade path from the live revision to repository head is:
 
 The path adds API-key assignment/project policy tables, Clerk organization and invitation fields, pricing/FX fields, and FX quote/request snapshot structures. The live target is populated, so compatibility and preservation must be tested against an approved recoverable copy before execution. No downgrade, destructive operation, backup creation, or migration was attempted.
 
-## Decision
+## Migration execution update
 
-Migration is **BLOCKED**. The configured target contains protected customer/financial records, the Neon project/branch identity is not independently proven by the available SQL metadata, and no approved restore point or recoverable backup was created. User confirmation that the product has no real customers is not sufficient to classify existing rows as disposable under the task safety rules.
+The owner confirmed the Neon Console identity: project `Compass Router`, branch `staging`, parent `production`, region AWS US East 2 (Ohio). A permanent child backup branch was created and verified:
 
-Required before migration:
+- Backup branch: `staging-pre-migration-20261012`
+- Parent: `staging`
+- Neon branch ID: recorded in Neon Console; not copied into repository configuration
+- Backup snapshot revision: `a1b2c3d4e5f6`
+- Backup row counts matched the pre-migration staging audit.
 
-1. Confirm in Neon that the endpoint is the intended `Compass Router` `staging` branch and not a production or shared branch.
-2. Confirm whether the listed development records, provider credential reference, and created payment order may be preserved and migrated.
-3. Create and verify a recoverable Neon restore point/backup, or provide equivalent owner-approved recovery evidence.
-4. Approve applying the Alembic head `j4k5l6m7n8o9` to this exact target.
+The first migration attempt exposed two schema qualification/idempotency defects. The pending migrations referenced tables without the `compass` schema and could leave newly created objects while the Alembic revision remained unchanged. The migrations were corrected to use the PostgreSQL `compass` schema and to safely recognize the already-created objects; SQLite migration behavior remains covered by tests.
 
-Until then, authenticated bootstrap and role-based portal verification cannot be completed because the required schema is absent.
+The reviewed chain was then applied successfully to staging:
+
+`a1b2c3d4e5f6` -> `g1h2i3j4k5l6` -> `h2i3j4k5l6m7` -> `i3j4k5l6m7n8` -> `j4k5l6m7n8o9`
+
+Post-migration verification passed:
+
+- Alembic revision is `j4k5l6m7n8o9`.
+- `compass.organizations.clerk_organization_id` exists.
+- Existing user, organization, team, project, provider credential, wallet, payment, and usage counts are unchanged.
+- Payment aggregate remains 50,000 paise with zero refunded; wallet and wallet-ledger aggregates remain zero.
+- No rows were deleted, truncated, reset, or overwritten.
