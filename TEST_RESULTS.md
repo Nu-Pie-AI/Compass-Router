@@ -540,3 +540,18 @@ No Clerk secret values were printed or committed.
 - Full backend regression after the M14 schema and route changes: `117 passed, 1 warning`.
 - Migration/catalog focused verification after SQLite batch fix: `9 passed`.
 - Web lint: passed. Web typecheck: passed after the production build generated `.next` types. Web production build: passed.
+
+## M20 web audit and repair - 2026-10-12
+
+| Check | Result |
+|---|---|
+| Actual port/process/source verification | PASS; production copy serves 23000 and FastAPI serves 28000 |
+| Public and protected route Playwright sweep | PASS; all discovered routes rendered or redirected correctly |
+| Clerk resource and SignIn rendering | PASS in clean Playwright browser; interactive identity flow not claimed |
+| Browser console/page errors in unauthenticated sweep | PASS; none observed |
+| API health | PASS; `GET /health` returned 200 |
+| Backend pytest | PASS; 127 passed, one existing Pydantic deprecation warning |
+| Web lint | PASS |
+| Web typecheck | PASS |
+| Web production build and standalone assets | PASS; CSS asset returned 200 |
+| Authenticated role/provider/Credits/payment workflows | BLOCKED; live external staging prerequisites |

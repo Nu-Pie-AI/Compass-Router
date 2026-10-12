@@ -107,3 +107,13 @@ Status: NOT READY
 - [x] Extension check, 12 unit tests, 11 Playwright tests, build, package, diff check, and VSIX secret scan passed.
 - [ ] Live VS Code Extension Development Host greeting, cancellation, retry, reload, provider attribution, and Credits reconciliation verification.
 - [ ] Owner authorizes Marketplace publication.
+
+## M20 web audit
+
+- [x] Production-copy process, port, route manifest, and source alignment verified.
+- [x] Public and protected route Playwright sweep completed.
+- [x] Clerk login renders in a clean browser and has a visible timeout recovery state.
+- [x] Standalone static asset packaging repaired and CSS response verified.
+- [x] Backend regression, web lint, typecheck, production build, and diff check passed.
+- [ ] Live Clerk login, MFA, logout, role routing, and organization flows.
+- [ ] Authenticated provider, inference, streaming, Credits, payment, SMTP, and tenant-isolation workflows.

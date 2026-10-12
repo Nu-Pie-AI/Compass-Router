@@ -141,3 +141,9 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 - Compass Router VSIX `0.1.0` is locally built, audited, and installable.
 - Extension package readiness does not imply backend staging readiness: Neon isolation, Clerk live verification, provider inference, and Cloud Run remain blocked as documented in M16.
 - Marketplace publication remains blocked until publisher identity, legal URLs, live integration evidence, and owner approval are complete.
+
+## M20 web application readiness - 2026-10-12
+
+- Local web readiness is improved: the standalone build includes static assets, the Clerk login has a visible load failure state, and the route/control audit documents actual evidence.
+- Local Playwright route coverage, API health, backend regression, lint, typecheck, build, and diff checks pass.
+- Overall release remains NOT READY until live Clerk role flows, isolated staging database/Redis verification, provider inference and streaming, SMTP, Razorpay sandbox, Secret Manager, and Cloud Run checks are completed.

@@ -714,3 +714,15 @@ Status: SOURCE FIXES AND AUTOMATED VERIFICATION COMPLETE; LIVE VS CODE HOST SMOK
 - Owner confirmed Marketplace publisher ID `nu-pie` with display name `Compass (Nu-Pie)`.
 - Marketplace lookup found no existing `nu-pie.compass-router` listing; version `0.1.0` remains the first public release target.
 - No Marketplace upload or publish command was executed.
+
+## M20 web application audit and repair - 2026-10-12
+
+Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLOWS PENDING
+
+- Audited the actual processes and confirmed the production-copy web app serves port 23000 and the FastAPI app serves port 28000.
+- Repaired standalone Next asset packaging so CSS and public assets are available in production starts.
+- Added a visible Clerk loading timeout/recovery state to prevent an indefinite blank login shell.
+- Audited all discovered web routes with Playwright; public pages render and protected routes redirect to Clerk without console errors.
+- Added `WEB_ROUTE_AUDIT.md`, `WEB_CONTROL_COVERAGE.md`, `WEB_E2E_TEST_REPORT.md`, and `M20_WEB_REPAIR_REPORT.md`.
+- Backend regression: 127 passed; web lint, typecheck, production build, and diff check passed.
+- Live Clerk identities, MFA, role portals, provider inference, Credits, payments, SMTP, and isolated staging browser workflows remain external gates.

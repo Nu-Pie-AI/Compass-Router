@@ -66,3 +66,9 @@ Not yet verified: PostgreSQL row/transaction behavior, Redis concurrency, Secret
 - Scheduler template validation confirms OIDC authentication, staging-only target placeholders, bounded retry settings, and no plaintext secrets.
 - Repository checks found no committed live credential values outside documented placeholders/test fixtures; ignored local secrets remain outside Git and must be rotated because they were exposed during setup.
 - Neon isolation, PostgreSQL transaction behavior, Redis runtime behavior, Clerk live claims/MFA, provider health, and deployment IAM remain unverified.
+
+## M20 web security verification - 2026-10-12
+
+- Protected web routes are guarded by Clerk middleware and redirect unauthenticated requests to `/login` with the original callback path.
+- No raw server credentials are included in the web source or public route evidence.
+- Authenticated tenant isolation, Clerk MFA/claims, key non-disclosure, provider secret handling, and cross-tenant browser checks remain pending live staging verification.
