@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { AdminConsole } from "../../components/AdminConsole";
+import { CompanyAdminPortal } from "../../components/CompanyAdminPortal";
+import { CompassConsole } from "../../components/CompassConsole";
 
 type Session = { portal?: string };
 
@@ -10,7 +12,7 @@ function destinationFor(session: Session) {
 }
 
 export default function PortalPage() {
-  const router = useRouter();
+  const [destination, setDestination] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const resolving = useRef(false);
   useEffect(() => {
@@ -23,7 +25,9 @@ export default function PortalPage() {
       if (raw) {
         try {
           resolving.current = true;
-          window.location.replace(destinationFor(JSON.parse(raw) as Session));
+          const nextDestination = destinationFor(JSON.parse(raw) as Session);
+          window.history.replaceState({}, "", nextDestination);
+          setDestination(nextDestination);
           return;
         } catch {
           window.localStorage.removeItem("compass.local.session");
@@ -31,7 +35,7 @@ export default function PortalPage() {
       }
       attempts += 1;
       if (attempts >= 80) {
-        router.replace("/login?callbackUrl=%2Fportal");
+        window.location.replace("/login?callbackUrl=%2Fportal");
         return;
       }
       timer = window.setTimeout(resolvePortal, 250);
@@ -41,9 +45,12 @@ export default function PortalPage() {
     window.addEventListener("compass-clerk-session-error", showError);
     resolvePortal();
     return () => { cancelled = true; window.removeEventListener("compass-clerk-session", resolvePortal); window.removeEventListener("compass-clerk-session-error", showError); if (timer) window.clearTimeout(timer); };
-  }, [router]);
+  }, []);
   if (error) {
-    return <main className="console-auth-loading" role="alert"><p>This Clerk account is already linked to a different Compass account.</p><p>Sign out of Clerk and use the original account, or ask an administrator to link this account.</p><button className="console-primary" type="button" onClick={() => router.replace("/login?callbackUrl=%2Fportal")}>Return to sign in</button></main>;
+    return <main className="console-auth-loading" role="alert"><p>This Clerk account is already linked to a different Compass account.</p><p>Sign out of Clerk and use the original account, or ask an administrator to link this account.</p><button className="console-primary" type="button" onClick={() => window.location.replace("/login?callbackUrl=%2Fportal")}>Return to sign in</button></main>;
   }
+  if (destination === "/super-admin") return <AdminConsole />;
+  if (destination === "/admin") return <CompanyAdminPortal />;
+  if (destination === "/dashboard") return <CompassConsole view="dashboard" />;
   return <main className="console-auth-loading">Opening your Compass workspace...</main>;
 }
