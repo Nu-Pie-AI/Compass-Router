@@ -235,3 +235,8 @@ M4 implementation blockers:
 - Local route and unauthenticated browser coverage is complete. Authenticated portal coverage is blocked by the need for a real Clerk session with verified owner/company/member identities and MFA claims.
 - Provider catalog, inference streaming, Credits settlement, Razorpay sandbox, SMTP invitations, PostgreSQL/Redis concurrency, and cross-tenant browser workflows require isolated staging credentials and data. No protected records were mutated.
 - The production-copy source now includes the standalone asset packaging repair and Clerk login timeout fallback; the running server was rebuilt from that source.
+
+### Clerk initialization follow-up - 2026-10-12
+
+- The browser-only blank Clerk area was traced to stale caching of the statically prerendered `/login` page after rebuilds. Auth routes now return no-store responses and explicitly wait for Clerk initialization.
+- Fresh browser initialization is verified. Interactive sign-in, email verification, MFA, and role resolution still require the owner to complete the Clerk flow manually.

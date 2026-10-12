@@ -555,3 +555,15 @@ No Clerk secret values were printed or committed.
 | Web typecheck | PASS |
 | Web production build and standalone assets | PASS; CSS asset returned 200 |
 | Authenticated role/provider/Credits/payment workflows | BLOCKED; live external staging prerequisites |
+
+## Real Clerk initialization follow-up - 2026-10-12
+
+| Check | Result |
+|---|---|
+| Login cache policy | PASS; `/login` returns `private, no-cache, no-store` |
+| Clerk frontend initialization | PASS; Clerk script, client, environment, and UI module requests returned 200 |
+| Actual sign-in controls | PASS; email and password inputs visible in fresh Playwright browser |
+| Browser JavaScript errors | PASS; none observed |
+| Failed Clerk/network requests | PASS; none observed |
+| Clerk security tests | PASS; 3 passed |
+| Interactive credential login and `/portal` role redirect | NOT RUN; requires user-controlled Clerk verification |

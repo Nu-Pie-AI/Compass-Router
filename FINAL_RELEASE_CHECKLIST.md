@@ -117,3 +117,10 @@ Status: NOT READY
 - [x] Backend regression, web lint, typecheck, production build, and diff check passed.
 - [ ] Live Clerk login, MFA, logout, role routing, and organization flows.
 - [ ] Authenticated provider, inference, streaming, Credits, payment, SMTP, and tenant-isolation workflows.
+
+### Clerk initialization follow-up
+
+- [x] `/login` and `/signup` no-store auth responses.
+- [x] ClerkLoading/ClerkLoaded gating and visible timeout recovery.
+- [x] Fresh-browser email/password control verification with no failed Clerk requests.
+- [ ] Owner completes real Clerk sign-in, verification, MFA, logout, and `/portal` role redirect.

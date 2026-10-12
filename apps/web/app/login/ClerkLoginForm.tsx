@@ -1,6 +1,6 @@
 "use client";
 
-import { SignIn, useAuth } from "@clerk/nextjs";
+import { ClerkLoaded, ClerkLoading, SignIn, useAuth } from "@clerk/nextjs";
 import { Compass } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -25,7 +25,10 @@ export default function ClerkLoginForm() {
             <button className="console-primary" type="button" onClick={() => window.location.reload()}>Reload sign in</button>
           </div>
         ) : (
-          <SignIn routing="hash" signUpUrl="/signup" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} />
+          <>
+            <ClerkLoading><div className="console-auth-loading">Loading secure sign-in...</div></ClerkLoading>
+            <ClerkLoaded><SignIn routing="hash" signUpUrl="/signup" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} /></ClerkLoaded>
+          </>
         )}
       </section>
     </main>

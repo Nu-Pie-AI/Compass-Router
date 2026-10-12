@@ -726,3 +726,10 @@ Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLO
 - Added `WEB_ROUTE_AUDIT.md`, `WEB_CONTROL_COVERAGE.md`, `WEB_E2E_TEST_REPORT.md`, and `M20_WEB_REPAIR_REPORT.md`.
 - Backend regression: 127 passed; web lint, typecheck, production build, and diff check passed.
 - Live Clerk identities, MFA, role portals, provider inference, Credits, payments, SMTP, and isolated staging browser workflows remain external gates.
+
+### M20 Clerk initialization correction - 2026-10-12
+
+- Identified stale static caching of the prerendered auth page as the cause of the browser-specific empty Clerk area.
+- Made `/login` and `/signup` dynamic/no-store and explicitly gated SignIn on Clerk loading completion.
+- Fresh browser verification now observes the actual email/password controls, successful Clerk initialization requests, no failed requests, and no console errors.
+- Interactive Clerk credentials and verification code remain the only missing step for testing the real login redirect to `/portal`.
