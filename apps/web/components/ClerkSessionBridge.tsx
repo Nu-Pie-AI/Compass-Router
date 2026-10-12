@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth, useClerk } from "@clerk/nextjs";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { apiFetch, registerClerkSessionProviders } from "../lib/api";
 
 type Session = { token: string; user_id: string; email: string; organization_id?: string | null; role: string };
@@ -9,6 +9,12 @@ type Session = { token: string; user_id: string; email: string; organization_id?
 export default function ClerkSessionBridge() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const { signOut } = useClerk();
+  const bootstrapStarted = useRef(false);
+  const getTokenRef = useRef(getToken);
+
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  }, [getToken]);
 
   useEffect(() => {
     registerClerkSessionProviders(getToken, signOut);
@@ -18,12 +24,15 @@ export default function ClerkSessionBridge() {
   useEffect(() => {
     if (!isLoaded) return;
     if (!isSignedIn) {
+      bootstrapStarted.current = false;
       window.localStorage.removeItem("compass.local.session");
       window.dispatchEvent(new Event("compass-clerk-session"));
       return;
     }
+    if (bootstrapStarted.current) return;
+    bootstrapStarted.current = true;
     let cancelled = false;
-    void getToken().then((token) => {
+    void getTokenRef.current().then((token) => {
       if (!token) throw new Error("Clerk did not issue a session token.");
       return apiFetch<Session>("/auth/clerk/bootstrap", { method: "POST" }, token);
     }).then((session) => {
@@ -32,13 +41,14 @@ export default function ClerkSessionBridge() {
         window.dispatchEvent(new Event("compass-clerk-session"));
       }
     }).catch(() => {
+      bootstrapStarted.current = false;
       if (!cancelled) {
         window.localStorage.removeItem("compass.local.session");
         window.dispatchEvent(new Event("compass-clerk-session"));
       }
     });
     return () => { cancelled = true; };
-  }, [getToken, isLoaded, isSignedIn]);
+  }, [isLoaded, isSignedIn]);
 
   return null;
 }

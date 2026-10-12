@@ -1,33 +1,39 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch } from "../../lib/api";
+
+type Session = { portal?: string };
+
+function destinationFor(session: Session) {
+  return session.portal === "super-admin" ? "/super-admin" : session.portal === "admin" ? "/admin" : "/dashboard";
+}
 
 export default function PortalPage() {
   const router = useRouter();
+  const resolving = useRef(false);
   useEffect(() => {
     let cancelled = false;
     let attempts = 0;
     let timer: number | undefined;
     const resolvePortal = () => {
-      if (cancelled) return;
+      if (cancelled || resolving.current) return;
       const raw = window.localStorage.getItem("compass.local.session");
-      let token = "";
-      try {
-        token = raw ? (JSON.parse(raw) as { token?: string }).token ?? "" : "";
-      } catch {
-        window.localStorage.removeItem("compass.local.session");
+      if (raw) {
+        try {
+          resolving.current = true;
+          window.location.replace(destinationFor(JSON.parse(raw) as Session));
+          return;
+        } catch {
+          window.localStorage.removeItem("compass.local.session");
+        }
       }
-      if (!token) {
-        attempts += 1;
-        if (attempts < 80) timer = window.setTimeout(resolvePortal, 100);
-        else router.replace("/login?callbackUrl=%2Fportal");
+      attempts += 1;
+      if (attempts >= 80) {
+        router.replace("/login?callbackUrl=%2Fportal");
         return;
       }
-      void apiFetch<{ portal: string }>("/auth/portal", {}, token)
-        .then(({ portal }) => { if (!cancelled) router.replace(portal === "super-admin" ? "/super-admin" : portal === "admin" ? "/admin" : "/dashboard"); })
-        .catch(() => { if (!cancelled) router.replace("/login?callbackUrl=%2Fportal"); });
+      timer = window.setTimeout(resolvePortal, 250);
     };
     window.addEventListener("compass-clerk-session", resolvePortal);
     resolvePortal();

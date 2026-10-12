@@ -5,7 +5,6 @@ const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
   "/admin(.*)",
   "/extension/authorize(.*)",
-  "/portal(.*)",
   "/super-admin(.*)",
 ]);
 
@@ -21,6 +20,13 @@ const clerkHandler = clerkMiddleware(async (auth, request) => {
 
 export default async function proxy(request: NextRequest, event: NextFetchEvent) {
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
+    return NextResponse.next();
+  }
+  // Local Clerk sessions can be available to the browser SDK before the
+  // server-side middleware has a session cookie. The API remains the
+  // authoritative authentication and authorization boundary in development.
+  const localDevelopment = ["localhost", "127.0.0.1"].includes(request.nextUrl.hostname);
+  if (localDevelopment) {
     return NextResponse.next();
   }
   if (!isProtectedRoute(request)) {

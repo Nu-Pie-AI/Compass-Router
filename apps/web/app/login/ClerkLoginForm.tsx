@@ -2,11 +2,9 @@
 
 import { SignIn, useAuth } from "@clerk/nextjs";
 import { Compass } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 export default function ClerkLoginForm() {
-  const router = useRouter();
   const { isLoaded, isSignedIn } = useAuth();
   const [timedOut, setTimedOut] = useState(false);
 
@@ -17,8 +15,8 @@ export default function ClerkLoginForm() {
   }, [isLoaded]);
 
   useEffect(() => {
-    if (isLoaded && isSignedIn) router.replace("/portal");
-  }, [isLoaded, isSignedIn, router]);
+    if (isLoaded && isSignedIn && window.location.pathname === "/login") window.location.replace("/portal");
+  }, [isLoaded, isSignedIn]);
 
   return (
     <main className="console-login">
@@ -33,7 +31,7 @@ export default function ClerkLoginForm() {
         ) : !isLoaded ? (
           <div className="console-auth-loading" role="status">Loading secure sign-in...</div>
         ) : (
-          <SignIn routing="hash" signUpUrl="/signup" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} />
+          <SignIn routing="hash" signUpUrl="/signup" forceRedirectUrl="/portal" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} />
         )}
       </section>
     </main>

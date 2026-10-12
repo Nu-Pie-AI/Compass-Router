@@ -130,7 +130,9 @@ export function CompassConsole({ view }: { view: string }) {
       setClerkReady(true);
     };
     window.addEventListener("compass-clerk-session", syncClerkSession);
-    const timeout = window.setTimeout(syncClerkSession, 1500);
+    // Clerk bootstrap includes a verified Neon-backed provisioning request.
+    // Give that handoff time to complete before treating the session as absent.
+    const timeout = window.setTimeout(syncClerkSession, 15000);
     return () => {
       window.removeEventListener("compass-clerk-session", syncClerkSession);
       window.clearTimeout(timeout);
