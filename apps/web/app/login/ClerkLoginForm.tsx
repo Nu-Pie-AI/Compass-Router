@@ -2,10 +2,12 @@
 
 import { SignIn, useAuth } from "@clerk/nextjs";
 import { Compass } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 export default function ClerkLoginForm() {
-  const { isLoaded } = useAuth();
+  const router = useRouter();
+  const { isLoaded, isSignedIn } = useAuth();
   const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
@@ -13,6 +15,10 @@ export default function ClerkLoginForm() {
     const timer = window.setTimeout(() => setTimedOut(true), 8000);
     return () => window.clearTimeout(timer);
   }, [isLoaded]);
+
+  useEffect(() => {
+    if (isLoaded && isSignedIn) router.replace("/portal");
+  }, [isLoaded, isSignedIn, router]);
 
   return (
     <main className="console-login">
