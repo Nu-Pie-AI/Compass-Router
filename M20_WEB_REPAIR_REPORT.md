@@ -72,3 +72,11 @@ Live evidence:
 - Unapproved origin preflight: HTTP 400 with no allow-origin header.
 - Bootstrap with invalid token: HTTP 401 with CORS headers.
 - Real authenticated bootstrap and `/portal` role redirect remain blocked until the missing Neon migration is reviewed and authorized, and the owner completes Clerk verification.
+
+## Bootstrap HTTP 500 hardening - 2026-10-12
+
+- The live read-only Alembic revision is `a1b2c3d4e5f6`; the source requires `i3j4k5l6m7n8` for Clerk organization fields.
+- The Neon verifier reports protected customer/financial rows, so no migration was executed.
+- Clerk bootstrap now catches only the known missing-column condition, rolls back the failed transaction, and returns `503 database_migration_required` with a safe JSON message. It does not create a fake session or weaken Clerk, organization, role, or MFA checks.
+- Unrelated database failures remain server errors and are returned through a generic non-sensitive JSON handler.
+- Full backend regression: 132 passed. Web lint, typecheck, production build, and diff check passed.

@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import sessionmaker
 
 os.environ["DATABASE_URL"] = "sqlite:///" + tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
@@ -95,6 +96,26 @@ def test_clerk_bootstrap_post_preserves_cors_on_authentication_failure():
     assert response.status_code == 401
     assert response.headers["access-control-allow-origin"] == "http://localhost:23000"
     assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_clerk_bootstrap_reports_required_schema_upgrade_without_fake_success(monkeypatch):
+    def missing_schema(*_args, **_kwargs):
+        raise ProgrammingError("SELECT", {}, RuntimeError("column organizations.clerk_organization_id does not exist"))
+
+    monkeypatch.setattr(main_module, "provision_clerk_customer", missing_schema)
+    with pytest.raises(HTTPException) as raised:
+        main_module.clerk_bootstrap({"sub": "clerk_user", "email": "user@example.com"}, TestingSessionLocal())
+    assert raised.value.status_code == 503
+    assert raised.value.detail["error"]["code"] == "database_migration_required"
+
+
+def test_clerk_bootstrap_does_not_hide_unrelated_database_failures(monkeypatch):
+    def database_failure(*_args, **_kwargs):
+        raise ProgrammingError("SELECT", {}, RuntimeError("unrelated database failure"))
+
+    monkeypatch.setattr(main_module, "provision_clerk_customer", database_failure)
+    with pytest.raises(ProgrammingError, match="unrelated database failure"):
+        main_module.clerk_bootstrap({"sub": "clerk_user", "email": "user@example.com"}, TestingSessionLocal())
 
 
 async def fake_provider(self, payload):  # noqa: ARG001

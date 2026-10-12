@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 import httpx
 from jose import JWTError
 from sqlalchemy import Integer, and_, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from .admin_authorization import clerk_mfa_verified, has_platform_permission, platform_permissions, platform_roles, require_platform_permission, require_super_admin
@@ -200,6 +200,14 @@ app.add_middleware(
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": {"error": {"code": "invalid_request", "message": "Request validation failed.", "type": "compass_error", "fields": exc.errors()}}})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_: Request, __: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={"detail": {"error": {"code": "internal_error", "message": "The server could not complete the request.", "type": "compass_error"}}},
+    )
 
 
 async def enforce_body_limit(request: Request) -> None:
@@ -473,7 +481,13 @@ def clerk_bootstrap(identity: dict = Depends(current_clerk_identity), db: Sessio
             email = clerk_user_email(clerk_id)
         except Exception:
             raise compass_error(503, "clerk_email_unavailable", "Clerk identity is valid but its verified email is not available yet.") from None
-    user, _, _ = provision_clerk_customer(db, clerk_id, email)
+    try:
+        user, _, _ = provision_clerk_customer(db, clerk_id, email)
+    except ProgrammingError as exc:
+        db.rollback()
+        if "clerk_organization_id" in str(exc):
+            raise compass_error(503, "database_migration_required", "Compass authentication is temporarily unavailable while the database schema is upgraded.") from None
+        raise
     return _session_response(db, user)
 
 

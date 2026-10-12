@@ -740,3 +740,9 @@ Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLO
 - Moved CORS to the outer application middleware layer so bootstrap errors retain browser-readable CORS headers.
 - Restarted and verified the actual FastAPI process on port 28000.
 - Bootstrap is now blocked by the protected Neon schema missing `organizations.clerk_organization_id`; no migration or database mutation was performed.
+
+### Bootstrap HTTP 500 hardening - 2026-10-12
+
+- Added safe schema-mismatch handling and generic JSON error handling without bypassing Clerk authentication or role checks.
+- Read-only Alembic check reports `a1b2c3d4e5f6`; no migration was executed because the configured Neon target contains protected records.
+- Full backend regression now passes 132 tests.

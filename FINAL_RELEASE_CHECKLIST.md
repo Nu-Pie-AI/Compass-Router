@@ -133,3 +133,10 @@ Status: NOT READY
 - [x] Authentication failure preserves CORS headers.
 - [ ] Apply and verify the required Clerk organization schema migration on an authorized isolated staging database.
 - [ ] Complete real Clerk bootstrap and role portal redirects.
+
+### Bootstrap HTTP 500 hardening
+
+- [x] Known missing-schema bootstrap failure returns safe 503 JSON with CORS.
+- [x] Unrelated backend failures are not converted into fake authentication success.
+- [x] Read-only Alembic revision checked.
+- [ ] Authorize and apply the required migration only after Neon staging isolation is proven.

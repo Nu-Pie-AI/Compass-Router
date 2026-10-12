@@ -579,3 +579,16 @@ No Clerk secret values were printed or committed.
 | Focused CORS/bootstrap regression | PASS; 4 passed, one existing Pydantic warning |
 | Actual FastAPI process restart | PASS; current source serving port 28000 |
 | Authenticated Clerk bootstrap | BLOCKED; current Neon schema lacks `organizations.clerk_organization_id` |
+
+## Bootstrap HTTP 500 hardening - 2026-10-12
+
+| Check | Result |
+|---|---|
+| Read-only Alembic revision | PASS; current database reports `a1b2c3d4e5f6` |
+| Read-only Neon isolation verifier | BLOCKED; protected customer/financial rows found |
+| Missing Clerk schema handling | PASS; focused regression returns 503 without fake success |
+| Unrelated database failure handling | PASS; failure is not silently converted to a session |
+| Full backend pytest | PASS; 132 passed, one existing Pydantic warning |
+| Web lint/typecheck/build | PASS |
+| Actual API restart | PASS; current source serves port 28000 |
+| Valid authenticated bootstrap and role redirect | BLOCKED; migration authorization and live Clerk identity required |

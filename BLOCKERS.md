@@ -247,3 +247,9 @@ M4 implementation blockers:
 - The live bootstrap request reached the database and failed because the configured Neon schema lacks `organizations.clerk_organization_id`, introduced by migration `i3j4k5l6m7n8`.
 - Do not run that migration against the current Neon target until its staging identity and protected customer/financial data status are conclusively reviewed and the owner authorizes the schema change.
 - Until then, real Clerk bootstrap, `/portal` role resolution, Super Admin redirect, Company Admin redirect, and Member redirect cannot be claimed as complete.
+
+### Bootstrap HTTP 500 follow-up - 2026-10-12
+
+- The API now returns a safe CORS-protected `503 database_migration_required` for the known missing Clerk organization column and preserves unrelated backend failures as non-sensitive server errors.
+- The current database is at Alembic revision `a1b2c3d4e5f6`; required migration `i3j4k5l6m7n8` is not applied.
+- The read-only verifier found protected customer/financial rows. Owner authorization and confirmed isolated staging identity are required before migration or authenticated bootstrap verification.
