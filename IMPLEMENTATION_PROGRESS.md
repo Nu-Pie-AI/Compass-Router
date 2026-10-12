@@ -745,4 +745,12 @@ Status: LOCAL WEB SHELL REPAIRED AND BROWSER-VERIFIED; AUTHENTICATED STAGING FLO
 
 - Added safe schema-mismatch handling and generic JSON error handling without bypassing Clerk authentication or role checks.
 - Read-only Alembic check reports `a1b2c3d4e5f6`; no migration was executed because the configured Neon target contains protected records.
+
+## Neon migration safety audit - 2026-10-12
+
+- Completed read-only Neon identity, schema, row-count, payment-state, and Alembic-head checks without selecting personal data or secret material.
+- Confirmed the live database is at `a1b2c3d4e5f6`, while the repository head is `j4k5l6m7n8o9`; `organizations.clerk_organization_id` is absent.
+- Found protected populated records, including a provider credential reference and a created payment order. Development-time timestamps do not prove that rows are disposable.
+- Did not create a backup/restore point, apply migrations, restart for authenticated bootstrap, or run any database-mutating operation because Neon branch identity and recoverability are not conclusively established.
+- Added `NEON_MIGRATION_SAFETY_REPORT.md`; migration and real role-based login remain blocked pending owner confirmation and recovery approval.
 - Full backend regression now passes 132 tests.

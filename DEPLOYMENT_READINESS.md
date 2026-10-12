@@ -144,6 +144,13 @@ Clerk account and app; LiteLLM/direct-provider staging credentials; Razorpay tes
 
 ## M20 web application readiness - 2026-10-12
 
+## Neon migration safety audit - 2026-10-12
+
+- **NOT READY for schema migration or authenticated portal verification.** The configured Neon target is reachable, but read-only checks found protected populated records and the live Alembic revision is `a1b2c3d4e5f6`.
+- The repository head is `j4k5l6m7n8o9`; the required Clerk organization column is absent, so authenticated bootstrap remains blocked.
+- Neon SQL metadata confirms database `neondb` and application schema `compass`, but does not independently prove the Neon project/branch. Owner confirmation in Neon and a verified restore point are required before applying the chain.
+- No migration, backup write, financial operation, or production service change was performed. Evidence is recorded in `NEON_MIGRATION_SAFETY_REPORT.md`.
+
 - Local web readiness is improved: the standalone build includes static assets, the Clerk login has a visible load failure state, and the route/control audit documents actual evidence.
 - Local Playwright route coverage, API health, backend regression, lint, typecheck, build, and diff checks pass.
 - Overall release remains NOT READY until live Clerk role flows, isolated staging database/Redis verification, provider inference and streaming, SMTP, Razorpay sandbox, Secret Manager, and Cloud Run checks are completed.

@@ -592,3 +592,15 @@ No Clerk secret values were printed or committed.
 | Web lint/typecheck/build | PASS |
 | Actual API restart | PASS; current source serves port 28000 |
 | Valid authenticated bootstrap and role redirect | BLOCKED; migration authorization and live Clerk identity required |
+
+## Neon migration safety audit - 2026-10-12
+
+| Check | Result |
+| --- | --- |
+| Read-only database identity/schema query | PASS; `neondb`, `compass`, PostgreSQL 18 |
+| Read-only Alembic revision | PASS; current `a1b2c3d4e5f6`, repository head `j4k5l6m7n8o9` |
+| Protected-table row audit | BLOCKED; populated customer/financial records found |
+| Payment/financial aggregate audit | PASS; one `created` payment order, zero payment events/refunds/ledger/invoices, zero wallet balance aggregate |
+| Neon project/branch identity proof | BLOCKED; not exposed by SQL metadata and not independently confirmed in Neon console |
+| Migration execution | NOT RUN; no backup/restore point or database mutation performed |
+| Authenticated Clerk bootstrap and role portal tests | BLOCKED by missing schema and migration safety gate |

@@ -253,3 +253,11 @@ M4 implementation blockers:
 - The API now returns a safe CORS-protected `503 database_migration_required` for the known missing Clerk organization column and preserves unrelated backend failures as non-sensitive server errors.
 - The current database is at Alembic revision `a1b2c3d4e5f6`; required migration `i3j4k5l6m7n8` is not applied.
 - The read-only verifier found protected customer/financial rows. Owner authorization and confirmed isolated staging identity are required before migration or authenticated bootstrap verification.
+
+## Neon migration safety audit - 2026-10-12
+
+- Read-only SQL checks reached `neondb`, application schema `compass`, PostgreSQL 18, and Alembic revision `a1b2c3d4e5f6` without exposing credentials or row contents.
+- The target contains 2 users, 1 organization, 1 team, 1 project, 1 provider credential reference, 1 wallet account, and 1 payment order in `created` state. Payment events, refunds, wallet ledger entries, invoices, API keys, and LLM request rows are empty.
+- These records appear clustered in the development-time window, but their ownership and disposability are not provable from metadata alone. The SQL connection does not independently expose the Neon project/branch name.
+- Migration to repository head `j4k5l6m7n8o9` is blocked pending Neon console identity confirmation, explicit preservation/migration approval, and a verified restore point or backup. No database write was performed.
+- Full evidence is in `NEON_MIGRATION_SAFETY_REPORT.md`.
