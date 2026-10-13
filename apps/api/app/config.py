@@ -93,6 +93,13 @@ class Settings(BaseSettings):
     sambanova_api_key: str | None = None
     deepinfra_api_key: str | None = None
     huggingface_api_key: str | None = None
+    typesafe_api_key: str | None = None
+    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_default_model: str = "jev-latest"
+    typesafe_timeout_seconds: float = 30.0
+    typesafe_enabled: bool = False
+    typesafe_max_attempts: int = 2
+    typesafe_retry_backoff_seconds: float = 0.25
     redis_rate_limit_enabled: bool = True
     litellm_catalog_cache_seconds: int = 300
     usd_to_inr_paise_per_usd: int = 8500

@@ -19,6 +19,7 @@ CAPABILITY_TYPES = frozenset(
         "audio_transcription",
         "batch",
         "decision",
+        "structured_decision",
     }
 )
 
@@ -38,7 +39,8 @@ CAPABILITY_ALIASES = {
     # expose batch separately, but chat/response/embedding models remain
     # compatible with the existing Compass batch contract.
     "batch": {"batch", "chat", "chat_completion", "responses", "embedding", "embeddings"},
-    "decision": {"decision"},
+    "decision": {"decision", "structured_decision"},
+    "structured_decision": {"decision", "structured_decision"},
 }
 
 
@@ -65,6 +67,7 @@ PROVIDER_PROTOCOLS = {
     "deepinfra": "litellm",
     "huggingface": "litellm",
     "openrouter": "openrouter_optional",
+    "typesafe_ai": "typesafe_decision",
 }
 
 

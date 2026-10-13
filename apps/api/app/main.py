@@ -25,7 +25,7 @@ from .db import get_db, init_db
 from .errors import compass_error
 from .models import ApiKey, AuditLog, BatchJob, BillingInvoice, CatalogSyncRun, ClerkWebhookEvent, EmailOtpChallenge, ExtensionDeviceAuthorization, Invitation, LoginAttempt, LlmRequest, ModelCatalog, ModelPolicy, OperationalEvent, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PricingPolicy, PricingRevision, Project, ProjectMember, Provider, ProviderCredential, ProviderHealthCheck, RoutingPolicy, RoutingPolicyRevision, Team, TeamLimit, TeamMember, User, UserAccess, WalletAccount, WalletLedger, new_id, now
 from .observability import configure_logging, log_request
-from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyMembersUpdate, ApiKeyModelsUpdate, ApiKeyProjectsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, OrganizationMemberUpdate, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectMemberUpdate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
+from .schemas import AdminRoutingPolicyUpdate, AdminWalletAdjustmentRequest, ApiKeyCreate, ApiKeyMembersUpdate, ApiKeyModelsUpdate, ApiKeyProjectsUpdate, AudioSpeechRequest, BatchRequest, BillingOrderComplete, BillingOrderCreate, BillingOrderVerify, BillingRefundCreate, ByokCredentialUpdate, ChatCompletionRequest, DecisionRequest, EmbeddingsRequest, ExtensionDeviceApprove, ExtensionDevicePoll, ExtensionDeviceStart, ImageGenerationRequest, InvitationCreate, InvitationOtpVerify, LoginOtpVerify, LoginRequest, MarketplaceSsoRequest, ModelActivationRequest, ModelGovernanceUpdate, ModelPolicyUpdate, OtpRequest, OrganizationMemberUpdate, PlatformBootstrapRequest, PlatformRoleGrantRequest, PlatformRoleRevokeRequest, PlatformSettingsUpdate, PricingPolicyCreate, ProjectCreate, ProjectMemberUpdate, ProjectUpdate, ProviderCredentialUpdate, ProviderRegisterRequest, ProviderStatusUpdate, ResponsesRequest, RoutingPolicyUpdate, SessionResponse, SignupOtpVerify, SignupRequest, TeamCreate, TeamLimitsUpdate, TeamMemberCreate, TeamStatusUpdate, UserAccessUpdate, UserRoleUpdate, WalletTopupRequest, WorkspaceCreate
 from .security import authenticate_clerk_request, clerk_user_email, create_session_token, decode_marketplace_sso_token, decode_session_claims, hash_password, verify_password
 from .services import (
     LiteLLMClient,
@@ -36,6 +36,7 @@ from .services import (
     byok_credentials_summary,
     check_redis,
     complete_chat,
+    complete_decision,
     complete_binary_api,
     complete_json_api,
     complete_multipart_api,
@@ -128,6 +129,7 @@ PROVIDER_CATALOG = [
     {"name": "sambanova", "label": "SambaNova", "family": "OpenAI-compatible"},
     {"name": "deepinfra", "label": "DeepInfra", "family": "OpenAI-compatible"},
     {"name": "huggingface", "label": "Hugging Face", "family": "OpenAI-compatible"},
+    {"name": "typesafe_ai", "label": "TypeSafe AI", "family": "System One"},
 ]
 
 
@@ -1891,6 +1893,29 @@ async def member_chat_completions(
                 api_project_context.reset(nested_project)
 
         return StreamingResponse(guarded_events(), media_type="text/event-stream")
+    finally:
+        member_inference_context.reset(member_token)
+        api_project_context.reset(project_token)
+
+
+@app.post("/member/v1/decisions", dependencies=[Depends(enforce_body_limit)])
+async def member_decisions(
+    body: DecisionRequest,
+    request: Request,
+    key_id: str | None = Header(default=None, alias="X-Compass-Key-Id"),
+    project_id: str | None = Header(default=None, alias="X-Compass-Project-Id"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if getattr(request.state, "auth_source", "") != "clerk":
+        raise compass_error(401, "clerk_member_auth_required", "Member decisions require a Clerk-authenticated session.")
+    if not key_id:
+        raise compass_error(400, "member_key_required", "Select an assigned Compass API key alias.")
+    key, member, selected_project = resolve_member_inference_key(db, user, key_id, body.project_id or project_id)
+    project_token = api_project_context.set(selected_project)
+    member_token = member_inference_context.set((user.id, member.id))
+    try:
+        return await complete_decision(db, key, body.model_dump(exclude_none=True))
     finally:
         member_inference_context.reset(member_token)
         api_project_context.reset(project_token)

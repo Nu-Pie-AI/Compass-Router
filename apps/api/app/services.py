@@ -72,7 +72,8 @@ from .models import (
 )
 from .security import decrypt_secret, encrypt_secret, generate_api_key, hash_api_key, hash_password
 from .secrets import get_secret_manager, secret_reference_value
-from .provider_adapters import ProviderAdapterError, ProviderAdapterRegistry, ProviderRoute, RuntimeProviderAdapter
+from .provider_adapters import ProviderAdapterError, ProviderAdapterRegistry, ProviderRoute, RuntimeProviderAdapter, TypeSafeDecisionAdapter
+from .typesafe_adapter import TypeSafeAdapterError, evaluate as evaluate_typesafe
 
 
 request_id_context: ContextVar[str | None] = ContextVar("compass_request_id", default=None)
@@ -778,6 +779,7 @@ ENV_PROVIDER_KEYS = {
     "sambanova": "sambanova_api_key",
     "deepinfra": "deepinfra_api_key",
     "huggingface": "huggingface_api_key",
+    "typesafe_ai": "typesafe_api_key",
 }
 
 
@@ -882,6 +884,18 @@ def upsert_model(
 def seed_defaults(db: Session) -> None:
     settings = get_settings()
     providers = {name: ensure_provider(db, name) for name in ("openai", "gemini", "ollama_cloud")} if settings.local_test_mode else {}
+    if settings.environment.strip().lower() not in {"production", "prod"}:
+        typesafe_provider = ensure_provider(db, "typesafe_ai")
+        upsert_model(db, model_id="typesafe_ai/jev-latest", provider=typesafe_provider, provider_model_id="jev-latest", display_name="Jev", capabilities="structured_decision", context_window=128000, input_price_paise_per_1k=0, output_price_paise_per_1k=0, protocol="typesafe_decision", capability_types="structured_decision", input_modalities=["text"], output_modalities=["structured"])
+        typesafe_provider.enabled = False
+        typesafe_provider.status = "disabled"
+        typesafe_provider.commercial_status = "unreviewed"
+        jev_model = db.get(ModelCatalog, "typesafe_ai/jev-latest")
+        if jev_model is not None:
+            jev_model.enabled = False
+            jev_model.published = False
+            jev_model.status = "unavailable"
+            jev_model.route_readiness_reason = "official credential, model access, and approved pricing required"
     for provider in providers.values():
         provider.enabled = True
         provider.status = "healthy"
@@ -999,7 +1013,12 @@ def upsert_provider_api_key(db: Session, provider_name: str, api_key: str) -> Pr
     credential.status = "active"
     credential.last_four = api_key[-4:]
     credential.updated_at = now()
-    _set_local_provider_route(db, provider, live=True)
+    if provider.name != "typesafe_ai":
+        _set_local_provider_route(db, provider, live=True)
+    else:
+        provider.enabled = False
+        provider.status = "disabled"
+        provider.commercial_status = "unreviewed"
     db.commit()
     return credential
 
@@ -2475,16 +2494,12 @@ def resolve_route(db: Session, api_key: ApiKey, requested_model: str, capability
         raise compass_error(503, "model_unavailable", "Requested model is temporarily unavailable.")
     if not _catalog_model_is_fresh(model):
         raise compass_error(503, "model_catalog_stale", "The model catalog is stale; refresh provider discovery before routing.")
-    if not get_settings().local_test_mode and (
-        not model.pricing_policy_version
-        or model.input_price_usd_per_million is None
-        or model.output_price_usd_per_million is None
-    ):
-        raise compass_error(503, "model_pricing_unavailable", "The model has no verified provider pricing and cannot be routed.")
     if not _model_supports(model, capability):
         raise compass_error(400, "model_capability_mismatch", f"Model does not support the {capability} API.")
     provider = model.provider
     requested_capability = capability or "chat_completion"
+    if provider.name == "typesafe_ai" and not get_settings().typesafe_enabled:
+        raise compass_error(503, "typesafe_disabled", "Jev is disabled until TypeSafe access and integration approval are complete.")
     protocol = model.protocol or provider.protocol or "unverified"
     if not _provider_adapter_registry.supports_capability(protocol, requested_capability):
         raise compass_error(503, "provider_capability_unsupported", "No verified provider adapter can execute the requested capability.")
@@ -2511,6 +2526,12 @@ def resolve_route(db: Session, api_key: ApiKey, requested_model: str, capability
     )
     if byok is not None and byok.encrypted_secret.startswith(("encrypted:", "gcp-secret:")):
         return ResolvedRoute(model, provider, "byok", byok.encrypted_secret, requested_model)
+    if not get_settings().local_test_mode and (
+        not model.pricing_policy_version
+        or model.input_price_usd_per_million is None
+        or model.output_price_usd_per_million is None
+    ):
+        raise compass_error(503, "model_pricing_unavailable", "The model has no verified provider pricing and cannot be routed.")
     credential = db.scalar(
         select(ProviderCredential).where(
             ProviderCredential.organization_id.is_(None),
@@ -3096,6 +3117,7 @@ _provider_adapter_registry.register("litellm", lambda adapter_route, client: Run
 _provider_adapter_registry.register("openrouter_optional", lambda adapter_route, client: RuntimeProviderAdapter(adapter_route, client))
 # Preserve rows created by the earlier interrupted M4 spelling during rollout.
 _provider_adapter_registry.register("optional_openrouter", lambda adapter_route, client: RuntimeProviderAdapter(adapter_route, client))
+_provider_adapter_registry.register("typesafe_decision", lambda adapter_route, client: TypeSafeDecisionAdapter(adapter_route, client))
 
 
 def provider_client(route: ResolvedRoute):
@@ -3219,6 +3241,68 @@ async def complete_chat(db: Session, api_key: ApiKey, body: dict) -> dict:
     response["model"] = body["model"]
     response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "provider_cost_paise": provider_cost, "compass_cost_paise": compass_cost, "local_test_mode": get_settings().local_test_mode}
     return response
+
+
+async def complete_decision(db: Session, api_key: ApiKey, body: dict) -> dict:
+    """Execute a typed Jev request through the official TypeSafe SDK."""
+    routes, byok_route = _billing_routes(route_candidates(db, api_key, body["model"], "decision"))
+    route = routes[0]
+    estimated_cost = 0 if byok_route else max(1, route.model.input_price_paise_per_1k + route.model.output_price_paise_per_1k)
+    enforce_team_limits(db, api_key.team_id, 0, estimated_cost)
+    enforce_api_key_limits(db, api_key, estimated_cost)
+    enforce_model_policy(db, api_key, route.model.id, estimated_cost)
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == api_key.team_id))
+    if not byok_route and (wallet is None or wallet.balance_paise < estimated_cost):
+        raise compass_error(402, "insufficient_balance", "Credits balance is insufficient.")
+    reservation_id = new_id() if not byok_route else None
+    if reservation_id is not None:
+        reserve_wallet(db, api_key.team_id, estimated_cost, reservation_id)
+    started = time.perf_counter()
+    try:
+        secret = _credential_value(route.secret_reference)
+        response = await evaluate_typesafe(
+            api_key=secret,
+            base_url=get_settings().typesafe_base_url,
+            model=route.resolved_model_id,
+            state=body["state"],
+            questions={key: value for key, value in body["questions"].items()},
+            timeout=get_settings().typesafe_timeout_seconds,
+            max_attempts=get_settings().typesafe_max_attempts,
+            backoff_seconds=get_settings().typesafe_retry_backoff_seconds,
+        )
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        if not byok_route and (not isinstance(input_tokens, int) or not isinstance(output_tokens, int)):
+            raise compass_error(502, "usage_unavailable", "Managed Jev billing requires provider usage fields.")
+        provider_cost, compass_cost = calculate_cost_paise(route.model, {"prompt_tokens": input_tokens or 0, "completion_tokens": output_tokens or 0})
+        if byok_route:
+            provider_cost = 0
+            compass_cost = 0
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        record = create_request_record(db, api_key, route, body["model"], "success", latency_ms)
+        if isinstance(input_tokens, int):
+            record.input_tokens = input_tokens
+        if isinstance(output_tokens, int):
+            record.output_tokens = output_tokens
+        if isinstance(usage.get("total_tokens"), int):
+            record.total_tokens = usage["total_tokens"]
+        record.provider_cost_paise = provider_cost
+        record.compass_cost_paise = compass_cost
+        db.flush()
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, compass_cost, record.id)
+        db.commit()
+        response["compass"] = {"request_id": record.id, "team_id": api_key.team_id, "member_id": api_key.member_id, "provider": route.provider.name, "credential_mode": route.credential_mode, "latency_ms": latency_ms, "compass_cost_paise": compass_cost}
+        return response
+    except HTTPException:
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
+        raise
+    except TypeSafeAdapterError as exc:
+        if reservation_id is not None:
+            settle_wallet_reservation(db, api_key.team_id, reservation_id, 0, reservation_id)
+        raise compass_error(exc.status_code, exc.code, str(exc)) from None
 
 
 async def stream_chat(db: Session, api_key: ApiKey, body: dict):

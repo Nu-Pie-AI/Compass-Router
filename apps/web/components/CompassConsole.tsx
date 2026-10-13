@@ -13,6 +13,7 @@ import { ModelDirectory } from "./ModelDirectory";
 import { ByokManager } from "./ByokManager";
 import { ActivityPage } from "./ActivityPage";
 import { OrganizationAccessManager } from "./OrganizationAccessManager";
+import { DecisionWorkspace } from "./DecisionWorkspace";
 
 type Session = { token: string; user_id: string; email: string; organization_id?: string | null; role: string; portal?: string; organization_role?: string | null };
 type ApiKey = { id: string; name: string; key: string; status: string; team_id?: string | null; allowed_models?: string[]; models_restricted?: boolean; last_used_at?: string | null; expires_at?: string | null };
@@ -65,6 +66,7 @@ const viewTitles: Record<string, [string, string]> = {
   profile: ["Profile", "Manage your account details."],
   workspaces: ["Workspaces", "Manage team workspaces and their Credits."],
   teams: ["Teams", "Manage shared team Credits, members, and API access."],
+  decisions: ["Decision workspace", "Run typed Jev decisions with scoped Compass access."],
 };
 
 const savedCompassKeyStorageKey = "compass.local.savedApiKey";
@@ -458,6 +460,7 @@ export function CompassConsole({ view }: { view: string }) {
          {status ? <Status>{status}</Status> : null}
         {view === "chat" ? <ChatShowcase dashboard={dashboard} selectedTeamId={selectedTeamId} model={model} setModel={setModel} oneTimeKey={oneTimeKey} selectedKey={selectedKey} setSelectedKey={setSelectedKey} saveCompassKey={saveCompassKey} forgetCompassKey={forgetCompassKey} chatInput={chatInput} setChatInput={setChatInput} messages={chatMessages} setMessages={setChatMessages} sendChatMessage={sendChatMessage} busy={busy} /> : null}
         {view === "playground" ? <Playground dashboard={dashboard} model={model} setModel={setModel} oneTimeKey={oneTimeKey} selectedKey={selectedKey} setSelectedKey={setSelectedKey} saveCompassKey={saveCompassKey} forgetCompassKey={forgetCompassKey} prompt={prompt} setPrompt={setPrompt} responseText={responseText} runPrompt={runPrompt} busy={busy} /> : null}
+        {view === "decisions" ? <DecisionWorkspace token={session.token} /> : null}
         {view === "api-keys" ? <ApiKeyManager dashboard={dashboard} token={session.token} selectedTeamId={selectedTeamId} setSelectedTeamId={setSelectedTeamId} keyName={keyName} setKeyName={setKeyName} oneTimeKey={oneTimeKey} dismissKey={() => setOneTimeKey("")} createKey={createKey} updateKeyModels={updateKeyModels} revokeKeys={revokeKeys} busy={busy} /> : null}
         {view === "models" ? <ModelDirectory published={dashboard?.models ?? []} token={session.token} teamId={selectedTeamId} onActivated={refresh} /> : null}
         {view === "byok" ? <ByokManager token={session.token} teamId={selectedTeamId} onChanged={refresh} /> : null}

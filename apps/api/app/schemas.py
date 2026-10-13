@@ -268,6 +268,31 @@ class BatchRequest(BaseModel):
     metadata: dict[str, str] | None = None
 
 
+class DecisionQuestion(BaseModel):
+    type: Literal["choice", "score", "noul"]
+    instructions: str | dict[str, Any] | list[Any]
+    criteria: dict[str, Any] | list[Any] | None = None
+
+    @field_validator("criteria")
+    @classmethod
+    def validate_criteria(cls, value: dict[str, Any] | list[Any] | None, info):
+        question_type = info.data.get("type")
+        if question_type == "choice" and (not isinstance(value, dict) or not 1 <= len(value) <= 255):
+            raise ValueError("Choice questions require between 1 and 255 criteria.")
+        if question_type == "score" and (not isinstance(value, list) or not 2 <= len(value) <= 10):
+            raise ValueError("Score questions require between 2 and 10 criteria.")
+        if question_type == "noul" and value is not None and (not isinstance(value, dict) or set(value) - {"true", "false"}):
+            raise ValueError("Noul criteria may only define true and false labels.")
+        return value
+
+
+class DecisionRequest(BaseModel):
+    model: str = Field(default="typesafe_ai/jev-latest", pattern=r"^[a-z0-9][a-z0-9._:/-]*$", max_length=200)
+    project_id: str | None = None
+    state: str | dict[str, Any] | list[Any]
+    questions: dict[str, DecisionQuestion] = Field(min_length=1, max_length=64)
+
+
 class WalletTopupRequest(BaseModel):
     team_id: str
     amount_paise: int = Field(gt=0)

@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Boxes, Building2, Check, ChevronDown, CreditCard, KeyRound, LayoutGrid, LockKeyhole, Menu, MessageSquare, Plus, RefreshCw, Route, Search, Store, Terminal, UserRound, Users, X, type LucideIcon } from "lucide-react";
+import { Activity, Boxes, BrainCircuit, Building2, Check, ChevronDown, CreditCard, KeyRound, LayoutGrid, LockKeyhole, Menu, MessageSquare, Plus, RefreshCw, Route, Search, Store, Terminal, UserRound, Users, X, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -11,6 +11,7 @@ const workspaceLinks: NavigationLink[] = [
   { label: "Models", href: "/models", icon: Boxes },
   { label: "Chat", href: "/chat", icon: MessageSquare },
   { label: "Playground", href: "/playground", icon: Terminal },
+  { label: "Decision workspace", href: "/decisions", icon: BrainCircuit },
 ];
 const manageLinks: NavigationLink[] = [
   { label: "API Keys", href: "/api-keys", icon: KeyRound },
@@ -27,7 +28,7 @@ const accountLinks: NavigationLink[] = [
 const allDestinations = [
   { label: "Overview", href: "/dashboard" }, { label: "API Keys", href: "/api-keys" },
   { label: "Models", href: "/models" }, { label: "Pricing", href: "/pricing" }, { label: "Chat", href: "/chat" },
-  { label: "Playground", href: "/playground" }, { label: "Activity", href: "/activity" },
+  { label: "Playground", href: "/playground" }, { label: "Decision workspace", href: "/decisions" }, { label: "Activity", href: "/activity" },
   { label: "Billing", href: "/wallet" }, { label: "BYOK", href: "/byok" },
   { label: "Provider settings", href: "/admin" },
   { label: "Workspaces", href: "/workspaces" }, { label: "Profile", href: "/profile" },
@@ -39,6 +40,7 @@ const topLinks = [
   { label: "Pricing", href: "/pricing" },
   { label: "Chat", href: "/chat" },
   { label: "Playground", href: "/playground" },
+  { label: "Decisions", href: "/decisions" },
 ];
 const navigationDrawerStorageKey = "compass.console.navigationOpen";
 const marketplaceUrl = process.env.NEXT_PUBLIC_MARKETPLACE_URL ?? "http://localhost:3100";

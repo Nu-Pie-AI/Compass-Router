@@ -330,3 +330,13 @@ class RuntimeProviderAdapter:
 
     async def request_multipart(self, endpoint: str, data: dict[str, Any], file: tuple[str, bytes, str]) -> dict[str, Any]:
         return await self.client.request_multipart(endpoint, data, file)
+
+
+class TypeSafeDecisionAdapter(RuntimeProviderAdapter):
+    """Route metadata for Jev; execution uses the official TypeSafe SDK."""
+
+    def supports_capability(self, capability: str) -> bool:
+        return self.canonical_capability(capability) in {"decision", "structured_decision"}
+
+    async def invoke(self, capability: str, request: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
+        raise ProviderAdapterError("TypeSafe decisions must use the official SDK execution path.")
