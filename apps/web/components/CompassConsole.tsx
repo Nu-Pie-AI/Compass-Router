@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity, BarChart3, BadgeIndianRupee, Building2, CheckCircle2, CircleAlert, Clock3, CreditCard, KeyRound, MessageSquare, Play, Route, Send, ShieldCheck, Trash2, TrendingUp, UsersRound, Wallet, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -87,6 +87,10 @@ export function CompassConsole({ view }: { view: string }) {
   });
   const [selectedTeamId, setSelectedTeamId] = useState("");
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
+  const selectedTeamRef = useRef("");
+  const selectedWorkspaceRef = useRef("");
+  useEffect(() => { selectedTeamRef.current = selectedTeamId; }, [selectedTeamId]);
+  useEffect(() => { selectedWorkspaceRef.current = selectedWorkspaceId; }, [selectedWorkspaceId]);
   const [keyName, setKeyName] = useState("Cline key");
   const [providerName, setProviderName] = useState<ProviderName>("openai");
   const [providerApiKey, setProviderApiKey] = useState("");
@@ -141,35 +145,39 @@ export function CompassConsole({ view }: { view: string }) {
 
   const loadData = useCallback(async (activeSession: Session) => {
     const canManage = activeSession.role === "admin" || activeSession.role === "super_admin";
+    const canLoadPlatformAdmin = canManage && view === "admin";
+    const needsUsageRows = ["dashboard", "activity", "usage", "chat", "playground"].includes(view);
+    const needsOrganizationAnalytics = view === "activity";
+    const needsLedger = view === "wallet";
     const [dash, adminData, providerCatalog, usageRows, organizationAnalytics, opsMetrics, routerModels, routerProviders, overview, users, teams, audit, platform, readiness, events, reconciliation, policies] = await Promise.all([
       apiFetch<Dashboard>("/dashboard", {}, activeSession.token),
-      canManage
+      canLoadPlatformAdmin
         ? apiFetch<AdminLocal>("/admin/local-test", {}, activeSession.token)
         : Promise.resolve(null),
-      canManage ? apiFetch<AdminProviderOption[]>("/admin/provider-catalog", {}, activeSession.token) : Promise.resolve(null),
-      apiFetch<RequestRow[]>("/usage/requests", {}, activeSession.token),
-      apiFetch<{ items: OrganizationProviderAnalytics[] }>("/organization/analytics/providers", {}, activeSession.token).catch(() => null),
-      canManage
+      canLoadPlatformAdmin ? apiFetch<AdminProviderOption[]>("/admin/provider-catalog", {}, activeSession.token) : Promise.resolve(null),
+      needsUsageRows ? apiFetch<RequestRow[]>("/usage/requests", {}, activeSession.token) : Promise.resolve([] as RequestRow[]),
+      needsOrganizationAnalytics ? apiFetch<{ items: OrganizationProviderAnalytics[] }>("/organization/analytics/providers", {}, activeSession.token).catch(() => null) : Promise.resolve(null),
+      canLoadPlatformAdmin
         ? apiFetch<AdminMetrics>("/admin/operations/metrics", {}, activeSession.token)
         : Promise.resolve(null),
-      canManage
+      canLoadPlatformAdmin
         ? apiFetch<RouterModel[]>("/admin/router/models", {}, activeSession.token)
         : Promise.resolve(null),
-      canManage
+      canLoadPlatformAdmin
         ? apiFetch<RouterProvider[]>("/admin/router/providers", {}, activeSession.token)
         : Promise.resolve(null),
-      canManage ? apiFetch<AdminOverview>("/admin/overview", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminUser[]>("/admin/users", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminTeam[]>("/admin/teams", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminAudit[]>("/admin/audit?limit=100", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminPlatform>("/admin/platform", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminReadiness>("/admin/live-readiness", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminEvent[]>("/admin/operations/events", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<AdminReconciliation>("/admin/billing/reconciliation", {}, activeSession.token) : Promise.resolve(null),
-      canManage ? apiFetch<RoutingPolicy[]>("/admin/router/policies", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminOverview>("/admin/overview", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminUser[]>("/admin/users", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminTeam[]>("/admin/teams", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminAudit[]>("/admin/audit?limit=100", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminPlatform>("/admin/platform", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminReadiness>("/admin/live-readiness", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminEvent[]>("/admin/operations/events", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<AdminReconciliation>("/admin/billing/reconciliation", {}, activeSession.token) : Promise.resolve(null),
+      canLoadPlatformAdmin ? apiFetch<RoutingPolicy[]>("/admin/router/policies", {}, activeSession.token) : Promise.resolve(null),
     ]);
-    const preferredTeamId = selectedTeamId || window.localStorage.getItem("compass.local.workspaceTeamId") || "";
-    const preferredWorkspaceId = selectedWorkspaceId || window.localStorage.getItem("compass.local.workspaceId") || "";
+    const preferredTeamId = selectedTeamRef.current || window.localStorage.getItem("compass.local.workspaceTeamId") || "";
+    const preferredWorkspaceId = selectedWorkspaceRef.current || window.localStorage.getItem("compass.local.workspaceId") || "";
     const preferredTeam = dash.teams.find((team) => team.id === preferredTeamId);
     const workspaceId = dash.workspaces.some((workspace) => workspace.id === preferredWorkspaceId)
       ? preferredWorkspaceId
@@ -179,15 +187,21 @@ export function CompassConsole({ view }: { view: string }) {
       : dash.teams.find((team) => !workspaceId || !team.workspace_id || team.workspace_id === workspaceId)?.id;
     if (teamId) window.localStorage.setItem("compass.local.workspaceTeamId", teamId);
     if (workspaceId) window.localStorage.setItem("compass.local.workspaceId", workspaceId);
-    const ledgerRows = teamId ? await apiFetch<LedgerRow[]>(`/wallet/ledger?team_id=${teamId}`, {}, activeSession.token) : [];
+    const ledgerRows = needsLedger && teamId ? await apiFetch<LedgerRow[]>(`/wallet/ledger?team_id=${teamId}`, {}, activeSession.token) : [];
     setDashboard({ ...dash, recent_requests: usageRows });
     setOrganizationProviderAnalytics(organizationAnalytics?.items ?? []);
     setLedger(ledgerRows);
     setAdmin(adminData ? { ...adminData, providerCatalog: providerCatalog ?? [], metrics: opsMetrics, routerModels: routerModels ?? [], routerProviders: routerProviders ?? [], overview, users: users ?? [], teams: teams ?? [], audit: audit ?? [], platform, readiness, events: events ?? [], reconciliation, policies: policies ?? [] } : null);
-    if (teamId && teamId !== selectedTeamId) setSelectedTeamId(teamId);
-    if (workspaceId && workspaceId !== selectedWorkspaceId) setSelectedWorkspaceId(workspaceId);
+    if (teamId && teamId !== selectedTeamRef.current) {
+      selectedTeamRef.current = teamId;
+      setSelectedTeamId(teamId);
+    }
+    if (workspaceId && workspaceId !== selectedWorkspaceRef.current) {
+      selectedWorkspaceRef.current = workspaceId;
+      setSelectedWorkspaceId(workspaceId);
+    }
     if (!model && dash.models[0]) setModel(dash.models[0].id);
-  }, [model, selectedTeamId, selectedWorkspaceId]);
+  }, [model, view]);
 
   const refresh = useCallback(async () => {
     if (!session) return;

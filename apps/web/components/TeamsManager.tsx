@@ -40,8 +40,7 @@ export function TeamsManager({ dashboard, workspaceId, teamId, selectTeam, refre
     if (!workspaceId) { setError("Select or create a workspace first."); return; }
     setBusy(true); setError("");
     try {
-      const path = canManage ? "/admin/teams" : "/teams";
-      const created = await apiFetch<{ id: string }>(path, { method: "POST", body: JSON.stringify({ name: teamName.trim(), slug: teamSlug.trim(), notes: teamNotes.trim(), workspace_id: workspaceId }) }, token);
+      const created = await apiFetch<{ id: string }>("/teams", { method: "POST", body: JSON.stringify({ name: teamName.trim(), slug: teamSlug.trim(), notes: teamNotes.trim(), workspace_id: workspaceId }) }, token);
       selectTeam(created.id); await refresh(); teamDialog.current?.close(); setTeamName(""); setTeamSlug(""); setTeamNotes("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create team."); }
     finally { setBusy(false); }
