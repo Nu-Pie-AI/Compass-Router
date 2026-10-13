@@ -92,6 +92,15 @@ type Provider = {
     error_rate: number;
     checked_at: string;
   } | null;
+  credential_status?: string;
+  has_configured_key?: boolean;
+  last_four?: string;
+};
+type ProviderCredential = {
+  name: string;
+  credential_status: string;
+  has_configured_key: boolean;
+  last_four: string;
 };
 type Model = {
   id: string;
@@ -104,6 +113,12 @@ type Model = {
   output_price_paise_per_1k: number;
   provider_status: string;
   provider_enabled: boolean;
+  provider_commercial_status?: string;
+  capability_types?: string[];
+  pricing_policy_version?: string | null;
+  input_price_usd_per_million?: string | null;
+  output_price_usd_per_million?: string | null;
+  route_readiness_reason?: string;
 };
 type Wallet = {
   id: string;
@@ -281,6 +296,26 @@ function shortDate(value?: string | null) {
   });
 }
 
+function TypeSafeProviderCard({ provider, model, canManage, canManagePricing, busy, onSave, onVerify, onApprovePricing }: { provider: Provider; model: Model; canManage: boolean; canManagePricing: boolean; busy: boolean; onSave: (provider: string, apiKey: string) => Promise<void>; onVerify: (provider: string) => Promise<void>; onApprovePricing: (model: Model, values: { inputPriceUsd: number; outputPriceUsd: number; inputPricePaise: number; outputPricePaise: number }) => Promise<void> }) {
+  const [apiKey, setApiKey] = useState("");
+  const [inputPriceUsd, setInputPriceUsd] = useState(model.input_price_usd_per_million ?? "");
+  const [outputPriceUsd, setOutputPriceUsd] = useState(model.output_price_usd_per_million ?? "");
+  const [inputPricePaise, setInputPricePaise] = useState(String(model.input_price_paise_per_1k));
+  const [outputPricePaise, setOutputPricePaise] = useState(String(model.output_price_paise_per_1k));
+  const credentialReady = Boolean(provider.has_configured_key);
+  const pricingReady = Boolean(model.pricing_policy_version && model.input_price_usd_per_million !== null && model.output_price_usd_per_million !== null);
+  const active = credentialReady && provider.enabled && provider.status === "healthy" && provider.commercial_status === "approved" && model.enabled && model.published && model.status === "available" && pricingReady;
+  const status = active ? "Active" : !credentialReady ? "Setup Required" : provider.status === "degraded" || provider.status === "unavailable" ? "Verification Failed" : "Approval Required";
+  return <div className="mt-5 rounded-card border border-compass-line bg-compass-bg p-4" data-testid="typesafe-provider-card">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><span className="analytics-eyebrow">STRUCTURED DECISION PROVIDER</span><h3 className="mt-1 text-lg font-semibold">TypeSafe AI</h3><p className="mt-1 text-sm text-slate-400">Jev structured decisions through the official TypeSafe adapter.</p></div><span className={`admin-status ${active ? "active" : "disabled"}`}>{status}</span></div>
+    <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><div><span className="text-slate-500">Model</span><strong className="ml-2">jev-latest</strong></div><div><span className="text-slate-500">Capability</span><strong className="ml-2">Structured Decision</strong></div><div><span className="text-slate-500">Credential</span><strong className="ml-2">{credentialReady ? `Configured ****${provider.last_four}` : "Not configured"}</strong></div><div><span className="text-slate-500">Model access</span><strong className="ml-2">{provider.enabled && !["disabled", "unavailable"].includes(provider.status) && model.enabled && model.published && model.status === "available" ? "Approved" : "Not approved"}</strong></div><div><span className="text-slate-500">Pricing approval</span><strong className="ml-2">{pricingReady ? "Approved" : "Not approved"}</strong></div><div><span className="text-slate-500">Commercial status</span><strong className="ml-2">{provider.commercial_status}</strong></div></div>
+    {model.route_readiness_reason ? <p className="mt-3 text-xs text-amber-300">{model.route_readiness_reason}</p> : null}
+    {canManage ? <div className="mt-4 flex flex-wrap items-end gap-3"><label className="grid min-w-64 flex-1 gap-1 text-xs text-slate-400">{credentialReady ? "Replace API key" : "API key"}<input className="rounded-card border border-compass-line bg-compass-panel px-3 py-2 text-sm text-slate-200" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={credentialReady ? "Enter replacement key" : "Paste TypeSafe API key"} /></label><button className="console-primary" disabled={busy || !apiKey.trim()} onClick={() => void onSave("typesafe_ai", apiKey).then(() => setApiKey(""))}>{credentialReady ? "Replace key" : "Save key"}</button><button className="console-secondary" disabled={busy} onClick={() => void onVerify("typesafe_ai")}>Verify connection</button></div> : null}
+    {canManagePricing ? <div className="mt-4 border-t border-compass-line pt-4"><div className="mb-2 text-sm font-semibold text-slate-200">Approved Jev pricing</div><div className="grid gap-3 sm:grid-cols-4"><label className="grid gap-1 text-xs text-slate-400">Input USD / 1M<input className="rounded-card border border-compass-line bg-compass-panel px-3 py-2 text-sm text-slate-200" inputMode="decimal" value={inputPriceUsd} onChange={(event) => setInputPriceUsd(event.target.value)} /></label><label className="grid gap-1 text-xs text-slate-400">Output USD / 1M<input className="rounded-card border border-compass-line bg-compass-panel px-3 py-2 text-sm text-slate-200" inputMode="decimal" value={outputPriceUsd} onChange={(event) => setOutputPriceUsd(event.target.value)} /></label><label className="grid gap-1 text-xs text-slate-400">Customer input paise / 1K<input className="rounded-card border border-compass-line bg-compass-panel px-3 py-2 text-sm text-slate-200" inputMode="numeric" value={inputPricePaise} onChange={(event) => setInputPricePaise(event.target.value)} /></label><label className="grid gap-1 text-xs text-slate-400">Customer output paise / 1K<input className="rounded-card border border-compass-line bg-compass-panel px-3 py-2 text-sm text-slate-200" inputMode="numeric" value={outputPricePaise} onChange={(event) => setOutputPricePaise(event.target.value)} /></label></div><button className="console-secondary mt-3" disabled={busy || !inputPriceUsd || !outputPriceUsd} onClick={() => void onApprovePricing(model, { inputPriceUsd: Number(inputPriceUsd), outputPriceUsd: Number(outputPriceUsd), inputPricePaise: Number(inputPricePaise), outputPricePaise: Number(outputPricePaise) })}>Approve pricing</button></div> : null}
+    <p className="mt-3 text-xs text-slate-500">Keys are submitted only to Compass and are never rendered back to the browser. Jev cannot activate until all requirements pass.</p>
+  </div>;
+}
+
 function Metric({
   label,
   value,
@@ -436,12 +471,15 @@ export function AdminConsole() {
           total: number;
         }>("/admin/api-keys?page_size=50", {}, token);
       if (activeSection === "providers") {
-        const [providers, readiness] = await Promise.all([
+        const [providers, readiness, credentials, models] = await Promise.all([
           apiFetch<Provider[]>("/admin/router/providers", {}, token),
           apiFetch<Record<string, unknown>>("/admin/live-readiness", {}, token),
+          apiFetch<ProviderCredential[]>("/admin/provider-credentials", {}, token),
+          apiFetch<Model[]>("/admin/router/models", {}, token),
         ]);
-        responses.providers = providers;
+        responses.providers = providers.map((provider) => ({ ...provider, ...(credentials.find((item) => item.name === provider.name) ?? {}) }));
         responses.readiness = readiness;
+        responses.models = models;
       }
       if (activeSection === "models")
         responses.models = await apiFetch<Model[]>(
@@ -618,6 +656,66 @@ export function AdminConsole() {
       setError(
         reason instanceof Error ? reason.message : "Provider update failed.",
       );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProviderCredential(providerName: string, apiKey: string) {
+    if (!session || !can("providers.manage") || !apiKey.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiFetch("/admin/provider-credentials", { method: "POST", body: JSON.stringify({ provider: providerName, api_key: apiKey.trim() }) }, session.token);
+      setStatus(`${providerName} credential stored server-side. The raw key is not returned.`);
+      await loadSection("providers");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Provider credential could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyProviderCredential(providerName: string) {
+    if (!session || !can("providers.manage")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await apiFetch<{ status: string; message: string }>(`/admin/provider-credentials/${encodeURIComponent(providerName)}/test`, { method: "POST" }, session.token);
+      setStatus(`${providerName}: ${result.status}. ${result.message}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : `${providerName} verification failed.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function approveModelPricing(model: Model, values: { inputPriceUsd: number; outputPriceUsd: number; inputPricePaise: number; outputPricePaise: number }) {
+    if (!session || !can("models.manage")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiFetch(
+        `/admin/router/models/${encodeURIComponent(model.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            status: model.status,
+            enabled: false,
+            published: false,
+            input_price_paise_per_1k: values.inputPricePaise,
+            output_price_paise_per_1k: values.outputPricePaise,
+            input_price_usd_per_million: values.inputPriceUsd,
+            output_price_usd_per_million: values.outputPriceUsd,
+            pricing_approved: true,
+            change_reason: "Approved Jev provider pricing",
+          }),
+        },
+        session.token,
+      );
+      setStatus(`${model.id} pricing approved. Provider and model remain disabled until credential and verification gates pass.`);
+      await loadSection("providers");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Model pricing could not be approved.");
     } finally {
       setBusy(false);
     }
@@ -1377,7 +1475,7 @@ export function AdminConsole() {
                     {providers.map((provider) => (
                       <div className="admin-provider-row" key={provider.name}>
                         <div>
-                          <strong>{provider.name}</strong>
+                        <strong>{provider.name === "typesafe_ai" ? "TypeSafe AI" : provider.name}</strong>
                           <small>
                             {provider.commercial_status} ·{" "}
                             {provider.last_health?.status ?? "No health check"}
@@ -1407,6 +1505,12 @@ export function AdminConsole() {
                 ) : (
                   <EmptyState message="No provider records are available." />
                 )}
+                {(() => {
+                  const typesafeProvider = providers?.find((provider) => provider.name === "typesafe_ai");
+                  const jev = models?.find((model) => model.id === "typesafe_ai/jev-latest");
+                  if (!typesafeProvider || !jev) return null;
+                  return <TypeSafeProviderCard provider={typesafeProvider} model={jev} canManage={can("providers.manage")} canManagePricing={can("models.manage")} busy={busy} onSave={saveProviderCredential} onVerify={verifyProviderCredential} onApprovePricing={approveModelPricing} />;
+                })()}
               </article>
               <article className="admin-panel">
                 <div className="admin-panel-heading">

@@ -61,6 +61,7 @@ from .services import (
     project_ids_for_user,
     project_rows,
     provider_credentials_summary,
+    _has_usable_reference,
     record_audit_log,
     request_id_context,
     resend_invitation,
@@ -2093,6 +2094,21 @@ def admin_update_provider_status(provider_name: str, body: ProviderStatusUpdate,
     provider = db.scalar(select(Provider).where(Provider.name == provider_name))
     if provider is None:
         raise compass_error(404, "provider_not_found", "Provider was not found.")
+    if provider.name == "typesafe_ai" and body.enabled is True:
+        if not settings.typesafe_enabled:
+            raise compass_error(409, "typesafe_disabled", "TypeSafe AI is disabled by server configuration.")
+        credential = db.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.provider_id == provider.id,
+                ProviderCredential.organization_id.is_(None),
+                ProviderCredential.credential_mode == "platform",
+                ProviderCredential.status.in_(["active", "local_test"]),
+            )
+        )
+        if credential is None or not _has_usable_reference(credential.secret_reference):
+            raise compass_error(409, "provider_credential_required", "Configure and verify a TypeSafe provider credential before enabling it.")
+        if body.commercial_status != "approved" and provider.commercial_status != "approved":
+            raise compass_error(409, "provider_commercial_approval_required", "Commercial approval is required before enabling TypeSafe AI.")
     if (body.enabled is True or body.status not in {"disabled", "unavailable"}) and provider.protocol == "unverified":
         raise compass_error(409, "provider_adapter_unavailable", "This provider has no verified Compass adapter.")
     provider.status = body.status
@@ -2115,6 +2131,11 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
     requested_published = body.published if body.published is not None else model.published
     if requested_enabled and requested_published:
         provider = model.provider
+        pricing_approved = body.pricing_approved if body.pricing_approved is not None else bool(model.pricing_policy_version)
+        input_price_usd = body.input_price_usd_per_million if body.input_price_usd_per_million is not None else model.input_price_usd_per_million
+        output_price_usd = body.output_price_usd_per_million if body.output_price_usd_per_million is not None else model.output_price_usd_per_million
+        if provider.name == "typesafe_ai" and (not pricing_approved or input_price_usd is None or output_price_usd is None):
+            raise compass_error(409, "jev_pricing_approval_required", "Approve verified Jev provider pricing before publishing the model.")
         credential = db.scalar(
             select(ProviderCredential).where(
                 ProviderCredential.provider_id == provider.id,
@@ -2148,6 +2169,15 @@ def admin_update_model_status(model_id: str, body: ModelGovernanceUpdate, actor:
         model.input_price_paise_per_1k = body.input_price_paise_per_1k
     if body.output_price_paise_per_1k is not None:
         model.output_price_paise_per_1k = body.output_price_paise_per_1k
+    if body.input_price_usd_per_million is not None:
+        model.input_price_usd_per_million = body.input_price_usd_per_million
+    if body.output_price_usd_per_million is not None:
+        model.output_price_usd_per_million = body.output_price_usd_per_million
+    if body.pricing_approved is True:
+        policy = db.scalar(select(PricingPolicy).where(PricingPolicy.status == "active").order_by(PricingPolicy.effective_at.desc()).limit(1))
+        model.pricing_policy_version = policy.version if policy else "manual-approved"
+    elif body.pricing_approved is False:
+        model.pricing_policy_version = None
     if "fallback_model_id" in body.model_fields_set:
         if body.fallback_model_id == model_id:
             raise compass_error(400, "routing_policy_loop", "A model cannot fall back to itself.")
@@ -2175,6 +2205,12 @@ def admin_save_provider_credential(body: ProviderCredentialUpdate, actor: User =
         "last_four": credential.last_four,
         "updated_at": credential.updated_at.isoformat(),
     }
+
+
+@app.get("/admin/provider-credentials")
+def admin_provider_credentials(actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> list[dict]:
+    require_platform_permission(db, actor, "providers.view")
+    return provider_credentials_summary(db)
 
 
 @app.post("/admin/provider-credentials/{provider_name}/test")

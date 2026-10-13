@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -357,6 +358,9 @@ class ModelGovernanceUpdate(ModelStatusUpdate):
     fallback_model_id: str | None = Field(default=None, max_length=200)
     input_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
     output_price_paise_per_1k: int | None = Field(default=None, ge=0, le=50_000_000)
+    input_price_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+    output_price_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+    pricing_approved: bool | None = None
     change_reason: str = Field(default="", max_length=500)
 
 

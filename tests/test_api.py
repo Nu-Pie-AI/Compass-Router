@@ -1646,6 +1646,48 @@ def test_admin_provider_api_key_is_saved_server_side_only():
     assert raw_secret not in credential.secret_reference
 
 
+def test_typesafe_provider_and_model_are_visible_without_a_credential():
+    headers = admin_headers()
+    providers = client.get("/admin/router/providers", headers=headers)
+    models = client.get("/admin/router/models", headers=headers)
+    credentials = client.get("/admin/provider-credentials", headers=headers)
+    assert providers.status_code == 200, providers.text
+    assert models.status_code == 200, models.text
+    assert credentials.status_code == 200, credentials.text
+    jev_provider = next(row for row in providers.json() if row["name"] == "typesafe_ai")
+    jev_model = next(row for row in models.json() if row["id"] == "typesafe_ai/jev-latest")
+    jev_credential = next(row for row in credentials.json() if row["name"] == "typesafe_ai")
+    assert jev_provider["enabled"] is False
+    assert jev_model["route_ready"] is False
+    assert jev_credential["has_configured_key"] is False
+
+
+def test_typesafe_model_activation_requires_pricing_and_credential_gates():
+    headers = admin_headers()
+    model_id = "typesafe_ai/jev-latest"
+    pricing_missing = client.patch(
+        f"/admin/router/models/{model_id}",
+        json={"status": "available", "enabled": True, "published": True},
+        headers=headers,
+    )
+    assert pricing_missing.status_code == 409, pricing_missing.text
+    assert pricing_missing.json()["detail"]["error"]["code"] == "jev_pricing_approval_required"
+    credential_missing = client.patch(
+        f"/admin/router/models/{model_id}",
+        json={
+            "status": "available",
+            "enabled": True,
+            "published": True,
+            "pricing_approved": True,
+            "input_price_usd_per_million": 0.042,
+            "output_price_usd_per_million": 0,
+        },
+        headers=headers,
+    )
+    assert credential_missing.status_code == 409, credential_missing.text
+    assert credential_missing.json()["detail"]["error"]["code"] == "provider_credential_required"
+
+
 def test_admin_model_discovery_uses_litellm_registry(monkeypatch):
     headers = admin_headers()
 
