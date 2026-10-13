@@ -122,7 +122,6 @@ class Settings(BaseSettings):
     admin_password: str = "CompassAdmin123!"
     admin_name: str = "Compass Operator"
     platform_super_admin_clerk_user_id: str | None = None
-    platform_super_admin_require_mfa: bool = True
     admin_financial_confirmation_threshold_paise: int = 100_000
     local_test_customer_email: str = "customer@example.com"
     local_test_customer_password: str = "CompassCustomer123!"

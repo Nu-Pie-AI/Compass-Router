@@ -40,12 +40,10 @@ SETTING_RULES = {
 }
 
 
-def bootstrap_platform_owner(db: Session, clerk_user_id: str, confirmation: str, mfa_verified: bool) -> dict:
+def bootstrap_platform_owner(db: Session, clerk_user_id: str, confirmation: str) -> dict:
     settings = get_settings()
     if confirmation != "BOOTSTRAP_PLATFORM_OWNER":
         raise compass_error(400, "bootstrap_confirmation_required", "The owner bootstrap confirmation is invalid.")
-    if settings.platform_super_admin_require_mfa and not mfa_verified:
-        raise compass_error(403, "owner_mfa_required", "Verified MFA is required before bootstrapping the platform owner.")
     configured_id = (settings.platform_super_admin_clerk_user_id or "").strip()
     if not configured_id:
         raise compass_error(503, "owner_bootstrap_not_configured", "Configure PLATFORM_SUPER_ADMIN_CLERK_USER_ID before bootstrapping the platform owner.")

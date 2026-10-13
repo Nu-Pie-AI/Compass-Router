@@ -200,7 +200,6 @@ def test_m9_owner_bootstrap_is_configured_clerk_bound_and_idempotent(monkeypatch
     owner_id = owner.id
     db.close()
     monkeypatch.setattr(main_module.settings, "platform_super_admin_clerk_user_id", clerk_id)
-    monkeypatch.setattr(main_module.settings, "platform_super_admin_require_mfa", False)
     monkeypatch.setattr(main_module, "authenticate_clerk_request", lambda _request: {"sub": clerk_id, "email": email})
     headers = {"Authorization": "Bearer clerk-owner-session"}
     first = client.post("/admin/bootstrap", json={"confirmation": "BOOTSTRAP_PLATFORM_OWNER"}, headers=headers)

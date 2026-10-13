@@ -16,7 +16,7 @@ from sqlalchemy import Integer, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.orm import Session
 
-from .admin_authorization import clerk_mfa_verified, has_platform_permission, platform_permissions, platform_roles, require_platform_permission, require_super_admin
+from .admin_authorization import has_platform_permission, platform_permissions, platform_roles, require_platform_permission, require_super_admin
 from .admin_services import adjust_wallet, bootstrap_platform_owner, grant_platform_role, platform_settings_rows, revoke_platform_role, update_platform_settings
 from .authorization import is_admin, require_project_access, require_team_access, require_team_owner, require_workspace_access, team_ids_for_user, team_owner_ids_for_user, workspace_ids_for_user
 from .catalog import capability_matches, provider_protocol
@@ -282,8 +282,6 @@ def admin_user(request: Request, user: User = Depends(current_user), db: Session
     if settings.environment.strip().lower() in {"production", "prod"}:
         if getattr(request.state, "auth_source", "") != "clerk":
             raise compass_error(401, "clerk_admin_auth_required", "Platform administration requires a Clerk-authenticated session.")
-        if "PLATFORM_SUPER_ADMIN" in platform_roles(db, user) and settings.platform_super_admin_require_mfa and not clerk_mfa_verified(getattr(request.state, "clerk_claims", {})):
-            raise compass_error(403, "admin_mfa_required", "Verified MFA is required for Super Admin operations.")
     return user
 
 
@@ -2256,7 +2254,7 @@ def admin_access(actor: User = Depends(admin_user), db: Session = Depends(get_db
 @app.post("/admin/bootstrap")
 def admin_bootstrap(body: PlatformBootstrapRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     identity = current_clerk_identity(request)
-    return bootstrap_platform_owner(db, str(identity.get("sub", "")), body.confirmation, clerk_mfa_verified(identity))
+    return bootstrap_platform_owner(db, str(identity.get("sub", "")), body.confirmation)
 
 
 @app.get("/admin/roles")
