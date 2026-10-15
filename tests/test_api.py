@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import time
@@ -1891,6 +1892,76 @@ def test_typesafe_model_activation_requires_pricing_and_credential_gates():
     )
     assert credential_missing.status_code == 409, credential_missing.text
     assert credential_missing.json()["detail"]["error"]["code"] == "provider_credential_required"
+
+
+def test_invalid_managed_jev_response_releases_reservation_without_success_record(monkeypatch):
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    key_data = create_key_fixture(headers, team["id"])
+    credit(headers, team["id"], 1000, "jev-validation")
+    db = TestingSessionLocal()
+    try:
+        api_key = db.get(ApiKey, key_data["id"])
+        model = db.get(ModelCatalog, "typesafe_ai/jev-latest")
+        provider = db.get(Provider, model.provider_id)
+        model.input_price_paise_per_1k = 1
+        model.output_price_paise_per_1k = 1
+        db.commit()
+        route = services.ResolvedRoute(model, provider, "platform", "encrypted:test", "jev-latest")
+
+        async def invalid_response(**_kwargs):
+            from app.typesafe_adapter import response_json
+            return response_json(
+                {"model": "jev-latest", "usage": {"input_tokens": 2, "output_tokens": 1}, "answers": {"missing": {"type": "noul", "noul": 0.5}}},
+                {"safe": {"type": "noul", "instructions": "Safe?"}},
+                "jev-latest",
+            )
+
+        monkeypatch.setattr(services, "route_candidates", lambda *_args, **_kwargs: [route])
+        monkeypatch.setattr(services, "_credential_value", lambda _reference: "test-key")
+        monkeypatch.setattr(services, "evaluate_typesafe", invalid_response)
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(services.complete_decision(db, api_key, {"model": "typesafe_ai/jev-latest", "state": "test", "questions": {"safe": {"type": "noul", "instructions": "Safe?"}}}))
+        assert raised.value.status_code == 502
+        assert raised.value.detail["error"]["code"] == "malformed_typesafe_response"
+        db.expire_all()
+        wallet = db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one()
+        assert wallet.balance_paise == 1000
+        assert db.query(LlmRequest).filter(LlmRequest.team_id == team["id"], LlmRequest.status == "success").count() == 0
+        assert db.query(WalletLedger).filter(WalletLedger.wallet_id == wallet.id, WalletLedger.reference_type == "llm_reservation_release").count() == 1
+    finally:
+        db.close()
+
+
+def test_valid_byok_jev_response_can_succeed_without_usage_or_credits(monkeypatch):
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    key_data = create_key_fixture(headers, team["id"])
+    db = TestingSessionLocal()
+    try:
+        api_key = db.get(ApiKey, key_data["id"])
+        model = db.get(ModelCatalog, "typesafe_ai/jev-latest")
+        provider = db.get(Provider, model.provider_id)
+        route = services.ResolvedRoute(model, provider, "byok", "encrypted:test", "jev-latest")
+
+        async def byok_response(**_kwargs):
+            from app.typesafe_adapter import response_json
+            return response_json(
+                {"model": "jev-latest", "answers": {"safe": {"type": "noul", "noul": 0.75}}},
+                {"safe": {"type": "noul", "instructions": "Safe?"}},
+                "jev-latest",
+            )
+
+        monkeypatch.setattr(services, "route_candidates", lambda *_args, **_kwargs: [route])
+        monkeypatch.setattr(services, "_credential_value", lambda _reference: "test-key")
+        monkeypatch.setattr(services, "evaluate_typesafe", byok_response)
+        result = asyncio.run(services.complete_decision(db, api_key, {"model": "typesafe_ai/jev-latest", "state": "test", "questions": {"safe": {"type": "noul", "instructions": "Safe?"}}}))
+        assert result["answers"]["safe"]["noul"] == 0.75
+        assert result["compass"]["compass_cost_paise"] == 0
+        wallet = db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one()
+        assert db.query(WalletLedger).filter(WalletLedger.wallet_id == wallet.id).count() == 0
+    finally:
+        db.close()
 
 
 def test_admin_model_discovery_uses_litellm_registry(monkeypatch):
