@@ -64,6 +64,7 @@ from .services import (
     _has_usable_reference,
     record_audit_log,
     request_id_context,
+    sync_direct_provider_catalog,
     resend_invitation,
     revoke_clerk_organization_invitation,
     request_rows,
@@ -1664,6 +1665,8 @@ async def catalog_models(team_id: str | None = None, provider: str | None = None
 @app.post("/admin/catalog/sync")
 async def admin_sync_catalog(provider: str = "litellm", actor: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     require_platform_permission(db, actor, "models.manage")
+    if provider in {"gemini", "openai", "ollama_cloud"}:
+        return await sync_direct_provider_catalog(db, provider)
     if provider == "litellm":
         return await sync_litellm_catalog(db, force=True)
     if provider == "openrouter":
@@ -1857,7 +1860,7 @@ def delete_byok_credential(provider_name: str, team_id: str, user: User = Depend
 def openai_models(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
     key = authenticate_api_key(db, authorization)
     granted_models = allowed_model_ids(db, key.id)
-    data = [{"id": model["id"], "object": "model", "created": 0, "owned_by": "compass", "permission": []} for model in model_catalog_rows(db) if model["id"] in granted_models]
+    data = [{"id": model["id"], "object": "model", "created": 0, "owned_by": "compass", "permission": [], "capabilities": model.get("capabilities", []), "supports_tools": model.get("supports_tools", False), "supports_reasoning": model.get("supports_reasoning", False)} for model in model_catalog_rows(db) if model["id"] in granted_models]
     return {"object": "list", "data": data, "compass": {"team_id": key.team_id, "local_test_mode": settings.local_test_mode, "allowed_models": sorted(granted_models)}}
 
 

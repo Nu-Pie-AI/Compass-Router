@@ -23836,8 +23836,9 @@
   var import_client = __toESM(require_client());
   var import_jsx_runtime = __toESM(require_jsx_runtime());
   var vscode = acquireVsCodeApi();
-  var initial = { connected: false, connecting: false, loading: true, page: "chat", mode: "ask", models: [], project: null, account: null, messages: [], historyCount: 0, error: null, apiBaseUrl: "", settings: { autoApproveReads: true, autoApproveWrites: false, autoApproveTerminal: false } };
-  var nav = [{ page: "chat", label: "New", icon: "\u25CB" }, { page: "history", label: "History", icon: "\u25F7" }, { page: "tasks", label: "Tasks", icon: "\u2713" }, { page: "usage", label: "Usage", icon: "\u25A5" }, { page: "settings", label: "Settings", icon: "\u2699" }, { page: "account", label: "Account", icon: "\u2659" }, { page: "tools", label: "Tools", icon: "\u2318" }];
+  var initial = { connected: false, connecting: false, loading: true, page: "chat", mode: "ask", models: [], selectedModel: "", projects: [], project: null, account: null, messages: [], historyCount: 0, error: null, apiBaseUrl: "", settings: { autoApproveReads: true, autoApproveWrites: false, autoApproveTerminal: false } };
+  var primaryNav = [{ page: "chat", label: "New", icon: "\u25CB" }, { page: "history", label: "History", icon: "\u25F7" }];
+  var moreNav = [{ page: "tasks", label: "Tasks", icon: "\u2713" }, { page: "usage", label: "Usage", icon: "\u25A5" }, { page: "settings", label: "Settings", icon: "\u2699" }, { page: "account", label: "Account", icon: "\u2659" }, { page: "tools", label: "Tools", icon: "\u2318" }];
   function post(message) {
     vscode.postMessage(message);
   }
@@ -23858,7 +23859,7 @@
       post({ type: "ready" });
       return () => window.removeEventListener("message", listener);
     }, []);
-    const modelLabel = state.models[0]?.id ?? "No authorized model";
+    const modelLabel = state.selectedModel || "No authorized model";
     if (!state.connected) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Login, { state });
     const send = () => {
       if (prompt.trim() && !state.loading) {
@@ -23882,19 +23883,33 @@
     ] });
   }
   function Header({ page, onNav, onNew, onSignOut }) {
+    const [open, setOpen] = (0, import_react.useState)(false);
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "topbar", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "brand", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "brand-mark", children: "\u25B2" }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Compass" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("nav", { children: [
-        nav.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { className: page === item.page ? "active" : "", onClick: () => onNav(item.page), children: [
+        primaryNav.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { className: page === item.page ? "active" : "", onClick: () => onNav(item.page), children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: item.icon }),
           item.label
         ] }, item.page)),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { onClick: onSignOut, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u21E5" }),
-          "Sign out"
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { className: moreNav.some((item) => item.page === page) ? "active" : "", onClick: () => setOpen((value) => !value), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u22EF" }),
+          "More"
+        ] }),
+        open && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "more-menu", children: [
+          moreNav.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { onClick: () => {
+            onNav(item.page);
+            setOpen(false);
+          }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: item.icon }),
+            item.label
+          ] }, item.page)),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { onClick: onSignOut, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u21E5" }),
+            "Sign out"
+          ] })
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "icon-button", title: "New chat", onClick: onNew, children: "\uFF0B" })
@@ -23916,6 +23931,8 @@
     ] });
   }
   function Chat({ state, prompt, setPrompt, send, modelLabel }) {
+    const selected = state.models.find((model) => model.id === modelLabel);
+    const incompatible = state.mode === "agent" && selected?.supports_tools === false;
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", { className: "content chat-page", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "page-heading", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
@@ -23943,7 +23960,7 @@
           }
         }, placeholder: "Ask Compass... (@files, drag & drop, or type)", disabled: state.loading }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "composer-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { title: "Choose a mode", children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Mode" }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("select", { value: state.mode, onChange: (event) => post({ type: "setMode", mode: event.target.value }), children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "ask", children: "Ask" }),
@@ -23951,23 +23968,26 @@
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "agent", children: "Agent" })
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { title: modelLabel, children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Model" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("select", { value: modelLabel, onChange: () => void 0, disabled: true, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { children: modelLabel }) })
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("select", { value: modelLabel, onChange: (event) => post({ type: "setModel", modelId: event.target.value }), disabled: state.loading, children: [
+              state.models.map((model) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: model.id, disabled: state.mode === "agent" && model.supports_tools === false, children: [
+                model.id,
+                state.mode === "agent" && model.supports_tools === false ? " \xB7 no tools" : ""
+              ] }, model.id)),
+              !state.models.length && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { children: "No models available" })
+            ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { title: state.project?.name ?? "Choose an authorized project", children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Project" }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("select", { value: state.project?.id ?? "", onChange: (event) => post({ type: "setProject", projectId: event.target.value }), children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "Authorized project" }),
-              state.project && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: state.project.id, children: state.project.name })
+              state.projects.map((project) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: project.id, children: project.name }, project.id))
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "send", onClick: send, disabled: !prompt.trim() || state.loading, title: "Send", children: "\u2191" })
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "send", onClick: send, disabled: !prompt.trim() || state.loading || incompatible, title: incompatible ? "Select a model with tool support for Agent mode" : "Send", children: "\u2191" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "composer-status", children: [
-          state.loading ? "Working..." : "Ready",
-          " \xB7 Changes and terminal commands require approval"
-        ] })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "composer-status", children: incompatible ? "This model does not support Agent mode. Select a compatible model." : `${state.loading ? "Working..." : "Ready"} \xB7 Changes and terminal commands require approval` })
       ] })
     ] });
   }
@@ -24050,8 +24070,8 @@
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: state.project?.name ?? "Not selected" })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "API key" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Stored securely by device session" })
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Authentication" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Device session stored securely by VS Code" })
         ] })
       ] })
     ] });

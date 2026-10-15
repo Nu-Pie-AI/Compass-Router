@@ -21,6 +21,12 @@ class CompassApi {
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) throw new Error("Compass rejected this session. Sign in again or select an authorized project.");
       if (response.status === 429) throw new Error("Compass rate limit reached. Retry shortly.");
+      if (response.status === 402) {
+        let code = "";
+        try { const body = await response.json() as { error?: { code?: string } }; code = body.error?.code ?? ""; } catch { /* preserve generic status when the server body is not JSON */ }
+        if (code === "insufficient_balance") throw new Error("Insufficient organization Credits for this request. Contact your Company Admin or select another authorized model.");
+        throw new Error("Compass could not authorize this paid request. Check the selected model and organization billing status.");
+      }
       throw new Error(`Compass request failed (HTTP ${response.status}).`);
     }
     return response.json() as Promise<T>;
@@ -34,7 +40,7 @@ class CompassView implements vscode.WebviewViewProvider {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.api = new CompassApi(context);
     const config = vscode.workspace.getConfiguration("compassRouterNext");
-    this.state = { connected: false, connecting: false, loading: false, page: "chat", mode: config.get("defaultMode", "ask"), models: [], project: null, account: null, messages: [], historyCount: context.workspaceState.get("compassRouterNext.historyCount", 0), error: null, apiBaseUrl: this.api.baseUrl, settings: { autoApproveReads: config.get("autoApproveReads", true), autoApproveWrites: config.get("autoApproveWrites", false), autoApproveTerminal: config.get("autoApproveTerminal", false) } };
+    this.state = { connected: false, connecting: false, loading: false, page: "chat", mode: config.get("defaultMode", "ask"), models: [], selectedModel: "", projects: [], project: null, account: null, messages: [], historyCount: context.workspaceState.get("compassRouterNext.historyCount", 0), error: null, apiBaseUrl: this.api.baseUrl, settings: { autoApproveReads: config.get("autoApproveReads", true), autoApproveWrites: config.get("autoApproveWrites", false), autoApproveTerminal: config.get("autoApproveTerminal", false) } };
   }
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -51,6 +57,7 @@ class CompassView implements vscode.WebviewViewProvider {
       else if (msg.type === "signOut") { await this.api.signOut(); this.state.connected = false; this.state.account = null; this.state.models = []; this.state.project = null; this.post(); }
       else if (msg.type === "navigate") { this.state.page = msg.page; this.post(); if (msg.page === "usage" || msg.page === "account") await this.refresh(); }
       else if (msg.type === "setMode") { this.state.mode = msg.mode; this.post(); }
+      else if (msg.type === "setModel") { if (this.state.models.some((model) => model.id === msg.modelId)) { this.state.selectedModel = msg.modelId; await vscode.workspace.getConfiguration("compassRouterNext").update("modelId", msg.modelId, vscode.ConfigurationTarget.Workspace); this.post(); } }
       else if (msg.type === "setProject") { await vscode.workspace.getConfiguration("compassRouterNext").update("projectId", msg.projectId, vscode.ConfigurationTarget.Workspace); await this.refresh(); }
       else if (msg.type === "newChat") { this.state.messages = []; this.state.page = "chat"; this.post(); }
       else if (msg.type === "loadHistory") { this.state.page = "history"; this.post(); }
@@ -65,18 +72,21 @@ class CompassView implements vscode.WebviewViewProvider {
     const verificationUrl = configuredVerificationUrl || authorization.verification_uri;
     await vscode.env.openExternal(vscode.Uri.parse(buildDeviceVerificationUrl(verificationUrl, authorization.user_code)));
     vscode.window.showInformationMessage(`Approve Compass Router in your browser with code ${authorization.user_code}.`);
-    while (Date.now() < Date.parse(authorization.expires_at)) { const result = await this.api.publicPost<{ status: string; access_token?: string; project_id?: string }>(extensionDevicePollPath, { device_code: authorization.device_code }); if (result.status === "authorized" && result.access_token) { await this.api.saveToken(result.access_token); if (result.project_id) await vscode.workspace.getConfiguration("compassRouterNext").update("projectId", result.project_id, vscode.ConfigurationTarget.Workspace); await this.refresh(); return; } if (["expired", "cancelled"].includes(result.status)) throw new Error("Compass browser authorization expired or was cancelled."); await new Promise((resolve) => setTimeout(resolve, Math.max(2000, authorization.interval * 1000))); }
+    while (Date.now() < Date.parse(authorization.expires_at)) { const result = await this.api.publicPost<{ status: string; access_token?: string; project_id?: string }>(extensionDevicePollPath, { device_code: authorization.device_code }); if (result.status === "authorized" && result.access_token) { await this.api.saveToken(result.access_token); await this.refresh(); return; } if (["expired", "cancelled"].includes(result.status)) throw new Error("Compass browser authorization expired or was cancelled."); await new Promise((resolve) => setTimeout(resolve, Math.max(2000, authorization.interval * 1000))); }
     throw new Error("Compass browser authorization expired before it was approved.");
   }
   private async refresh(): Promise<void> {
     this.state.loading = true; this.state.error = null; this.post();
     if (!(await this.api.hasToken())) { this.state.connected = false; this.state.loading = false; this.post(); return; }
-    const [models, account] = await Promise.all([this.api.get<{ data: Model[] }>("/v1/models"), this.api.get<Account>("/v1/account")]);
-    this.state.connected = true; this.state.models = models.data ?? []; this.state.account = account; this.state.project = account.project ?? null; this.state.loading = false; this.post();
+    const [models, account, projects] = await Promise.all([this.api.get<{ data: Model[] }>("/v1/models"), this.api.get<Account>("/v1/account"), this.api.get<Project[]>("/projects")]);
+    const configuredModel = vscode.workspace.getConfiguration("compassRouterNext").get<string>("modelId", "");
+    const selectedModel = (models.data ?? []).some((model) => model.id === configuredModel) ? configuredModel : models.data?.[0]?.id ?? "";
+    const configuredProject = vscode.workspace.getConfiguration("compassRouterNext").get<string>("projectId", "");
+    this.state.connected = true; this.state.models = models.data ?? []; this.state.selectedModel = selectedModel; this.state.projects = projects; this.state.account = account; this.state.project = projects.find((project) => project.id === configuredProject) ?? account.project ?? projects.find((project) => project.is_default) ?? null; this.state.loading = false; this.post();
   }
   private async send(prompt: string): Promise<void> {
     const userMessage = { id: crypto.randomUUID(), role: "user" as const, content: prompt.trim(), createdAt: Date.now() }; this.state.messages = [...this.state.messages, userMessage]; this.state.loading = true; this.state.error = null; this.post();
-    const model = this.state.models[0]?.id; if (!model) throw new Error("No Compass model is authorized for this device project.");
+    const model = this.state.selectedModel; if (!model) throw new Error("No Compass model is authorized for this device project.");
     const response = await this.api.post<{ choices?: Array<{ message?: { content?: unknown } }> }>("/v1/chat/completions", { model, messages: this.state.messages.map((item) => ({ role: item.role, content: item.content })), stream: false, temperature: 0.2, max_tokens: 4096 });
     const content = response.choices?.[0]?.message?.content; if (typeof content !== "string" || !content.trim()) throw new Error("Compass returned no assistant response.");
     this.state.messages = [...this.state.messages, { id: crypto.randomUUID(), role: "assistant", content, model, createdAt: Date.now() }]; this.state.loading = false; this.state.historyCount += 1; await this.context.workspaceState.update("compassRouterNext.historyCount", this.state.historyCount); this.post();

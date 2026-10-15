@@ -474,4 +474,84 @@ textarea {
     white-space: nowrap;
   }
 }
+.topbar {
+  min-height: 42px;
+  padding: 6px 8px;
+  position: relative;
+}
+.topbar nav {
+  position: relative;
+}
+.more-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 10;
+  display: grid;
+  min-width: 142px;
+  padding: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .25);
+}
+.more-menu button {
+  display: flex;
+  width: 100%;
+  gap: 7px;
+  padding: 7px 8px;
+  text-align: left;
+}
+.content {
+  padding: 12px 10px 14px;
+}
+.page-heading {
+  margin-bottom: 10px;
+}
+.page-heading h2 {
+  font-size: 18px;
+}
+.transcript {
+  min-height: 0;
+  flex: 1;
+}
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 42px);
+}
+.chat-page .composer {
+  margin-top: auto;
+}
+.composer-row {
+  gap: 4px;
+}
+.composer-row label {
+  min-width: 0;
+}
+.composer-row select {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 280px) {
+  .topbar nav button {
+    padding-inline: 4px;
+    font-size: 11px;
+  }
+  .brand strong {
+    display: none;
+  }
+  .content {
+    padding-inline: 7px;
+  }
+  .composer {
+    padding: 6px;
+  }
+  .composer-row select {
+    padding-inline: 2px;
+    font-size: 11px;
+  }
+}
 /*# sourceMappingURL=main.css.map */
