@@ -298,6 +298,12 @@ function shortDate(value?: string | null) {
   });
 }
 
+function ProviderCredentialControls({ provider, busy, onSave, onVerify }: { provider: Provider; busy: boolean; onSave: (provider: string, apiKey: string) => Promise<void>; onVerify: (provider: string) => Promise<void> }) {
+  const [apiKey, setApiKey] = useState("");
+  const credentialReady = Boolean(provider.has_configured_key);
+  return <div className="admin-provider-credential-controls"><label>{credentialReady ? "Replace API key" : "API key"}<input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={credentialReady ? "Enter replacement key" : `Paste ${provider.name} API key`} /></label><button className="admin-table-action" type="button" disabled={busy || !apiKey.trim()} onClick={() => void onSave(provider.name, apiKey).then(() => setApiKey(""))}>{credentialReady ? "Replace key" : "Save key"}</button><button className="admin-table-action" type="button" disabled={busy} onClick={() => void onVerify(provider.name)}>Verify connection</button><small>{credentialReady ? `Configured ****${provider.last_four ?? ""}` : "Not configured"}</small></div>;
+}
+
 function TypeSafeProviderCard({ provider, model, canManage, canManagePricing, busy, onSave, onVerify, onApprovePricing }: { provider: Provider; model: Model; canManage: boolean; canManagePricing: boolean; busy: boolean; onSave: (provider: string, apiKey: string) => Promise<void>; onVerify: (provider: string) => Promise<void>; onApprovePricing: (model: Model, values: { inputPriceUsd: number; outputPriceUsd: number; inputPricePaise: number; outputPricePaise: number }) => Promise<void> }) {
   const [apiKey, setApiKey] = useState("");
   const [inputPriceUsd, setInputPriceUsd] = useState(model.input_price_usd_per_million ?? "");
@@ -1492,32 +1498,35 @@ export function AdminConsole() {
                 {providers?.length ? (
                   <div className="admin-provider-list">
                     {providers.map((provider) => (
-                      <div className="admin-provider-row" key={provider.name}>
-                        <div>
-                        <strong>{provider.name === "typesafe_ai" ? "TypeSafe AI" : provider.name}</strong>
-                          <small>
-                            {provider.commercial_status} ·{" "}
-                            {provider.last_health?.status ?? "No health check"}
-                            {provider.last_health
-                              ? ` · ${provider.last_health.latency_ms} ms`
-                              : ""}
-                          </small>
-                        </div>
-                        <span
-                          className={`admin-status ${provider.enabled ? "active" : "disabled"}`}
-                        >
-                          {provider.enabled ? "enabled" : "disabled"}
-                        </span>
-                        {can("providers.manage") ? (
-                          <button
-                            className="admin-table-action"
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void toggleProvider(provider)}
+                      <div className="admin-provider-entry" key={provider.name}>
+                        <div className="admin-provider-row">
+                          <div>
+                            <strong>{provider.name === "typesafe_ai" ? "TypeSafe AI" : provider.name}</strong>
+                            <small>
+                              {provider.commercial_status} ·{" "}
+                              {provider.last_health?.status ?? "No health check"}
+                              {provider.last_health
+                                ? ` · ${provider.last_health.latency_ms} ms`
+                                : ""}
+                            </small>
+                          </div>
+                          <span
+                            className={`admin-status ${provider.enabled ? "active" : "disabled"}`}
                           >
-                            {provider.enabled ? "Disable" : "Enable"}
-                          </button>
-                        ) : null}
+                            {provider.enabled ? "enabled" : "disabled"}
+                          </span>
+                          {can("providers.manage") ? (
+                            <button
+                              className="admin-table-action"
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void toggleProvider(provider)}
+                            >
+                              {provider.enabled ? "Disable" : "Enable"}
+                            </button>
+                          ) : null}
+                        </div>
+                        {can("providers.manage") && provider.name !== "typesafe_ai" ? <ProviderCredentialControls provider={provider} busy={busy} onSave={saveProviderCredential} onVerify={verifyProviderCredential} /> : null}
                       </div>
                     ))}
                   </div>

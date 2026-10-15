@@ -77,6 +77,11 @@ from .provider_adapters import ProviderAdapterError, ProviderAdapterRegistry, Pr
 from .typesafe_adapter import TypeSafeAdapterError, evaluate as evaluate_typesafe
 
 
+def _utc_iso(value: datetime) -> str:
+    """Serialize stored UTC datetimes unambiguously for browser and extension clients."""
+    return value.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+
+
 request_id_context: ContextVar[str | None] = ContextVar("compass_request_id", default=None)
 api_project_context: ContextVar[str | None] = ContextVar("compass_api_project", default=None)
 device_session_context: ContextVar[str | None] = ContextVar("compass_device_session", default=None)
@@ -365,7 +370,7 @@ def start_extension_device_authorization(db: Session, device_name: str) -> dict:
     db.add(authorization)
     db.commit()
     origin = get_settings().compass_web_origin.split(",", 1)[0].strip().rstrip("/")
-    return {"device_code": device_code, "user_code": user_code, "verification_uri": f"{origin}/extension/authorize", "expires_at": expires_at.isoformat(), "interval": 3}
+    return {"device_code": device_code, "user_code": user_code, "verification_uri": f"{origin}/extension/authorize", "expires_at": _utc_iso(expires_at), "interval": 3}
 
 
 def approve_extension_device(db: Session, actor: User, user_code: str, project_id: str, team_id: str | None = None) -> dict:
@@ -416,11 +421,11 @@ def poll_extension_device_authorization(db: Session, device_code: str) -> dict:
         authorization.status = "expired"
         db.commit()
     if authorization.status != "approved":
-        return {"status": authorization.status, "expires_at": authorization.expires_at.isoformat()}
+        return {"status": authorization.status, "expires_at": _utc_iso(authorization.expires_at)}
     session = db.get(ExtensionSession, authorization.session_id) if authorization.session_id else None
     if session is None or session.revoked_at is not None or session.expires_at < now():
-        return {"status": "expired", "expires_at": authorization.expires_at.isoformat()}
-    return {"status": "authorized", "access_token": decrypt_secret(authorization.session_token_encrypted), "token_type": "Bearer", "expires_at": session.expires_at.isoformat(), "project_id": authorization.project_id, "team_id": authorization.team_id}
+        return {"status": "expired", "expires_at": _utc_iso(authorization.expires_at)}
+    return {"status": "authorized", "access_token": decrypt_secret(authorization.session_token_encrypted), "token_type": "Bearer", "expires_at": _utc_iso(session.expires_at), "project_id": authorization.project_id, "team_id": authorization.team_id}
 
 
 def revoke_extension_sessions_for_user(db: Session, user_id: str, organization_id: str | None = None) -> None:
