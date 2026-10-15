@@ -1794,9 +1794,58 @@ export function AdminConsole() {
                 </div>
                 <CreditCard size={18} />
               </div>
-              <pre className="admin-readiness">
-                {JSON.stringify(data.reconciliation ?? {}, null, 2)}
-              </pre>
+              {(() => {
+                const reconciliation = (data.reconciliation ?? {}) as {
+                  orders?: number;
+                  completed_orders?: number;
+                  matched_credits?: number;
+                  missing_credit_order_ids?: string[];
+                  orphan_credit_references?: string[];
+                  total_completed_paise?: number;
+                  total_credited_paise?: number;
+                  refunds?: Array<{
+                    id: string;
+                    order_id: string;
+                    team_id: string;
+                    provider_refund_id?: string | null;
+                    amount_paise: number;
+                    status: string;
+                    reason: string;
+                    failure_description?: string | null;
+                    created_at: string;
+                  }>;
+                  payment_events?: Array<{
+                    id: string;
+                    provider: string;
+                    event_id: string;
+                    event_type: string;
+                    status: string;
+                    error_message?: string | null;
+                    created_at: string;
+                  }>;
+                };
+                const refunds = reconciliation.refunds ?? [];
+                const paymentEvents = reconciliation.payment_events ?? [];
+                return (
+                  <>
+                    <dl className="admin-facts">
+                      <div><dt>Orders</dt><dd>{reconciliation.orders ?? 0}</dd></div>
+                      <div><dt>Completed orders</dt><dd>{reconciliation.completed_orders ?? 0}</dd></div>
+                      <div><dt>Matched Credits</dt><dd>{reconciliation.matched_credits ?? 0}</dd></div>
+                      <div><dt>Open refunds/events</dt><dd>{refunds.length + paymentEvents.length}</dd></div>
+                    </dl>
+                    <h3 className="mt-5 text-base font-semibold">Refunds requiring attention</h3>
+                    {refunds.length ? (
+                      <div className="admin-table-wrap">
+                        <table className="admin-table"><thead><tr><th>Status</th><th>Refund</th><th>Payment/order</th><th>Amount</th><th>Reason</th><th>Failure detail</th></tr></thead><tbody>
+                          {refunds.map((refund) => <tr key={refund.id}><td>{refund.status}</td><td>{refund.provider_refund_id ?? refund.id.slice(0, 8)}</td><td>{refund.order_id.slice(0, 8)}<br />{refund.team_id.slice(0, 8)}</td><td>{formatPaise(refund.amount_paise)}</td><td>{refund.reason}</td><td>{refund.failure_description ?? "No failure detail recorded."}</td></tr>)}
+                        </tbody></table>
+                      </div>
+                    ) : <p className="field-help">No refunds require attention.</p>}
+                    {paymentEvents.length ? <><h3 className="mt-5 text-base font-semibold">Payment events requiring attention</h3><div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Provider</th><th>Event</th><th>Type</th><th>Status</th><th>Detail</th></tr></thead><tbody>{paymentEvents.map((event) => <tr key={event.id}><td>{event.provider}</td><td>{event.event_id}</td><td>{event.event_type}</td><td>{event.status}</td><td>{event.error_message ?? "No error detail recorded."}</td></tr>)}</tbody></table></div></> : null}
+                  </>
+                );
+              })()}
             </section>
           ) : null}
           {!loading && section === "operations" ? (

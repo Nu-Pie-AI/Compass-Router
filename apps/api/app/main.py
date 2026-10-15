@@ -1573,6 +1573,18 @@ def billing_reconciliation(actor: User = Depends(admin_user), db: Session = Depe
     require_platform_permission(db, actor, "finance.view")
     orders = db.scalars(select(PaymentOrder).order_by(PaymentOrder.created_at.asc())).all()
     ledgers = db.scalars(select(WalletLedger).where(WalletLedger.reference_type == "payment_order")).all()
+    refunds = db.scalars(
+        select(PaymentRefund)
+        .where(PaymentRefund.status.in_(["requested", "pending", "reconciliation_required"]))
+        .order_by(PaymentRefund.created_at.desc())
+        .limit(100)
+    ).all()
+    payment_events = db.scalars(
+        select(PaymentEvent)
+        .where(PaymentEvent.status != "processed")
+        .order_by(PaymentEvent.created_at.desc())
+        .limit(100)
+    ).all()
     ledger_refs = {row.reference_id for row in ledgers}
     completed = [row for row in orders if row.status in {"completed", "partially_refunded", "refunded"}]
     missing_credit = [row.id for row in completed if (row.payment_id or row.provider_order_id) not in ledger_refs]
@@ -1586,6 +1598,34 @@ def billing_reconciliation(actor: User = Depends(admin_user), db: Session = Depe
         "orphan_credit_references": orphan_credits,
         "total_completed_paise": sum(row.amount_paise for row in completed),
         "total_credited_paise": sum(row.amount_paise for row in ledgers if row.reference_id in order_refs),
+        "refunds": [
+            {
+                "id": row.id,
+                "order_id": row.order_id,
+                "team_id": row.team_id,
+                "provider_refund_id": row.provider_refund_id,
+                "amount_paise": row.amount_paise,
+                "status": row.status,
+                "reason": row.reason,
+                "failure_description": row.failure_description,
+                "created_at": row.created_at.isoformat(),
+                "processed_at": row.processed_at.isoformat() if row.processed_at else None,
+            }
+            for row in refunds
+        ],
+        "payment_events": [
+            {
+                "id": row.id,
+                "provider": row.provider,
+                "event_id": row.event_id,
+                "event_type": row.event_type,
+                "status": row.status,
+                "error_message": row.error_message,
+                "created_at": row.created_at.isoformat(),
+                "processed_at": row.processed_at.isoformat() if row.processed_at else None,
+            }
+            for row in payment_events
+        ],
         "generated_at": now().isoformat(),
     }
 

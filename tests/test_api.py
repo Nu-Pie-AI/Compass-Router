@@ -1328,6 +1328,8 @@ def test_development_refund_reverses_wallet_and_reconciliation_matches():
     reconciliation = client.get("/admin/billing/reconciliation", headers=headers)
     assert reconciliation.status_code == 200, reconciliation.text
     assert reconciliation.json()["missing_credit_order_ids"] == []
+    assert reconciliation.json()["refunds"] == []
+    assert reconciliation.json()["payment_events"] == []
 
 
 def test_refund_rejects_when_available_credits_are_insufficient():
@@ -1430,6 +1432,11 @@ def test_processed_refund_webhook_requires_reconciliation_when_credits_were_cons
         assert event.status == "reconciliation_required"
     finally:
         db.close()
+    reconciliation = client.get("/admin/billing/reconciliation", headers=headers)
+    assert reconciliation.status_code == 200, reconciliation.text
+    assert reconciliation.json()["refunds"][0]["status"] == "reconciliation_required"
+    assert reconciliation.json()["refunds"][0]["provider_refund_id"] == "rfnd_reconciliation_test"
+    assert reconciliation.json()["payment_events"][0]["event_id"] == "evt_reconciliation_123"
 
 
 def test_refund_rejects_cross_tenant_customer_access():
