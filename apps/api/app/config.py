@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     database_migration_mode: str = "legacy"
     clerk_secret_key: str | None = None
     clerk_jwt_key: str | None = None
+    clerk_issuer: str | None = None
     clerk_authorized_parties: str = ""
     clerk_audience: str | None = None
     clerk_webhook_signing_secret: str | None = None
