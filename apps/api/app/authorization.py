@@ -1,12 +1,14 @@
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
+from .admin_authorization import platform_roles
 from .errors import compass_error
 from .models import Organization, OrganizationMember, Project, ProjectMember, Team, TeamMember, User
 
 
-def is_admin(user: User) -> bool:
-    return user.role in {"admin", "super_admin"}
+def is_platform_admin(db: Session, user: User) -> bool:
+    """Return true only for an active server-side platform role."""
+    return bool(platform_roles(db, user))
 
 
 def _active_organization_membership(db: Session, user: User, organization_id: str):
@@ -20,7 +22,7 @@ def _active_organization_membership(db: Session, user: User, organization_id: st
 
 
 def team_ids_for_user(db: Session, user: User) -> list[str]:
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return list(db.scalars(select(Team.id).where(Team.is_active.is_(True))).all())
     member_match = or_(
         TeamMember.user_id == user.id,
@@ -41,7 +43,7 @@ def team_ids_for_user(db: Session, user: User) -> list[str]:
 
 
 def team_owner_ids_for_user(db: Session, user: User) -> list[str]:
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return list(db.scalars(select(Team.id).where(Team.is_active.is_(True))).all())
     member_match = or_(
         TeamMember.user_id == user.id,
@@ -63,7 +65,7 @@ def team_owner_ids_for_user(db: Session, user: User) -> list[str]:
 
 
 def workspace_ids_for_user(db: Session, user: User) -> list[str]:
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return list(db.scalars(select(Organization.id)).all())
     return list(
         db.scalars(
@@ -106,7 +108,7 @@ def require_project_access(db: Session, user: User, project_id: str, write: bool
     project = db.get(Project, project_id)
     if project is None or not project.is_active:
         raise compass_error(404, "project_not_found", "Project not found.")
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return project
     membership = db.scalar(
         select(ProjectMember)

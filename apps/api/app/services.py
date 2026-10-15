@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .authorization import require_project_access
+from .authorization import is_platform_admin, require_project_access
 from .catalog import (
     capability_matches,
     filter_catalog_records,
@@ -54,6 +54,7 @@ from .models import (
     Project,
     ProjectMember,
     OperationalEvent,
+    PlatformRoleAssignment,
     PlatformSetting,
     Provider,
     ProviderAttempt,
@@ -159,7 +160,7 @@ def ensure_projects_for_organizations(db: Session) -> None:
 
 
 def project_ids_for_user(db: Session, user: User) -> list[str]:
-    if user.role in {"admin", "super_admin"}:
+    if is_platform_admin(db, user):
         return list(db.scalars(select(Project.id)).all())
     return list(
         db.scalars(
@@ -373,14 +374,14 @@ def approve_extension_device(db: Session, actor: User, user_code: str, project_i
         raise compass_error(400, "device_code_invalid", "This VS Code authorization code is invalid or expired.")
     project = require_project_access(db, actor, project_id)
     organization_membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == project.organization_id, OrganizationMember.user_id == actor.id, OrganizationMember.role != "removed"))
-    if actor.role not in {"admin", "super_admin"} and organization_membership is None:
+    if not is_platform_admin(db, actor) and organization_membership is None:
         raise compass_error(403, "project_access_denied", "You do not have access to this project.")
     if team_id is None:
         team_id = db.scalar(select(Team.id).where(Team.project_id == project.id, Team.is_active.is_(True)).order_by(Team.created_at).limit(1))
     team = db.get(Team, team_id) if team_id else None
     if team is None or team.organization_id != project.organization_id or (team.project_id and team.project_id != project.id) or not team.is_active:
         raise compass_error(400, "team_required", "Select an active team in this project before authorizing VS Code.")
-    if actor.role not in {"admin", "super_admin"}:
+    if not is_platform_admin(db, actor):
         team_member = db.scalar(select(TeamMember).where(TeamMember.team_id == team.id, TeamMember.user_id == actor.id, TeamMember.is_active.is_(True)))
         if team_member is None:
             team_member = db.scalar(select(TeamMember).where(TeamMember.team_id == team.id, func.lower(TeamMember.email) == actor.email.lower(), TeamMember.is_active.is_(True)))
@@ -636,12 +637,12 @@ def bootstrap_admin(db: Session) -> None:
     settings = get_settings()
     user = db.scalar(select_user_by_email(settings.admin_email.lower()))
     if user is None:
-        db.add(User(email=settings.admin_email.lower(), password_hash=hash_password(settings.admin_password), role="admin"))
+        user = User(email=settings.admin_email.lower(), password_hash=hash_password(settings.admin_password), role="admin")
+        db.add(user)
         db.commit()
-        return
-    # The configured owner account is the highest-privilege product account.
-    # Other administrators can still be managed from the owner console.
-    user.role = "super_admin"
+    assignment = db.scalar(select(PlatformRoleAssignment).where(PlatformRoleAssignment.user_id == user.id, PlatformRoleAssignment.role == "PLATFORM_ADMIN"))
+    if assignment is None:
+        db.add(PlatformRoleAssignment(user_id=user.id, role="PLATFORM_ADMIN", status="active", reason="Configured local/platform administrator bootstrap"))
     db.commit()
 
 

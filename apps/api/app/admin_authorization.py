@@ -41,16 +41,9 @@ ROLE_PERMISSIONS = {
     "READ_ONLY_AUDITOR": {"admin.view", "customers.view", "providers.view", "models.view", "routing.view", "finance.view", "operations.view", "security.view", "settings.view"},
 }
 
-# Existing M0-M8 role values remain valid and retain their established behavior.
-LEGACY_ROLE_MAP = {"admin": "PLATFORM_ADMIN", "super_admin": "PLATFORM_SUPER_ADMIN"}
-
-
 def platform_roles(db: Session, user: User) -> set[str]:
-    roles = set()
-    legacy_role = LEGACY_ROLE_MAP.get(user.role)
-    if legacy_role:
-        roles.add(legacy_role)
-    roles.update(
+    """Return only active, server-side platform role assignments."""
+    roles = set(
         db.scalars(
             select(PlatformRoleAssignment.role).where(
                 PlatformRoleAssignment.user_id == user.id,

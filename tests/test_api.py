@@ -242,6 +242,8 @@ def test_m9_subordinate_platform_role_is_least_privilege():
     super_user = User(email=super_email, password_hash=hash_password("M9Super123!"), role="super_admin")
     db.add(super_user)
     db.commit()
+    db.add(PlatformRoleAssignment(user_id=super_user.id, role="PLATFORM_SUPER_ADMIN", status="active", reason="test platform owner"))
+    db.commit()
     db.close()
     super_headers = login_headers(super_email, "M9Super123!")
     granted = client.post("/admin/roles", json={"user_id": signup.json()["user_id"], "role": "FINANCE_ADMIN", "reason": "M9 finance operations"}, headers=super_headers)
@@ -249,6 +251,69 @@ def test_m9_subordinate_platform_role_is_least_privilege():
     finance_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
     assert client.get("/admin/financial/wallets", headers=finance_headers).status_code == 200
     assert client.get("/admin/customers", headers=finance_headers).status_code == 403
+
+
+def test_legacy_admin_role_cannot_bypass_tenant_scope_without_platform_assignment():
+    first_email = f"legacy-admin-{time.time_ns()}@example.com"
+    second_email = f"other-company-{time.time_ns()}@example.com"
+    first = client.post("/auth/signup", json={"email": first_email, "password": "LegacyAdmin123!", "organization_name": "First Company"})
+    second = client.post("/auth/signup", json={"email": second_email, "password": "OtherCompany123!", "organization_name": "Second Company"})
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    db = TestingSessionLocal()
+    try:
+        legacy_user = db.get(User, first.json()["user_id"])
+        assert legacy_user is not None
+        legacy_user.role = "admin"
+        db.commit()
+        other_workspace_id = second.json()["organization_id"]
+    finally:
+        db.close()
+
+    headers = login_headers(first_email, "LegacyAdmin123!")
+    assert client.get("/admin/access", headers=headers).status_code == 403
+    assert all(row["id"] != other_workspace_id for row in client.get("/workspaces", headers=headers).json())
+    assert client.get("/api-keys", headers=headers).status_code == 200
+
+
+def test_platform_super_admin_assignment_preserves_explicit_global_workspace_access():
+    owner_email = f"assigned-platform-owner-{time.time_ns()}@example.com"
+    other_email = f"assigned-platform-other-{time.time_ns()}@example.com"
+    owner = client.post("/auth/signup", json={"email": owner_email, "password": "AssignedOwner123!", "organization_name": "Owner Company"})
+    other = client.post("/auth/signup", json={"email": other_email, "password": "AssignedOther123!", "organization_name": "Other Assigned Company"})
+    assert owner.status_code == 200, owner.text
+    assert other.status_code == 200, other.text
+    db = TestingSessionLocal()
+    try:
+        user = db.get(User, owner.json()["user_id"])
+        assert user is not None
+        db.add(PlatformRoleAssignment(user_id=user.id, role="PLATFORM_SUPER_ADMIN", status="active", reason="test explicit assignment"))
+        db.commit()
+    finally:
+        db.close()
+    workspaces = client.get("/workspaces", headers=login_headers(owner_email, "AssignedOwner123!")).json()
+    assert any(row["id"] == other.json()["organization_id"] for row in workspaces)
+
+
+def test_revoked_platform_assignment_does_not_restore_global_access():
+    email = f"revoked-platform-{time.time_ns()}@example.com"
+    other_email = f"revoked-other-{time.time_ns()}@example.com"
+    user = client.post("/auth/signup", json={"email": email, "password": "RevokedPlatform123!", "organization_name": "Revoked Company"})
+    other = client.post("/auth/signup", json={"email": other_email, "password": "RevokedOther123!", "organization_name": "Other Revoked Company"})
+    assert user.status_code == 200, user.text
+    assert other.status_code == 200, other.text
+    db = TestingSessionLocal()
+    try:
+        row = db.get(User, user.json()["user_id"])
+        assert row is not None
+        db.add(PlatformRoleAssignment(user_id=row.id, role="PLATFORM_ADMIN", status="revoked", reason="test revoked assignment"))
+        db.commit()
+    finally:
+        db.close()
+    headers = login_headers(email, "RevokedPlatform123!")
+    assert client.get("/admin/access", headers=headers).status_code == 403
+    assert all(item["id"] != other.json()["organization_id"] for item in client.get("/workspaces", headers=headers).json())
 
 
 def test_m9_model_price_change_creates_revision():

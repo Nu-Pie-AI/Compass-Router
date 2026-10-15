@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .admin_authorization import has_platform_permission, platform_permissions, platform_roles, require_platform_permission, require_super_admin
 from .admin_services import adjust_wallet, bootstrap_platform_owner, grant_platform_role, platform_settings_rows, revoke_platform_role, update_platform_settings
-from .authorization import is_admin, require_project_access, require_team_access, require_team_owner, require_workspace_access, team_ids_for_user, team_owner_ids_for_user, workspace_ids_for_user
+from .authorization import is_platform_admin, require_project_access, require_team_access, require_team_owner, require_workspace_access, team_ids_for_user, team_owner_ids_for_user, workspace_ids_for_user
 from .catalog import capability_matches, provider_protocol
 from .config import get_settings, validate_runtime_config
 from .db import get_db, init_db
@@ -288,7 +288,7 @@ def admin_user(request: Request, user: User = Depends(current_user), db: Session
 def organization_admin(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> User:
     if settings.environment.strip().lower() in {"production", "prod"} and getattr(request.state, "auth_source", "") != "clerk":
         raise compass_error(401, "clerk_organization_auth_required", "Organization administration requires a Clerk-authenticated session.")
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return user
     organization_id = organization_id_for_user(db, user.id)
     membership = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == organization_id, OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]))) if organization_id else None
@@ -616,7 +616,7 @@ def me(user: User = Depends(current_user)) -> dict:
 
 @app.get("/dashboard")
 def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return dashboard_summary(db, workspace_ids=workspace_ids_for_user(db, user))
     return dashboard_summary(db, team_ids=team_ids_for_user(db, user), user_id=user.id, workspace_ids=workspace_ids_for_user(db, user))
 
@@ -648,7 +648,7 @@ def create_customer_project(body: ProjectCreate, user: User = Depends(organizati
 @app.patch("/projects/{project_id}")
 def update_customer_project(project_id: str, body: ProjectUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     project = require_project_access(db, user, project_id, write=True)
-    if project.is_default and not is_admin(user):
+    if project.is_default and not is_platform_admin(db, user):
         organization_admin_membership = db.scalar(
             select(OrganizationMember).where(
                 OrganizationMember.organization_id == project.organization_id,
@@ -1054,7 +1054,7 @@ def create_key(body: ApiKeyCreate, user: User = Depends(current_user), db: Sessi
 
 @app.get("/api-keys")
 def list_keys(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
-    if is_admin(user):
+    if is_platform_admin(db, user):
         return list_api_keys(db)
     organization_ids = list(db.scalars(select(OrganizationMember.organization_id).where(OrganizationMember.user_id == user.id, OrganizationMember.role.in_(["owner", "admin"]))).all())
     if organization_ids:
@@ -1069,7 +1069,7 @@ def revoke_key(api_key_id: str, user: User = Depends(current_user), db: Session 
     key_record = db.get(ApiKey, api_key_id)
     if key_record is None:
         raise compass_error(404, "api_key_not_found", "API key not found.")
-    if not is_admin(user):
+    if not is_platform_admin(db, user):
         if not key_record.team_id:
             raise compass_error(403, "api_key_access_denied", "You cannot revoke this API key.")
         require_team_owner(db, user, key_record.team_id)
@@ -1084,7 +1084,7 @@ def rotate_key(api_key_id: str, user: User = Depends(current_user), db: Session 
     key_record = db.get(ApiKey, api_key_id)
     if key_record is None:
         raise compass_error(404, "api_key_not_found", "API key not found.")
-    if not is_admin(user):
+    if not is_platform_admin(db, user):
         if not key_record.team_id:
             raise compass_error(403, "api_key_access_denied", "You cannot rotate this API key.")
         require_team_owner(db, user, key_record.team_id)
@@ -1099,7 +1099,7 @@ def update_key_models(api_key_id: str, body: ApiKeyModelsUpdate, user: User = De
     key = db.get(ApiKey, api_key_id)
     if key is None:
         raise compass_error(404, "api_key_not_found", "API key not found.")
-    if not is_admin(user):
+    if not is_platform_admin(db, user):
         if not key.team_id:
             raise compass_error(403, "api_key_access_denied", "You cannot update this API key.")
         require_team_owner(db, user, key.team_id)
@@ -2038,7 +2038,7 @@ def cancel_batch(batch_id: str, authorization: str | None = Header(default=None)
 @app.get("/usage/requests")
 def usage_requests(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
     stmt = select(LlmRequest).order_by(LlmRequest.created_at.desc())
-    if not is_admin(user):
+    if not is_platform_admin(db, user):
         team_ids = team_ids_for_user(db, user)
         if not team_ids:
             return []
@@ -2602,7 +2602,7 @@ def admin_update_user_role(user_id: str, body: UserRoleUpdate, actor: User = Dep
         raise compass_error(404, "user_not_found", "User was not found.")
     if target.id == actor.id and body.role != target.role:
         raise compass_error(400, "cannot_change_own_role", "You cannot change your own owner role from this session.")
-    if (target.role == "super_admin" or body.role == "super_admin") and actor.role != "super_admin":
+    if (target.role == "super_admin" or body.role == "super_admin") and "PLATFORM_SUPER_ADMIN" not in platform_roles(db, actor):
         raise compass_error(403, "owner_required", "Only the product owner can manage super-admin roles.")
     previous_role = target.role
     target.role = body.role
