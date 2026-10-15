@@ -1,0 +1,42 @@
+{
+  "name": "compass-router-next",
+  "displayName": "Compass Router Next",
+  "description": "Compass Router workspace assistant with secure project-scoped access.",
+  "version": "0.1.0",
+  "publisher": "nu-pie",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Nu-Pie-AI/Compass-Router.git", "directory": "apps/compass-vscode-next" },
+  "engines": { "vscode": "^1.100.0" },
+  "categories": ["AI", "Other"],
+  "keywords": ["ai", "compass", "coding assistant"],
+  "main": "./dist/extension.js",
+  "activationEvents": ["onView:compassRouterNext.chat", "onCommand:compassRouterNext.open"],
+  "contributes": {
+    "viewsContainers": { "activitybar": [{ "id": "compassRouterNext", "title": "Compass Router", "icon": "media/compass.svg" }] },
+    "views": { "compassRouterNext": [{ "type": "webview", "id": "compassRouterNext.chat", "name": "Compass" }] },
+    "commands": [{ "command": "compassRouterNext.open", "title": "Compass Router: Open", "category": "Compass Router" }],
+    "configuration": {
+      "title": "Compass Router Next",
+      "properties": {
+        "compassRouterNext.apiBaseUrl": { "type": "string", "default": "http://127.0.0.1:28000", "description": "Compass API base URL without /v1. Set this to the approved deployment URL outside local development." },
+        "compassRouterNext.verificationUrl": { "type": "string", "default": "http://localhost:23000/extension/authorize", "description": "Compass browser device-approval URL for local development." },
+        "compassRouterNext.projectId": { "type": "string", "default": "", "scope": "workspace", "description": "Optional authorized Compass project ID." },
+        "compassRouterNext.defaultMode": { "type": "string", "enum": ["ask", "plan", "agent"], "default": "ask" },
+        "compassRouterNext.autoApproveReads": { "type": "boolean", "default": true },
+        "compassRouterNext.autoApproveWrites": { "type": "boolean", "default": false },
+        "compassRouterNext.autoApproveTerminal": { "type": "boolean", "default": false }
+      }
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "node esbuild.mjs",
+    "test": "vitest run",
+    "package": "npm run check && npm run build && vsce package --no-dependencies"
+  },
+  "dependencies": { "react": "^19.3.0", "react-dom": "^19.3.0" },
+  "devDependencies": {
+    "@types/node": "^22.15.3", "@types/react": "^19.3.0", "@types/react-dom": "^19.3.0",
+    "@types/vscode": "^1.100.0", "@vscode/vsce": "^3.4.2", "esbuild": "^0.25.3", "typescript": "^5.8.3", "vitest": "^3.1.2"
+  }
+}
