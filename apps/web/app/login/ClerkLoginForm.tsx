@@ -6,6 +6,11 @@ import { useEffect, useState } from "react";
 
 export default function ClerkLoginForm() {
   const { isLoaded, isSignedIn } = useAuth();
+  const [redirectPath] = useState(() => {
+    if (typeof window === "undefined") return "/portal";
+    const callback = new URLSearchParams(window.location.search).get("callbackUrl") || "/portal";
+    return callback.startsWith("/") && !callback.startsWith("//") ? callback : "/portal";
+  });
   const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
@@ -15,8 +20,8 @@ export default function ClerkLoginForm() {
   }, [isLoaded]);
 
   useEffect(() => {
-    if (isLoaded && isSignedIn && window.location.pathname === "/login") window.location.replace("/portal");
-  }, [isLoaded, isSignedIn]);
+    if (isLoaded && isSignedIn && window.location.pathname === "/login") window.location.replace(redirectPath);
+  }, [isLoaded, isSignedIn, redirectPath]);
 
   return (
     <main className="console-login">
@@ -31,7 +36,7 @@ export default function ClerkLoginForm() {
         ) : !isLoaded ? (
           <div className="console-auth-loading" role="status">Loading secure sign-in...</div>
         ) : (
-          <SignIn routing="hash" signUpUrl="/signup" forceRedirectUrl="/portal" fallbackRedirectUrl="/portal" appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} />
+          <SignIn routing="hash" signUpUrl="/signup" forceRedirectUrl={redirectPath} fallbackRedirectUrl={redirectPath} appearance={{ elements: { rootBox: "compass-clerk-root", card: "compass-clerk-card" } }} />
         )}
       </section>
     </main>
