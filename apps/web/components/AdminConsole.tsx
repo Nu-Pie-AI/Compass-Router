@@ -13,10 +13,12 @@ import {
   FolderKanban,
   KeyRound,
   LogOut,
+  Moon,
   RefreshCw,
   Route,
   Settings2,
   ShieldCheck,
+  Sun,
   Users,
   WalletCards,
   XCircle,
@@ -356,6 +358,10 @@ export function AdminConsole() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") return "light";
+    return window.localStorage.getItem("compass.console.theme") === "dark" ? "dark" : "light";
+  });
   const [adjustment, setAdjustment] = useState({
     team_id: "",
     amount_paise: "",
@@ -382,6 +388,10 @@ export function AdminConsole() {
       router.replace("/admin-login?callbackUrl=/super-admin");
     }
   }, [router]);
+
+  useEffect(() => {
+    window.localStorage.setItem("compass.console.theme", theme);
+  }, [theme]);
 
   async function loadAccess(activeSession: Session) {
     try {
@@ -866,7 +876,7 @@ export function AdminConsole() {
     { items: Setting[]; deployment_managed: string[] } | undefined;
 
   return (
-    <main className="admin-shell">
+    <main className="admin-shell" data-console-theme={theme}>
       <header className="admin-header">
         <div className="admin-brand">
           <Route size={25} aria-hidden="true" />
@@ -890,6 +900,15 @@ export function AdminConsole() {
             title="Refresh admin data"
           >
             <RefreshCw size={17} />
+          </button>
+          <button
+            className="admin-icon-button"
+            type="button"
+            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+            aria-label={`Use ${theme === "dark" ? "light" : "dark"} theme`}
+            title={`Use ${theme === "dark" ? "light" : "dark"} theme`}
+          >
+            {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
           </button>
           <button
             className="admin-secondary"

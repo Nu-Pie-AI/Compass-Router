@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Boxes, BrainCircuit, Building2, Check, ChevronDown, CreditCard, KeyRound, LayoutGrid, LockKeyhole, Menu, MessageSquare, Plus, RefreshCw, Route, Search, Store, Terminal, UserRound, Users, X, type LucideIcon } from "lucide-react";
+import { Activity, Boxes, BrainCircuit, Building2, Check, ChevronDown, CreditCard, KeyRound, LayoutGrid, LockKeyhole, Menu, MessageSquare, Moon, Plus, RefreshCw, Route, Search, Store, Sun, Terminal, UserRound, Users, X, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -58,6 +58,10 @@ export function ConsoleShell({ children, view, title, subtitle, workspaces, work
   const [searchOpen, setSearchOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") return "light";
+    return window.localStorage.getItem("compass.console.theme") === "dark" ? "dark" : "light";
+  });
   const workspaceRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
@@ -85,6 +89,9 @@ export function ConsoleShell({ children, view, title, subtitle, workspaces, work
     window.sessionStorage.setItem(navigationDrawerStorageKey, String(menuOpen));
   }, [menuOpen]);
   useEffect(() => {
+    window.localStorage.setItem("compass.console.theme", theme);
+  }, [theme]);
+  useEffect(() => {
     if (menuOpen) sidebarRef.current?.scrollTo({ top: 0, behavior: "auto" });
   }, [menuOpen, view]);
   useEffect(() => {
@@ -104,7 +111,7 @@ export function ConsoleShell({ children, view, title, subtitle, workspaces, work
       return <Link key={item.label} href={item.href} className={`console-nav-item ${isActive(item.href) ? "is-active" : ""}`} aria-current={isActive(item.href) ? "page" : undefined}><Icon size={18} /><span>{item.label}</span></Link>;
     });
   }
-  return <main className={`console-shell ${menuOpen ? "is-menu-open" : ""}`}>
+  return <main className={`console-shell ${menuOpen ? "is-menu-open" : ""}`} data-console-theme={theme}>
     <a href="#console-content" className="console-skip">Skip to content</a>
     <header ref={topbarRef} className="console-topbar">
       <div className="console-brand-area"><button className="console-icon mobile-menu" aria-label={menuOpen ? "Close navigation" : "Open navigation"} aria-expanded={menuOpen} aria-controls="console-sidebar" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? <X size={20} /> : <Menu size={20} />}</button><Link href="/" className="console-brand"><Route size={28} />Compass</Link></div>
@@ -113,6 +120,7 @@ export function ConsoleShell({ children, view, title, subtitle, workspaces, work
         {searchOpen ? <nav className="console-search-results" aria-label="Search results">{results.length ? results.map((item) => <Link key={item.href} href={item.href} onClick={() => setSearchOpen(false)}>{item.label}</Link>) : <p>No matching pages.</p>}</nav> : null}
       </div>
       <nav className="console-top-links" aria-label="Product navigation">{topLinks.map((item) => <Link key={item.href} href={item.href} className={isActive(item.href) ? "is-active" : undefined} aria-current={isActive(item.href) ? "page" : undefined}>{item.label}</Link>)}<a href={marketplaceUrl} className="console-marketplace-link console-marketplace-button"><Store size={15} aria-hidden="true" />Marketplace</a></nav>
+      <button className="console-icon console-theme-toggle" type="button" aria-label={`Use ${theme === "dark" ? "light" : "dark"} theme`} title={`Use ${theme === "dark" ? "light" : "dark"} theme`} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button>
       <details className="console-account"><summary><span className="account-avatar">{session.email.slice(0, 1).toUpperCase()}</span><span className="account-label">{accountName}</span><ChevronDown size={15} /></summary><div><Link className={isActive("/profile") ? "is-active" : undefined} aria-current={isActive("/profile") ? "page" : undefined} href="/profile">Profile</Link><Link className={isActive("/workspaces") ? "is-active" : undefined} aria-current={isActive("/workspaces") ? "page" : undefined} href="/workspaces">Workspaces</Link>{canManageOrganization ? <Link className={isActive("/admin") ? "is-active" : undefined} aria-current={isActive("/admin") ? "page" : undefined} href="/admin">Company admin</Link> : null}{canManage ? <Link className={isActive("/super-admin") ? "is-active" : undefined} aria-current={isActive("/super-admin") ? "page" : undefined} href="/super-admin">Super Admin</Link> : null}<button type="button" onClick={onLogout}>Sign out</button></div></details>
     </header>
     {menuOpen ? <button className="console-backdrop" aria-label="Close navigation" onClick={() => setMenuOpen(false)} /> : null}
