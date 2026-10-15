@@ -33,7 +33,7 @@ from app.main import app  # noqa: E402
 from app.models import ApiKey, ApiKeyModel, AuditLog, BatchJob, BillingInvoice, ByokCredential, ClerkWebhookEvent, EmailOutbox, ExtensionSession, LlmRequest, ModelCatalog, ModelPolicy, Organization, OrganizationMember, PaymentEvent, PaymentOrder, PaymentRefund, PlatformBootstrapState, PlatformRoleAssignment, PlatformSetting, PricingPolicy, PricingRevision, ProjectMember, Provider, ProviderAttempt, ProviderCredential, ProviderHealthCheck, RoutingPolicy, Team, TeamLimit, TeamMember, User, WalletAccount, WalletLedger  # noqa: E402
 from app.security import encrypt_secret, hash_api_key, hash_password  # noqa: E402
 from app.recovery import recover_stale_llm_reservations  # noqa: E402
-from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, resolve_member_inference_key, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
+from app.services import LiteLLMClient, _circuit_is_open, debit_wallet, record_provider_health, reserve_wallet, resolve_member_inference_key, seed_defaults, stream_openai_chunks, upsert_provider_api_key  # noqa: E402
 import app.services as services  # noqa: E402
 import app.email_worker as email_worker  # noqa: E402
 import app.main as main_module  # noqa: E402
@@ -1327,6 +1327,130 @@ def test_development_refund_reverses_wallet_and_reconciliation_matches():
     reconciliation = client.get("/admin/billing/reconciliation", headers=headers)
     assert reconciliation.status_code == 200, reconciliation.text
     assert reconciliation.json()["missing_credit_order_ids"] == []
+
+
+def test_refund_rejects_when_available_credits_are_insufficient():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    created = client.post("/billing/orders", json={"team_id": team["id"], "amount_paise": 4000}, headers=headers).json()
+    assert client.post(f"/billing/orders/{created['id']}/complete", json={"confirmation": "test"}, headers=headers).status_code == 200
+
+    db = TestingSessionLocal()
+    try:
+        debit_wallet(db, team["id"], 3000, "spent-before-refund", "test spend")
+    finally:
+        db.close()
+
+    refund = client.post(f"/billing/orders/{created['id']}/refund", json={"amount_paise": 2000}, headers=headers)
+    assert refund.status_code == 409, refund.text
+    assert refund.json()["detail"]["error"]["code"] == "refund_insufficient_credits"
+    assert client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"] == 1000
+    db = TestingSessionLocal()
+    try:
+        assert db.query(PaymentRefund).filter(PaymentRefund.order_id == created["id"]).count() == 0
+        wallet = db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one()
+        assert db.query(WalletLedger).filter(WalletLedger.wallet_id == wallet.id, WalletLedger.reference_type == "payment_refund").count() == 0
+    finally:
+        db.close()
+
+
+def test_refund_rejects_balance_reserved_for_inference():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    created = client.post("/billing/orders", json={"team_id": team["id"], "amount_paise": 4000}, headers=headers).json()
+    assert client.post(f"/billing/orders/{created['id']}/complete", json={"confirmation": "test"}, headers=headers).status_code == 200
+    db = TestingSessionLocal()
+    try:
+        reserve_wallet(db, team["id"], 3000, "refund-reservation")
+    finally:
+        db.close()
+
+    refund = client.post(f"/billing/orders/{created['id']}/refund", json={"amount_paise": 2000}, headers=headers)
+    assert refund.status_code == 409, refund.text
+    assert refund.json()["detail"]["error"]["code"] == "refund_insufficient_credits"
+
+
+def test_failed_payment_cannot_be_refunded():
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    db = TestingSessionLocal()
+    try:
+        order = PaymentOrder(team_id=team["id"], provider="development", provider_order_id=f"failed-refund-{time.time_ns()}", amount_paise=1000, currency="INR", status="failed")
+        db.add(order)
+        db.commit()
+        order_id = order.id
+    finally:
+        db.close()
+    refund = client.post(f"/billing/orders/{order_id}/refund", json={"amount_paise": 1000}, headers=headers)
+    assert refund.status_code == 409, refund.text
+    assert refund.json()["detail"]["error"]["code"] == "refund_not_allowed"
+
+
+def test_processed_refund_webhook_requires_reconciliation_when_credits_were_consumed(monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module.settings, "razorpay_webhook_secret", "reconciliation-webhook-secret")
+    headers = admin_headers()
+    team = create_team_fixture(headers)
+    db = TestingSessionLocal()
+    try:
+        order = PaymentOrder(team_id=team["id"], provider="razorpay", provider_order_id="order_reconciliation_test", payment_id="pay_reconciliation_test", amount_paise=3000, currency="INR", status="completed", completed_at=services.now())
+        db.add(order)
+        db.flush()
+        wallet = db.query(WalletAccount).filter(WalletAccount.team_id == team["id"]).one()
+        wallet.balance_paise = 500
+        db.add(WalletLedger(wallet_id=wallet.id, type="credit", amount_paise=3000, balance_before=0, balance_after=3000, reference_type="payment_order", reference_id="pay_reconciliation_test", description="Test payment credit", idempotency_key="payment:reconciliation-order"))
+        db.add(PaymentRefund(order_id=order.id, team_id=team["id"], provider_refund_id="rfnd_reconciliation_test", amount_paise=1000, status="requested", reason="test"))
+        db.commit()
+    finally:
+        db.close()
+
+    import hashlib
+    import hmac
+    import json
+
+    payload = {"id": "evt_reconciliation_123", "event": "refund.processed", "payload": {"refund": {"entity": {"id": "rfnd_reconciliation_test", "payment_id": "pay_reconciliation_test", "amount": 1000}}}}
+    raw = json.dumps(payload).encode()
+    signature = hmac.new(b"reconciliation-webhook-secret", raw, hashlib.sha256).hexdigest()
+    webhook_headers = {"X-Razorpay-Signature": signature, "X-Razorpay-Event-Id": "evt_reconciliation_123"}
+    response = client.post("/webhooks/razorpay", content=raw, headers=webhook_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "reconciliation_required"
+    duplicate = client.post("/webhooks/razorpay", content=raw, headers=webhook_headers)
+    assert duplicate.status_code == 200
+    assert duplicate.json()["duplicate"] is True
+    assert client.get("/wallet", params={"team_id": team["id"]}, headers=headers).json()["balance_paise"] == 500
+    db = TestingSessionLocal()
+    try:
+        refund = db.query(PaymentRefund).filter(PaymentRefund.provider_refund_id == "rfnd_reconciliation_test").one()
+        assert refund.status == "reconciliation_required"
+        assert db.query(WalletLedger).filter(WalletLedger.reference_type == "payment_refund", WalletLedger.reference_id == refund.id).count() == 0
+        event = db.query(PaymentEvent).filter(PaymentEvent.event_id == "evt_reconciliation_123").one()
+        assert event.status == "reconciliation_required"
+    finally:
+        db.close()
+
+
+def test_refund_rejects_cross_tenant_customer_access():
+    first_email = f"refund-owner-{time.time_ns()}@example.com"
+    second_email = f"refund-other-{time.time_ns()}@example.com"
+    first = client.post("/auth/signup", json={"email": first_email, "password": "RefundOwner123!", "organization_name": "Refund First Company"})
+    second = client.post("/auth/signup", json={"email": second_email, "password": "RefundOther123!", "organization_name": "Refund Second Company"})
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    db = TestingSessionLocal()
+    try:
+        other_team = db.query(Team).filter(Team.organization_id == second.json()["organization_id"]).one()
+        wallet = db.query(WalletAccount).filter(WalletAccount.team_id == other_team.id).one()
+        wallet.balance_paise = 1000
+        order = PaymentOrder(team_id=other_team.id, organization_id=other_team.organization_id, provider="development", provider_order_id=f"cross-tenant-{time.time_ns()}", amount_paise=1000, currency="INR", status="completed", completed_at=services.now())
+        db.add(order)
+        db.commit()
+        order_id = order.id
+    finally:
+        db.close()
+    denied = client.post(f"/billing/orders/{order_id}/refund", json={"amount_paise": 1000}, headers={"Authorization": f"Bearer {first.json()['token']}"})
+    assert denied.status_code == 403, denied.text
 
 
 def test_unknown_and_not_allowed_models(monkeypatch):

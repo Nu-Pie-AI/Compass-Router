@@ -1298,6 +1298,18 @@ def _settle_payment_order(db: Session, order: PaymentOrder, payment_id: str, pay
     return locked_order, ledger, invoice
 
 
+def _lock_refund_wallet(db: Session, order: PaymentOrder, amount_paise: int) -> WalletAccount:
+    """Lock the order wallet and reject refunds that would overdraw Credits."""
+    if amount_paise <= 0:
+        raise compass_error(409, "refund_amount_invalid", "The refund amount must be positive.")
+    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == order.team_id).with_for_update())
+    if wallet is None:
+        raise compass_error(404, "wallet_not_found", "Credits account not found.")
+    if wallet.balance_paise < amount_paise:
+        raise compass_error(409, "refund_insufficient_credits", "This refund would overdraw the available Credits balance.")
+    return wallet
+
+
 def _apply_refund(db: Session, refund: PaymentRefund, provider_refund_id: str | None = None) -> PaymentRefund:
     locked_refund = db.scalar(select(PaymentRefund).where(PaymentRefund.id == refund.id).with_for_update())
     if locked_refund is None:
@@ -1305,9 +1317,12 @@ def _apply_refund(db: Session, refund: PaymentRefund, provider_refund_id: str | 
     if locked_refund.status == "processed":
         return locked_refund
     order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == locked_refund.order_id).with_for_update())
-    wallet = db.scalar(select(WalletAccount).where(WalletAccount.team_id == locked_refund.team_id).with_for_update())
-    if order is None or wallet is None:
+    if order is None or order.team_id != locked_refund.team_id:
         raise compass_error(404, "wallet_not_found", "Credits account or payment order not found.")
+    wallet = _lock_refund_wallet(db, order, locked_refund.amount_paise)
+    remaining = order.amount_paise - order.refunded_paise
+    if order.status not in {"completed", "partially_refunded"} or locked_refund.amount_paise > remaining:
+        raise compass_error(409, "refund_not_allowed", "This payment order is not eligible for that refund amount.")
     idempotency_key = f"refund:{locked_refund.id}"
     ledger = db.scalar(select(WalletLedger).where(WalletLedger.wallet_id == wallet.id, WalletLedger.idempotency_key == idempotency_key))
     if ledger is None:
@@ -1480,8 +1495,18 @@ async def razorpay_webhook(request: Request, x_razorpay_signature: str | None = 
             if refund is None:
                 event.status = "ignored"
             elif event_type == "refund.processed":
-                _apply_refund(db, refund, provider_refund_id)
-                event.status = "processed"
+                try:
+                    _apply_refund(db, refund, provider_refund_id)
+                    event.status = "processed"
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {}
+                    error = detail.get("error") if isinstance(detail.get("error"), dict) else {}
+                    if error.get("code") != "refund_insufficient_credits":
+                        raise
+                    refund.status = "reconciliation_required"
+                    refund.failure_description = "External refund completed but available Credits were insufficient for a safe wallet reversal."
+                    event.status = "reconciliation_required"
+                    event.error_message = refund.failure_description
             else:
                 refund.status = "failed"
                 refund.failure_description = str(refund_entity.get("error_description") or "Razorpay refund failed.")
@@ -1500,7 +1525,7 @@ async def razorpay_webhook(request: Request, x_razorpay_signature: str | None = 
 
 @app.post("/billing/orders/{order_id}/refund")
 def refund_billing_order(order_id: str, body: BillingRefundCreate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
-    order = db.get(PaymentOrder, order_id)
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order_id).with_for_update())
     if order is None or not order.team_id:
         raise compass_error(404, "payment_order_not_found", "Payment order not found.")
     require_team_owner(db, user, order.team_id)
@@ -1508,6 +1533,7 @@ def refund_billing_order(order_id: str, body: BillingRefundCreate, user: User = 
     amount_paise = body.amount_paise or remaining
     if order.status not in {"completed", "partially_refunded"} or amount_paise > remaining:
         raise compass_error(409, "refund_not_allowed", "This payment order is not eligible for that refund amount.")
+    _lock_refund_wallet(db, order, amount_paise)
     if order.provider == "development":
         refund = PaymentRefund(order_id=order.id, team_id=order.team_id, amount_paise=amount_paise, status="requested", reason=body.reason)
         db.add(refund)
