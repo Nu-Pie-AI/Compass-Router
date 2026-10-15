@@ -202,6 +202,9 @@ def test_m9_owner_bootstrap_is_configured_clerk_bound_and_idempotent(monkeypatch
     monkeypatch.setattr(main_module.settings, "platform_super_admin_clerk_user_id", clerk_id)
     monkeypatch.setattr(main_module, "authenticate_clerk_request", lambda _request: {"sub": clerk_id, "email": email})
     headers = {"Authorization": "Bearer clerk-owner-session"}
+    status = client.get("/admin/bootstrap/status", headers=headers)
+    assert status.status_code == 200, status.text
+    assert status.json() == {"available": True, "status": "pending"}
     first = client.post("/admin/bootstrap", json={"confirmation": "BOOTSTRAP_PLATFORM_OWNER"}, headers=headers)
     assert first.status_code == 200, first.text
     assert first.json()["status"] == "bootstrapped"
@@ -214,6 +217,20 @@ def test_m9_owner_bootstrap_is_configured_clerk_bound_and_idempotent(monkeypatch
         assert db.scalar(select(PlatformRoleAssignment).where(PlatformRoleAssignment.user_id == owner_id, PlatformRoleAssignment.role == "PLATFORM_SUPER_ADMIN")).status == "active"
     finally:
         db.close()
+
+
+def test_owner_bootstrap_status_is_hidden_from_non_owner_and_requires_clerk(monkeypatch):
+    clerk_id = f"user_m9_status_{time.time_ns()}"
+    email = f"m9-status-{time.time_ns()}@example.com"
+    db = TestingSessionLocal()
+    db.add(User(email=email, clerk_user_id=clerk_id, password_hash=hash_password("M9Status123!"), role="customer"))
+    db.commit()
+    db.close()
+    monkeypatch.setattr(main_module.settings, "platform_super_admin_clerk_user_id", clerk_id)
+    monkeypatch.setattr(main_module, "authenticate_clerk_request", lambda _request: {"sub": "user_other", "email": "other@example.com"})
+    denied = client.get("/admin/bootstrap/status", headers={"Authorization": "Bearer other-session"})
+    assert denied.status_code == 404
+    assert denied.json()["detail"]["error"]["code"] == "owner_bootstrap_unavailable"
 
 
 def test_m9_subordinate_platform_role_is_least_privilege():

@@ -2251,6 +2251,21 @@ def admin_access(actor: User = Depends(admin_user), db: Session = Depends(get_db
     return {"user_id": actor.id, "email": actor.email, "roles": sorted(platform_roles(db, actor)), "permissions": sorted(platform_permissions(db, actor))}
 
 
+@app.get("/admin/bootstrap/status")
+def admin_bootstrap_status(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Expose the one-time owner activation gate without exposing role data."""
+    identity = current_clerk_identity(request)
+    configured_id = (settings.platform_super_admin_clerk_user_id or "").strip()
+    if not configured_id or str(identity.get("sub", "")) != configured_id:
+        raise compass_error(404, "owner_bootstrap_unavailable", "Platform owner activation is not available.")
+    state = db.get(PlatformBootstrapState, "primary")
+    if state is None:
+        return {"available": True, "status": "pending"}
+    if state.owner_clerk_user_id != configured_id:
+        raise compass_error(404, "owner_bootstrap_unavailable", "Platform owner activation is not available.")
+    return {"available": False, "status": "already_bootstrapped" if state.status == "active" else "unavailable"}
+
+
 @app.post("/admin/bootstrap")
 def admin_bootstrap(body: PlatformBootstrapRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     identity = current_clerk_identity(request)
