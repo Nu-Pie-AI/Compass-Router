@@ -45,6 +45,9 @@ def decode_session_claims(token: str) -> dict:
 def authenticate_clerk_request(request: Request) -> dict:
     """Verify a Clerk session token without exposing token material to callers."""
     settings = get_settings()
+    expected_issuer = (settings.clerk_issuer or "").strip()
+    if not expected_issuer:
+        raise ValueError("CLERK_ISSUER is required to verify Clerk sessions")
     if not settings.clerk_secret_key and not settings.clerk_jwt_key:
         raise ValueError("Clerk is not configured")
     authorized_parties = [item.strip() for item in settings.clerk_authorized_parties.split(",") if item.strip()]
@@ -58,7 +61,10 @@ def authenticate_clerk_request(request: Request) -> dict:
     state = authenticate_request(request, options)
     if not state.is_authenticated or not state.payload or not state.payload.get("sub"):
         raise ValueError(state.reason or "Clerk session is not authenticated")
-    return dict(state.payload)
+    claims = dict(state.payload)
+    if claims.get("iss") != expected_issuer:
+        raise ValueError("Clerk session issuer does not match CLERK_ISSUER")
+    return claims
 
 
 def clerk_user_email(clerk_user_id: str) -> str:
