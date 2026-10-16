@@ -27,7 +27,7 @@ export function formatPaise(value: number | undefined) {
 export async function apiFetch<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("content-type", "application/json");
-  const sessionToken = !path.startsWith("/v1/") && clerkTokenProvider ? await clerkTokenProvider() : token;
+  const sessionToken = token ?? (!path.startsWith("/v1/") && clerkTokenProvider ? await clerkTokenProvider() : undefined);
   if (sessionToken) headers.set("authorization", `Bearer ${sessionToken}`);
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));

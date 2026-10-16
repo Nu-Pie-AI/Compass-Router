@@ -12,7 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const clerkKey = clerkPublishableKey;
   return (
     <html lang="en">
-      <body>{clerkKey ? <ClerkProvider publishableKey={clerkKey} signInForceRedirectUrl="/portal" signInFallbackRedirectUrl="/portal" signUpForceRedirectUrl="/portal" signUpFallbackRedirectUrl="/portal"><ClerkSessionBridge />{children}</ClerkProvider> : children}</body>
+      <body>{clerkKey ? <ClerkProvider publishableKey={clerkKey}><ClerkSessionBridge />{children}</ClerkProvider> : children}</body>
     </html>
   );
 }

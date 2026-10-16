@@ -35,17 +35,26 @@ export default function ClerkSessionBridge() {
     }
     if (bootstrapStarted.current) return;
     bootstrapStarted.current = true;
-    void getTokenRef.current().then((token) => {
+    let timeout: number | undefined;
+    const bootstrap = (async () => {
+      const token = await getTokenRef.current();
       if (!token) throw new Error("Clerk did not issue a session token.");
       return apiFetch<Session>("/auth/clerk/bootstrap", { method: "POST" }, token);
-    }).then((session) => {
+    })();
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = window.setTimeout(() => reject(new Error("Compass session bootstrap timed out.")), 12000);
+    });
+    void Promise.race([bootstrap, deadline]).then((session) => {
+      window.clearTimeout(timeout);
       window.localStorage.setItem("compass.local.session", JSON.stringify(session));
       window.dispatchEvent(new Event("compass-clerk-session"));
-    }).catch(() => {
+    }).catch((reason) => {
+      window.clearTimeout(timeout);
       bootstrapStarted.current = false;
       window.localStorage.removeItem("compass.local.session");
       window.dispatchEvent(new Event("compass-clerk-session"));
-      window.dispatchEvent(new Event("compass-clerk-session-error"));
+      const message = reason instanceof Error ? reason.message : "Compass session bootstrap failed.";
+      window.dispatchEvent(new CustomEvent("compass-clerk-session-error", { detail: { message } }));
     });
   }, [isLoaded, isSignedIn]);
 
